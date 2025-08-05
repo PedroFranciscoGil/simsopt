@@ -1190,7 +1190,7 @@ def get_dfs(INPUT_DIR='./output/QA/B2Energy/', OUTPUT_DIR=None):
     return df, df_filtered, df_pareto
 
 
-def initialize_coils_simple(s, out_dir='', target_B=5.7, ncoils=4, order=16, nturns=256, regularization=None):
+def initialize_coils_simple(s, out_dir='', target_B=5.7, ncoils=4, order=16, nturns=256, regularization=None, R1_multiplier=1):
     """
     Initializes four coils with order=16 and total current set to produce 
     a target B-field on-axis. The coil centers and radii are scaled by 
@@ -1217,7 +1217,7 @@ def initialize_coils_simple(s, out_dir='', target_B=5.7, ncoils=4, order=16, ntu
     
     # Get the major radius from the surface and scale coil parameters
     R0 = s.get_rc(0, 0)  # Major radius
-    R1 = s.get_rc(1, 0) * 2.5  # Scale the minor radius component
+    R1 = s.get_rc(1, 0) * R1_multiplier  # Scale the minor radius component
     
     # Initial guess for total current (using QH configuration as reference)
     total_current = 5e7  # 50 MA initial guess is not bad for reactor-scale

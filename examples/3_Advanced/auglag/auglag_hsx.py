@@ -88,8 +88,8 @@ else:
     # Define the number of phi and theta points
     nphi = 32  # 64 for high-resolution
     ntheta = 32  # 64 for high-resolution
-    MAXITER = 50  # 1500 for high-resolution
-    MAXITER_lag = 10  # 50 for high-resolution
+    MAXITER = 1500  # 1500 for high-resolution
+    MAXITER_lag = 50  # 50 for high-resolution
 
 # Define the surface
 s = SurfaceRZFourier.from_vmec_input(
@@ -111,12 +111,12 @@ s_plot = SurfaceRZFourier.from_vmec_input(
 # Define the number of coils, rotation order, and non-planar base curves
 ncoils = ncoils_choice
 
-def hsx_coils(s, ncoils=3, order=8):
+def hsx_coils(s, ncoils=3, order=8, R1_multiplier=1.0):
 
     # parameters for the TF coils, increase order for a better solution
     # Total current scaled to give B ~ 5.7 T on axis (actually averaged over the major radius)
     R0 = s.get_rc(0, 0) * 1
-    R1 = s.get_rc(1, 0) * 2.5
+    R1 = s.get_rc(1, 0) * R1_multiplier
  
     total_current = sum([1.500725500000000e+05, 1.500725500000000e+05, 
                          1.500725500000000e+05, 1.500725500000000e+05, 
@@ -138,113 +138,130 @@ def hsx_coils(s, ncoils=3, order=8):
     curves = [c.curve for c in coils]
     return base_curves, curves, coils, base_currents
 
-base_curves, curves, coils, base_currents = hsx_coils(s, ncoils=ncoils, order=7)
-# Above, the factors of 1e-5 and 1e5 are included so the current
-# degrees of freedom are O(1) rather than ~ MA.  The optimization
-# algorithm may not perform well if the dofs are scaled badly.
+# Loop over different orders and R1 multipliers
+orders = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25]
+R1_multipliers = [0.5, 1, 1.5, 2, 2.5, 3]
 
+for order in orders:
+    for R1_mult in R1_multipliers:
+        print(f"\n{'='*80}")
+        print(f"Starting optimization for order={order}, R1_multiplier={R1_mult}")
+        print(f"{'='*80}")
 
-base_coils = coils[:ncoils]
-currents = [c.current for c in coils]
-print("Number of coils:", len(coils))
+        base_curves, curves, coils, base_currents = hsx_coils(s, ncoils=ncoils, order=order, R1_multiplier=R1_mult)
+        # Above, the factors of 1e-5 and 1e5 are included so the current
+        # degrees of freedom are O(1) rather than ~ MA.  The optimization
+        # algorithm may not perform well if the dofs are scaled badly.
 
-# Save the biot-savart field data
-bs = BiotSavart(coils)
-curves = [c.curve for c in coils]
-coils_to_vtk(coils, OUT_DIR + "coils_init_hsx")
-bs.set_points(s_plot.gamma().reshape((-1, 3))) 
-pointData = {"B_N/|B|": np.sum(bs.B().reshape((qphi, qtheta, 3)) *
-                               s_plot.unitnormal(), axis=2)[:, :, None] / bs.AbsB().reshape((qphi, qtheta, 1)),
-             "modB": bs.AbsB().reshape((qphi, qtheta, 1))}
-s_plot.to_vtk(OUT_DIR + "surf_init_hsx", extra_data=pointData)
+        base_coils = coils[:ncoils]
+        currents = [c.current for c in coils]
+        print("Number of coils:", len(coils))
 
-# Define the individual terms objective function:
-bs.set_points(s.gamma().reshape((-1, 3)))
-Jf = SquaredFlux(s, bs, definition="normalized", threshold=FLUX_THRESHOLD)
-Jls = [CurveLength(c) for c in base_curves]
-Jl = sum(QuadraticPenalty(jj, LENGTH_TARGET, "max") for jj in Jls)
-Jccdist = CurveCurveDistance(curves, CC_THRESHOLD, num_basecurves=ncoils)
-Jcsdist = CurveSurfaceDistance(curves, s, CS_THRESHOLD)
-Jcs = [LpCurveCurvature(c, 2, CURVATURE_THRESHOLD) for c in base_curves]
-Jmscs = [MeanSquaredCurvature(c) for c in base_curves]
-Jlink = LinkingNumber(curves, downsample=2)
-Jforce = LpCurveForce(base_coils, coils, p=2.0, threshold=FORCE_THRESHOLD)
+        # Define the output directory   
+        OUT_DIR = (f"./output_paper/hsx_{order}_{R1_mult}_ncoils{ncoils_choice}_curvature{CURVATURE_THRESHOLD}_" + \
+                   f"force{FORCE_THRESHOLD}_flux{FLUX_THRESHOLD}_length{LENGTH_TARGET}_" + \
+                   f"cc{CC_THRESHOLD}_cs{CS_THRESHOLD}/")
+        os.makedirs(OUT_DIR, exist_ok=True)
 
-force = [np.max(np.linalg.norm(coil_force(c, coils), axis=1)) for c in base_coils]
-print("Forces:")
-print(",".join(f"{f:.2e}" for f in force))
+        # Save the biot-savart field data
+        bs = BiotSavart(coils)
+        curves = [c.curve for c in coils]
+        coils_to_vtk(coils, OUT_DIR + f"coils_init_hsx_{order}_{R1_mult}")
+        bs.set_points(s_plot.gamma().reshape((-1, 3))) 
+        pointData = {"B_N/|B|": np.sum(bs.B().reshape((qphi, qtheta, 3)) *
+                                       s_plot.unitnormal(), axis=2)[:, :, None] / bs.AbsB().reshape((qphi, qtheta, 1)),
+                     "modB": bs.AbsB().reshape((qphi, qtheta, 1))}
+        s_plot.to_vtk(OUT_DIR + f"surf_init_hsx_{order}_{R1_mult}", extra_data=pointData)
 
-# Main optimization function
-f = None
+        # Define the individual terms objective function:
+        bs.set_points(s.gamma().reshape((-1, 3)))
+        Jf = SquaredFlux(s, bs, definition="normalized", threshold=FLUX_THRESHOLD)
+        Jls = [CurveLength(c) for c in base_curves]
+        Jl = sum(QuadraticPenalty(jj, LENGTH_TARGET, "max") for jj in Jls)
+        Jccdist = CurveCurveDistance(curves, CC_THRESHOLD, num_basecurves=ncoils)
+        Jcsdist = CurveSurfaceDistance(curves, s, CS_THRESHOLD)
+        Jcs = [LpCurveCurvature(c, 2, CURVATURE_THRESHOLD) for c in base_curves]
+        Jmscs = [MeanSquaredCurvature(c) for c in base_curves]
+        Jlink = LinkingNumber(curves, downsample=2)
+        Jforce = LpCurveForce(base_coils, coils, p=2.0, threshold=FORCE_THRESHOLD)
 
-# Constraint list
-c_list = [ Jf,
-        Jccdist, 
-        Jcsdist, 
-        QuadraticPenalty(sum(Jls), LENGTH_TARGET, "max"), 
-        sum(QuadraticPenalty(J, MSC_THRESHOLD, "max") for J in Jmscs),
-        sum(Jcs), 
-        Jlink,
-        Jforce
-]
+        force = [np.max(np.linalg.norm(coil_force(c, coils), axis=1)) for c in base_coils]
+        print("Forces:")
+        print(",".join(f"{f:.2e}" for f in force))
 
-print('Initial normalized flux:', Jf.J())
-print('Initial CS-Sep constraint:', Jcsdist.J())
-print('Initial CS-sep minimum distance:', Jcsdist.shortest_distance())
-print('Initial CC-Sep constraint:', Jccdist.J())
-print('Initial CC-sep minimum distance:', Jccdist.shortest_distance())
-print('Initial Len constraint:', Jl.J())
-print('Initial Curv constraint:', sum(Jcs).J())
-print('Initial Link constraint:', Jlink.J())
-print('Initial Max Curvatures:', [np.max(c.kappa()) for c in base_curves])
-print('Initial Lengths:', [CurveLength(c).J() for c in base_curves], sum(Jls).J())
+        # Main optimization function
+        f = None
 
-start_time = time.time()
-x, fnc, lag_mul = augmented_lagrangian_method(f=f,
-    equality_constraints=c_list,
-    tau=6, #6 worked with cc 0.1 and cs 0.1 and l 15
-    MAXITER=MAXITER,
-    MAXITER_lag=MAXITER_lag,
-    grad_tol=1e-8,
-    c_tol=1e-8,
-)
+        # Constraint list
+        c_list = [ Jf,
+                Jccdist, 
+                Jcsdist, 
+                QuadraticPenalty(sum(Jls), LENGTH_TARGET, "max"), 
+                sum(QuadraticPenalty(J, MSC_THRESHOLD, "max") for J in Jmscs),
+                sum(Jcs), 
+                Jlink,
+                Jforce
+        ]
 
-bs.save(OUT_DIR + "biot_savart_optimized_auglag_hsx.json")
-end_time = time.time()
-print(f"Time taken: {end_time - start_time} seconds")
-print('Final normalized flux:', Jf.J())
-print('Final CS-Sep constraint:', Jcsdist.J())
-print('Final CS-sep minimum distance:', Jcsdist.shortest_distance())
-print('Final CC-Sep constraint:', Jccdist.J())
-print('Final CC-sep minimum distance:', Jccdist.shortest_distance())
-print('Final Len constraint:', Jl.J())
-print('Final Curv constraint:', sum(Jcs).J())
-print('Final Link constraint:', Jlink.J())
-print('Final Max Curvatures:', [np.max(c.kappa()) for c in base_curves])
-print('Final Lengths:', [CurveLength(c).J() for c in base_curves], sum(Jls).J())
-print('Final Mean Squared Curvature', [MeanSquaredCurvature(c).J() for c in base_curves])
-# print('Final Force constraint:', Jforce.J())
-force = [np.max(np.linalg.norm(coil_force(c, coils), axis=1)) for c in base_coils]
-print("Forces:")
-print(",".join(f"{f:.2e}" for f in force))
-coils_to_vtk(coils, OUT_DIR + "coils_optimized_auglag_hsx")
-bs.set_points(s_plot.gamma().reshape((-1, 3)))
-pointData = {"B_N": np.sum(bs.B().reshape((qphi, qtheta, 3)) *
-                        s_plot.unitnormal(), axis=2)[:, :, None],
-        "B_N/|B|": np.sum(bs.B().reshape((qphi, qtheta, 3)) *
-                        s_plot.unitnormal(), axis=2)[:, :, None] /
-        bs.AbsB().reshape((qphi, qtheta, 1)),
-        "modB": bs.AbsB().reshape((qphi, qtheta, 1))}
-s_plot.to_vtk(OUT_DIR + "surf_optimized_auglag_hsx", extra_data=pointData)
-max_BdotN_overB = np.max(np.sum(bs.B().reshape((qphi, qtheta, 3)) *
-                        s_plot.unitnormal(), axis=2)[:, :, None] /
-        bs.AbsB().reshape((qphi, qtheta, 1)))
-bs.set_points(s.gamma().reshape((-1, 3)))
-BdotN = np.mean(np.abs(np.sum(bs.B().reshape((nphi, ntheta, 3)) * s.unitnormal(), axis=2)))
-avg_BdotN_over_B = BdotN / bs.AbsB().mean()
-print("--------------------------------------------------------------------------------------------------------------------------------------------")
-print(f"<B_N>/<|B|> = {avg_BdotN_over_B:.2e}, Max BdotN/|B| = {max_BdotN_overB:.2e}")
-print("FINAL LAGRANGE MULTIPLIERS:", lag_mul)
-print("--------------------------------------------------------------------------------------------------------------------------------------------")
-print("Final NORMALIZED SQUARED FLUX:", Jf.J())
-print('FINISHED OPTIMIZATION')
+        print('Initial normalized flux:', Jf.J())
+        print('Initial CS-Sep constraint:', Jcsdist.J())
+        print('Initial CS-sep minimum distance:', Jcsdist.shortest_distance())
+        print('Initial CC-Sep constraint:', Jccdist.J())
+        print('Initial CC-sep minimum distance:', Jccdist.shortest_distance())
+        print('Initial Len constraint:', Jl.J())
+        print('Initial Curv constraint:', sum(Jcs).J())
+        print('Initial Link constraint:', Jlink.J())
+        print('Initial Max Curvatures:', [np.max(c.kappa()) for c in base_curves])
+        print('Initial Lengths:', [CurveLength(c).J() for c in base_curves], sum(Jls).J())
+
+        start_time = time.time()
+        x, fnc, lag_mul = augmented_lagrangian_method(f=f,
+            equality_constraints=c_list,
+            tau=6, #6 worked with cc 0.1 and cs 0.1 and l 15
+            MAXITER=MAXITER,
+            MAXITER_lag=MAXITER_lag,
+            grad_tol=1e-8,
+            c_tol=1e-8,
+        )
+
+        bs.save(OUT_DIR + f"biot_savart_optimized_auglag_hsx_{order}_{R1_mult}.json")
+        end_time = time.time()
+        print(f"Time taken: {end_time - start_time} seconds")
+        print('Final normalized flux:', Jf.J())
+        print('Final CS-Sep constraint:', Jcsdist.J())
+        print('Final CS-sep minimum distance:', Jcsdist.shortest_distance())
+        print('Final CC-Sep constraint:', Jccdist.J())
+        print('Final CC-sep minimum distance:', Jccdist.shortest_distance())
+        print('Final Len constraint:', Jl.J())
+        print('Final Curv constraint:', sum(Jcs).J())
+        print('Final Link constraint:', Jlink.J())
+        print('Final Max Curvatures:', [np.max(c.kappa()) for c in base_curves])
+        print('Final Lengths:', [CurveLength(c).J() for c in base_curves], sum(Jls).J())
+        print('Final Mean Squared Curvature', [MeanSquaredCurvature(c).J() for c in base_curves])
+        # print('Final Force constraint:', Jforce.J())
+        force = [np.max(np.linalg.norm(coil_force(c, coils), axis=1)) for c in base_coils]
+        print("Forces:")
+        print(",".join(f"{f:.2e}" for f in force))
+        coils_to_vtk(coils, OUT_DIR + f"coils_optimized_auglag_hsx_{order}_{R1_mult}")
+        bs.set_points(s_plot.gamma().reshape((-1, 3)))
+        pointData = {"B_N": np.sum(bs.B().reshape((qphi, qtheta, 3)) *
+                                s_plot.unitnormal(), axis=2)[:, :, None],
+                "B_N/|B|": np.sum(bs.B().reshape((qphi, qtheta, 3)) *
+                                s_plot.unitnormal(), axis=2)[:, :, None] /
+                bs.AbsB().reshape((qphi, qtheta, 1)),
+                "modB": bs.AbsB().reshape((qphi, qtheta, 1))}
+        s_plot.to_vtk(OUT_DIR + f"surf_optimized_auglag_hsx_{order}_{R1_mult}", extra_data=pointData)
+        max_BdotN_overB = np.max(np.sum(bs.B().reshape((qphi, qtheta, 3)) *
+                                s_plot.unitnormal(), axis=2)[:, :, None] /
+                bs.AbsB().reshape((qphi, qtheta, 1)))
+        bs.set_points(s.gamma().reshape((-1, 3)))
+        BdotN = np.mean(np.abs(np.sum(bs.B().reshape((nphi, ntheta, 3)) * s.unitnormal(), axis=2)))
+        avg_BdotN_over_B = BdotN / bs.AbsB().mean()
+        print("--------------------------------------------------------------------------------------------------------------------------------------------")
+        print(f"<B_N>/<|B|> = {avg_BdotN_over_B:.2e}, Max BdotN/|B| = {max_BdotN_overB:.2e}")
+        print("FINAL LAGRANGE MULTIPLIERS:", lag_mul)
+        print("--------------------------------------------------------------------------------------------------------------------------------------------")
+        print("Final NORMALIZED SQUARED FLUX:", Jf.J())
+        print(f'FINISHED OPTIMIZATION for order={order}, R1_multiplier={R1_mult}')
+        print("Output directory:", OUT_DIR)
+        print(f"{'='*80}\n")
