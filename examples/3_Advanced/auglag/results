@@ -1,0 +1,168 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+R1_values = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
+print(f"R1 values: {R1_values}")
+
+orders = np.array([1, 3, 5, 7, 9, 11, 13, 15, 17])
+
+# QA (Wechsung)
+qa_data1 = np.array([
+    [1.94e-01, 2.55e-01, 2.88e-01, 2.04e-01, 3.54e-01, 5.51e-02],  # Order 1 across R1 values
+    [2.27e-01, 2.65e-01, 2.60e-01, 2.43e-01, 1.60e-03, 1.61e-03],  # Order 3 across R1 values
+    [8.54e-02, 1.19e-01, 1.97e-01, 2.02e-01, 1.14e-01, 1.49e-03], # Order 5 across R1 values
+    [1.57e-03, 1.13e-03, 1.58e-01, 1.76e-01, 1.08e-03, 1.08e-03], # Order 7 across R1 values
+    [1.14e-03, 1.06e-03, 1.68e-01, 1.95e-01, 1.14e-01, 1.06e-03], # Order 9 across R1 values
+    [1.05e-03, 1.38e-03, 1.56e-01, 1.47e-01, 9.85e-02, 1.31e-03], # Order 11 across R1 values
+    [1.06e-03, 1.13e-03, 1.75e-01, 1.56e-01, 1.31e-01, 1.02e-03], # Order 13 across R1 values
+    [1.09e-03, 1.59e-03, 1.73e-01, 1.55e-01, 1.17e-01, 1.00e-03],  # Order 15 across R1 values 
+    [2.02e-03, 1.20e-03, 1.62e-01, 1.53e-01, 1.33e-01, 1.36e-03],  # Order 17 across R1 values
+    #[1.37e-03, 1.76e-03, 1, 1.54e-01, 1.45e-01, 3.37e-03],  # Order 19 across R1 values
+    #[1.99e-01, 2.05e-03, 1.63e-01, 1.53e-01, 1.46e-01, 4.81e-03],  # Order 21 across R1 values
+    #[4.89e-03, 1.60e-03, 1.65e-01, 1.51e-01, 1.50e-01, 1.25e-02],  # Order 23 across R1 values
+    #[2.30e-03, 6.58e-03, 1.64e-01, 1.48e-01, 1, 1],  # Order 25 across R1 values
+    #[1.80e-03, 1.20e-03, 1.62e-01, 1.48e-01, 1.50e-01, 5.75e-03],  # Order 27 across R1 values
+    #[5.14e-03, ],  # Order 29 across R1 values
+    #[],  # Order 31 across R1 values
+    #[]. # Order 33 across R1 values
+])
+
+
+#plot with cleaned data; took out data corresponding to average values of R1
+#that gave infeasible coil configurations
+qa_data = np.array([
+    [1.94e-01, 2.55e-01, 5.51e-02],  # Order 1 across R1 values
+    [2.27e-01, 2.65e-01, 1.61e-03],  # Order 3 across R1 values
+    [8.54e-02, 1.19e-01, 1.49e-03], # Order 5 across R1 values
+    [1.57e-03, 1.13e-03, 1.08e-03], # Order 7 across R1 values
+    [1.14e-03, 1.06e-03, 1.06e-03], # Order 9 across R1 values
+    [1.05e-03, 1.38e-03, 1.31e-03], # Order 11 across R1 values
+    [1.06e-03, 1.13e-03, 1.02e-03], # Order 13 across R1 values
+    [1.09e-03, 1.59e-03, 1.00e-03],  # Order 15 across R1 values 
+    [2.02e-03, 1.20e-03, 1.36e-03]  # Order 17 across R1 values
+    #[1.37e-03, 1.76e-03, 3.37e-03]
+    #[1.99e-01, 2.05e-03, 4.81e-03]
+    #[1, 1, 1.25e-02]
+    #[1, 1, 1]
+])
+
+
+# QH (Wiedman)
+qh_data = np.array([
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1]
+])
+
+# W7-X
+w7x_data1 = np.array([
+    [1.54E-01, 1.53E-01, 1.40E-01, 8.63E-02, 8.62E-02, 8.63E-02],
+    [1.54E-01, 1.47E-01, 1.18E-02, 1.18E-02, 1.18E-02, 1.18E-02],
+    [1.26E-01, 5.86E-02, 9.95E-03, 9.89E-03, 9.88E-03, 9.93E-03],
+    [1.30e-01, 1.13E-01, 1.22E-01, 9.47E-03, 9.46E-03, 9.88E-03],
+    [1.32E-01, 5.33E-02, 1.33E-01, 9.42E-03, 9.41E-03, 9.43E-03],
+    [2.43E-02, 6.78E-02, 1.55E-01, 9.39e-03, 9.39e-03, 9.45e-03],
+    [9.36E-03, 1.26E-01, 9.38E-03, 9.38E-03, 9.37E-03, 9.38E-03],
+    [9.36e-03, 1.19e-01, 9.63e-03, 9.36e-03, 9.35e-03, 9.39e-03],
+    [9.33e-03, 9.24e-02, 1.44e-01, 9.33e-03, 9.32e-03, 9.81e-03],
+    [9.31e-03, 1.25e-01, 9.62e-03, 9.30e-03, 9.29e-03, 9.34e-03],
+    [9.25e-03, 1.35e-01, 1.44e-01, 9.26e-03, 9.26e-03, 9.35e-03],
+    [9.19e-03, 1.35e-01, 9.66e-03, 9.25e-03, 9.67e-03, 9.34e-03],
+    [9.21e-03, 1.34e-01, 1.10e-02, 1.68e-01, 9.15e-03, 9.38e-03]
+])
+
+w7x_data = np.array([
+    [1.40E-01, 8.63E-02, 8.62E-02, 8.63E-02],
+    [1.18E-02, 1.18E-02, 1.18E-02, 1.18E-02],
+    [9.95E-03, 9.89E-03, 9.88E-03, 9.93E-03],
+    [1.22E-01, 9.47E-03, 9.46E-03, 9.88E-03],
+    [1.33E-01, 9.42E-03, 9.41E-03, 9.43E-03],
+    [1.55E-01, 9.39e-03, 9.39e-03, 9.45e-03],
+    [9.38E-03, 9.38E-03, 9.37E-03, 9.38E-03],
+    [9.63e-03, 9.36e-03, 9.35e-03, 9.39e-03],
+    [1.44e-01, 9.33e-03, 9.32e-03, 9.81e-03],
+    [9.62e-03, 9.30e-03, 9.29e-03, 9.34e-03],
+    [1.44e-01, 9.26e-03, 9.26e-03, 9.35e-03],
+    [9.66e-03, 9.25e-03, 9.67e-03, 9.34e-03],
+    [1.10e-02, 1.68e-01, 9.15e-03, 9.38e-03]
+])
+
+# HSX 
+hsx_data = np.array([
+    [5.44e-02, 5.44e-02, 7.83e-02, 8.14e-02, 5.44e-02, 5.44e-02],
+    [8.01e-03, 8.01e-03, 3.62e-02, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1]
+])
+
+# Calculate means and standard deviations for original data
+qa_means = np.mean(qa_data, axis=1)
+qa_stds = np.std(qa_data, axis=1)
+
+w7x_means = np.mean(w7x_data, axis=1)
+w7x_stds = np.std(w7x_data, axis=1)
+
+# Calculate log values and their error propagation
+qa_log_means = np.log10(qa_means)
+qa_log_stds = qa_stds / (qa_means * np.log(10))  # Error propagation for log
+
+w7x_log_means = np.log10(w7x_means)
+w7x_log_stds = w7x_stds / (w7x_means * np.log(10))  # Error propagation for log
+
+# Create the plot
+plt.figure(figsize=(12, 8))
+
+# Define colors for each stellarator
+colors = {
+    'QA (Wechsung)': '#1f77b4',  # Blue
+    'W7-X': '#2ca02c',           # Green
+}
+
+# Plot each stellarator with error bars (now using log values on linear axes)
+plt.errorbar(orders, qa_log_means, yerr=qa_log_stds, 
+            marker='o', markersize=8, capsize=5, capthick=2,
+            color=colors['QA (Wechsung)'], label='QA (Wechsung)',
+            linewidth=2, linestyle='-')
+
+plt.errorbar(orders, w7x_log_means, yerr=w7x_log_stds, 
+            marker='^', markersize=8, capsize=5, capthick=2,
+            color=colors['W7-X'], label='W7-X',
+            linewidth=2, linestyle='-')
+
+# Customize the plot
+plt.xlabel('Order', fontsize=14, fontweight='bold')
+plt.ylabel('log₁₀(|B⋅N|/|B|)', fontsize=14, fontweight='bold')
+plt.title('log(|B · n|/|B|) vs Order for Different Stellarators\n'
+'(QA: Averaged across R1 = [0.5, 1.0, 3.0] with error propagation)\n' 
+'(W7-X: Averaged across R1 = [1.5, 2.0, 2.5, 3.0] with error propagation)')
+
+# Use linear scale for both axes
+plt.yscale('linear')
+
+# Customize grid
+plt.grid(True, alpha=0.3, linestyle='--')
+
+# Customize legend
+plt.legend(loc='upper right', fontsize=12, frameon=True, 
+           fancybox=True, shadow=True, framealpha=0.9)
+
+# Set x-axis ticks to integers only
+plt.xticks(orders)
+
+# Adjust layout to prevent label cutoff
+plt.tight_layout()
+
+# Show the plot
+plt.show()
+
+# Optional: Save the plot
+plt.savefig('stellarator_log_bdotn_analysis.png', dpi=300, bbox_inches='tight')

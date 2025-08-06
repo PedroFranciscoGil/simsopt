@@ -93,8 +93,8 @@ ncoils = 3
 a = 0.15  # radius of the coil
 
 # Loop over different orders and R1 multipliers
-orders = [21, 23, 25]
-R1_multipliers = [0.5, 1, 1.5]
+orders = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25]
+R1_multipliers = [0.5, 1, 1.5, 2, 2.5, 3]
 
 for order in orders:
     for R1_mult in R1_multipliers:
