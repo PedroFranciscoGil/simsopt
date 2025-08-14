@@ -267,25 +267,5 @@ print('Total time = ', t2 - t1)
 
 
 
-# Was having issues saving JSON file with BiotSavart, so created completely new curves from the perturbed ones to avoid any random generator references 
-# Extract the optimized parameters from perturbed curves and create cleaned curves
-base_curves_cleaned = []
-for curve_pert in base_curves_perturbed:
-    # Get the curve properties
-    underlying_curve = curve_pert.curve
-    dofs = underlying_curve.get_dofs()
-    quadpoints = underlying_curve.quadpoints
-    order = underlying_curve.order
-    
-    # Create a new curve with the same parameters (no random generator references)
-    curve_cleaned = CurveXYZFourier(quadpoints, order)
-    curve_cleaned.set_dofs(dofs)
-    
-    base_curves_cleaned.append(curve_cleaned)
-
-# Create cleaned coils and BiotSavart object
-coils_cleaned = coils_via_symmetries(base_curves_cleaned, base_currents, s.nfp, s.stellsym, regularizations=regularizations)
-bs_cleaned = BiotSavart(coils_cleaned)
-
-# Now save the cleaned BiotSavart object
-bs_cleaned.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_qh_reactorscale.json")
+# Save the optimized BiotSavart object directly (CurvePerturbed objects are now serializable)
+bs_pert.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_qh_reactorscale.json")
