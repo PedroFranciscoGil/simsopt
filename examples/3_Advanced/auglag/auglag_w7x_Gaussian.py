@@ -12,7 +12,7 @@ from numpy.random import PCG64DXSM, Generator
 from simsopt.field import BiotSavart, Current, Coil, coils_via_symmetries, coils_to_vtk
 from simsopt.field.force import LpCurveForce, B2Energy
 from simsopt.geo import (
-    CurveLength, CurveCurveDistance, LpCurveCurvature, CurveSurfaceDistance, 
+    CurveLength, CurveXYZFourier, CurveCurveDistance, LpCurveCurvature, CurveSurfaceDistance, 
     LinkingNumber, SurfaceRZFourier, MeanSquaredCurvature, GaussianSampler, 
     CurvePerturbed, PerturbationSample, create_equally_spaced_curves
 )
@@ -176,10 +176,11 @@ Jl = sum(QuadraticPenalty(jj, LENGTH_TARGET, "max") for jj in Jls)
 Jccdist = CurveCurveDistance(curves_pert_all, CC_THRESHOLD, num_basecurves=ncoils)
 Jcsdist = CurveSurfaceDistance(curves_pert_all, s, CS_THRESHOLD)
 Jcs = [LpCurveCurvature(c, 2, CURVATURE_THRESHOLD) for c in base_curves_pert]
+Jmscs = [MeanSquaredCurvature(c) for c in base_curves_pert]
 Jlink = LinkingNumber(curves_pert_all, downsample=2)
 base_coils_pert = coils_pert[:ncoils]
 Jforce = LpCurveForce(base_coils_pert, coils_pert, p=2.0, threshold=FORCE_THRESHOLD, downsample=2)
-Jmscs = [MeanSquaredCurvature(c) for c in base_curves_pert]
+
 
 
 # Print initial values using perturbed coils
@@ -247,6 +248,29 @@ avg_BdotN_over_B = BdotN / btot.AbsB().mean()
 print("--------------------------------------------------------------------------------------------------------------------------------------------")
 print(f"<B_N>/<|B|> = {avg_BdotN_over_B:.2e}, Max BdotN/|B| = {max_BdotN_overB:.2e}")
 print('Total time = ', t2 - t1)
-# btot.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_w7x" + ".json")
-print(OUT_DIR)
+
+
+
+# Was having issues saving JSON file with BiotSavart, so created completely new curves from the perturbed ones to avoid any random generator references 
+# Extract the optimized parameters from perturbed curves and create cleaned curves
+base_curves_cleaned = []
+for curve_pert in base_curves_perturbed:
+    # Get the curve properties 
+    underlying_curve = curve_pert.curve
+    dofs = underlying_curve.get_dofs()
+    quadpoints = underlying_curve.quadpoints
+    order = underlying_curve.order
+    
+    # Create a new curve with the same parameters (no random generator references)
+    curve_clean = CurveXYZFourier(quadpoints, order)
+    curve_clean.set_dofs(dofs)
+    
+    base_curves_cleaned.append(curve_clean)
+
+# Create cleaned coils and BiotSavart object
+coils_cleaned = coils_via_symmetries(base_curves_cleaned, currents_TF, s.nfp, True, regularizations=regularizations)
+bs_cleaned = BiotSavart(coils_cleaned)
+
+# Now save the cleaned BiotSavart object
+bs_cleaned.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_w7x.json")
 
