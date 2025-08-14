@@ -37,10 +37,10 @@ if in_github_actions:
     MAXITER_lag = 8
 else:
     # Define the number of phi and theta points
-    nphi = 32
-    ntheta = 32
+    nphi = 16
+    ntheta = 16
     MAXITER = 8  # 1000 for high-resolution
-    MAXITER_lag = 8  # 40 for high-resolution
+    MAXITER_lag = 2  # 40 for high-resolution
 
 # Optimization parameters
 ncoils_choice = 4
@@ -54,8 +54,8 @@ MSC_THRESHOLD = 1.5
 
 
 # Parameters for Gaussian Perturbation
-SIGMA = 1e-3  # Standard deviation σ for coil errors
-L = 0.5  # Length scale L for coil errors
+SIGMA = 1e-1  # Standard deviation σ for coil errors
+L = 0.1  # Length scale L for coil errors
 
 # Directory for output
 OUT_DIR = (f"./output_paper/w7x_ncoils{ncoils_choice}_curvature{CURVATURE_THRESHOLD}_" + \
@@ -158,6 +158,7 @@ coils_perturbed = coils_via_symmetries(base_curves_perturbed, currents_TF, s.nfp
 # Use perturbed coils
 curves_pert = [c.curve for c in coils_perturbed]
 coils_pert = coils_perturbed
+print(len(coils_perturbed))
 bs_pert = BiotSavart(coils_perturbed)
 
 # Deterministic flux objective using perturbed coils
@@ -249,28 +250,6 @@ print("-------------------------------------------------------------------------
 print(f"<B_N>/<|B|> = {avg_BdotN_over_B:.2e}, Max BdotN/|B| = {max_BdotN_overB:.2e}")
 print('Total time = ', t2 - t1)
 
-
-
-# Was having issues saving JSON file with BiotSavart, so created completely new curves from the perturbed ones to avoid any random generator references 
-# Extract the optimized parameters from perturbed curves and create cleaned curves
-base_curves_cleaned = []
-for curve_pert in base_curves_perturbed:
-    # Get the curve properties 
-    underlying_curve = curve_pert.curve
-    dofs = underlying_curve.get_dofs()
-    quadpoints = underlying_curve.quadpoints
-    order = underlying_curve.order
-    
-    # Create a new curve with the same parameters (no random generator references)
-    curve_clean = CurveXYZFourier(quadpoints, order)
-    curve_clean.set_dofs(dofs)
-    
-    base_curves_cleaned.append(curve_clean)
-
-# Create cleaned coils and BiotSavart object
-coils_cleaned = coils_via_symmetries(base_curves_cleaned, currents_TF, s.nfp, True, regularizations=regularizations)
-bs_cleaned = BiotSavart(coils_cleaned)
-
-# Now save the cleaned BiotSavart object
-bs_cleaned.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_w7x.json")
-
+# Save the optimized BiotSavart object directly (CurvePerturbed objects are now serializable)
+bs_pert.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_w7x.json")
+print(OUT_DIR)
