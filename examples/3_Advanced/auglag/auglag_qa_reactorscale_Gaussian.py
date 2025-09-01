@@ -103,20 +103,22 @@ FORCE_THRESHOLD = 1.1e2  # Stay within ~ 0.57 MN/m assuming 200 turns of coil
 
 # Parameters for Gaussian Perturbation
 R0 = s.get_rc(0, 0)
-SIGMA = 0.1*R0  # Standard deviation σ for coil errors
-L = 0.1*R0  # Length scale L for coil errors
+SIGMA = 0.01  # Standard deviation σ for coil errors
+L = 0.5  # Length scale L for coil errors
 
 # Define the number of coils, rotation order, and non-planar base curves
 ncoils = 3
 a = 0.15  # radius of the coil
 
-# Loop over different orders from 1 to 10
-for order in range(3, 4):
-    
-    # Loop over 10 different runs for each order
-    for run in range(2):
+results_raw=[[0 for i in range(4)] for j in range(12)]
+results_pruned=[[] for _ in range(12)] 
+
+# Loop over different orders
+for order in range(1, 13):
+    # Loop over different runs for each order
+    for run in range(4):
         print(f"\n{'-'*60}")
-        print(f"ORDER {order}, RUN {run+1}/10")
+        print(f"ORDER {order}, RUN {run+1}")
         print(f"{'-'*60}")
         
         # Define the output directory for this specific order and run
@@ -289,7 +291,15 @@ for order in range(3, 4):
         print("Output directory:", OUT_DIR)
 
         # Save the optimized BiotSavart object directly (CurvePerturbed objects are now serializable)
-        bs_pert.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_qa_reactorscale.json")
+        #bs_pert.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_qa_reactorscale.json")
         
-        
+        # filter out if the average BN/B error is greater than or equal to 0.1 (e-01)
+        if (avg_BdotN_over_B<0.1):
+            results_pruned[order-1].append(f"{avg_BdotN_over_B:.2e}")
+        results_raw[order - 1][run] = f"{avg_BdotN_over_B:.2e}"
+
+print("Raw data:")
+print(results_raw)
+print("Pruned data:")
+print(results_pruned)
     

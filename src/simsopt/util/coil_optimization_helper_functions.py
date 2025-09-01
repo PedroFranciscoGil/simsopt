@@ -1217,7 +1217,7 @@ def initialize_coils_simple(s, out_dir='', target_B=5.7, ncoils=4, order=16, ntu
     
     # Get the major radius from the surface and scale coil parameters
     R0 = s.get_rc(0, 0)  # Major radius
-    R1 = s.get_rc(1, 0) * 3  # Scale the minor radius component
+    R1 = s.get_rc(1, 0) * 3.5  # Scale the minor radius component
     
     # Initial guess for total current (using QH configuration as reference)
     total_current = 5e7  # 50 MA initial guess is not bad for reactor-scale
