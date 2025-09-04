@@ -114,7 +114,7 @@ results_raw=[[0 for i in range(4)] for j in range(12)]
 results_pruned=[[] for _ in range(12)] 
 
 # Loop over different orders
-for order in range(1, 13):
+for order in range(2, 31, 2):
     # Loop over different runs for each order
     for run in range(4):
         print(f"\n{'-'*60}")
@@ -128,7 +128,7 @@ for order in range(1, 13):
         os.makedirs(OUT_DIR, exist_ok=True)
 
         # Create initial coils using initialize_coils_simple (same as original QA file)
-        coils = initialize_coils_simple(s, ncoils=ncoils, regularization=regularization_circ(a))
+        coils = initialize_coils_simple(s, ncoils=ncoils, order=order, regularization=regularization_circ(a))
         base_coils = coils[:ncoils]
         curves = [c.curve for c in coils]
         base_curves = curves[:ncoils]
@@ -295,8 +295,8 @@ for order in range(1, 13):
         
         # filter out if the average BN/B error is greater than or equal to 0.1 (e-01)
         if (avg_BdotN_over_B<0.1):
-            results_pruned[order-1].append(f"{avg_BdotN_over_B:.2e}")
-        results_raw[order - 1][run] = f"{avg_BdotN_over_B:.2e}"
+            results_pruned[(order - 14) // 2].append(f"{avg_BdotN_over_B:.2e}")
+        results_raw[(order - 14) // 2][run] = f"{avg_BdotN_over_B:.2e}"
 
 print("Raw data:")
 print(results_raw)
