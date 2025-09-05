@@ -17,7 +17,9 @@ export OMP_NUM_THREADS=1  # number of threads for OpenMP
 export MKL_NUM_THREADS=1  # number of threads for Intel MKL
 
 
-# conda activate AJT
+# Activate conda environment
+source ~/.conda/etc/profile.d/conda.sh
+conda activate AJT
 
 # Run the Python script with order parameter from SLURM array index
 # $SLURM_ARRAY_TASK_ID will be 1-30, which we pass as the order parameter
