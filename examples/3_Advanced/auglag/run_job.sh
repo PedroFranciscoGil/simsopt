@@ -18,7 +18,7 @@ export MKL_NUM_THREADS=1  # number of threads for Intel MKL
 
 
 # Activate conda environment
-module load conda
+source ~/.bashrc
 conda activate AJT
 
 # Add simsopt_gil to Python path

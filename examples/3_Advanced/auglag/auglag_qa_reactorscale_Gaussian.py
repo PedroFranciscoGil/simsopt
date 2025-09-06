@@ -118,8 +118,12 @@ else:
 
 print(f"Running with order = {order}")
 
-# Single order run (no nested loop)
-# Loop over different runs for this order
+
+
+results_raw=[[0 for i in range(4)] for j in range(12)]
+results_pruned=[[] for _ in range(12)] 
+
+# Loop over different runs for each order
 for run in range(4):
     print(f"\n{'-'*60}")
     print(f"ORDER {order}, RUN {run+1}")
@@ -127,8 +131,8 @@ for run in range(4):
     
     # Define the output directory for this specific order and run
     OUT_DIR = (f"./output_paper/qa_ncoils{ncoils}_order{order}_run{run+1}_curvature{CURVATURE_THRESHOLD}_msc{MSC_THRESHOLD}_" + \
-           f"force{FORCE_THRESHOLD}_flux{FLUX_THRESHOLD}_length{LENGTH_TARGET}_" + \
-           f"cc{CC_THRESHOLD}_cs{CS_THRESHOLD}_gaussian_initial_auglag/")
+                f"force{FORCE_THRESHOLD}_flux{FLUX_THRESHOLD}_length{LENGTH_TARGET}_" + \
+                f"cc{CC_THRESHOLD}_cs{CS_THRESHOLD}_gaussian_initial_auglag/")
     os.makedirs(OUT_DIR, exist_ok=True)
 
     # Create initial coils using initialize_coils_simple (same as original QA file)
@@ -148,8 +152,8 @@ for run in range(4):
     coils_to_vtk(coils, OUT_DIR + "coils_init_qa_reactorscale")
     bs.set_points(s_plot.gamma().reshape((-1, 3))) 
     pointData = {"B_N/|B|": np.sum(bs.B().reshape((qphi, qtheta, 3)) *
-                       s_plot.unitnormal(), axis=2)[:, :, None] / bs.AbsB().reshape((qphi, qtheta, 1)),
-             "modB": bs.AbsB().reshape((qphi, qtheta, 1))}
+                                    s_plot.unitnormal(), axis=2)[:, :, None] / bs.AbsB().reshape((qphi, qtheta, 1)),
+                    "modB": bs.AbsB().reshape((qphi, qtheta, 1))}
     s_plot.to_vtk(OUT_DIR + "surf_init_qa_reactorscale", extra_data=pointData)
 
     # Set up stochastic optimization with different seed for each run
@@ -211,14 +215,14 @@ for run in range(4):
 
     # Constraint list using perturbed coils
     c_list = [ Jf,
-        Jccdist, 
-        Jcsdist, 
-        #    Jl,            # Length constraint commented out 
-        sum(QuadraticPenalty(J, MSC_THRESHOLD, "max") for J in Jmscs),
-        QuadraticPenalty(sum(Jls), LENGTH_TARGET, "max"), 
-        sum(Jcs), 
-        Jlink,
-        Jforce
+            Jccdist, 
+            Jcsdist, 
+            #    Jl,                    # Length constraint commented out 
+            sum(QuadraticPenalty(J, MSC_THRESHOLD, "max") for J in Jmscs),
+            QuadraticPenalty(sum(Jls), LENGTH_TARGET, "max"), 
+            sum(Jcs), 
+            Jlink,
+            Jforce
     ]
 
     start_time = time.time()
@@ -271,18 +275,18 @@ for run in range(4):
     # Evaluate optimized coils (perturbed coils)
     bs_pert.set_points(s_plot.gamma().reshape((-1, 3)))
     pointData = {"B_N": np.sum(bs_pert.B().reshape((qphi, qtheta, 3)) *
-                s_plot.unitnormal(), axis=2)[:, :, None],
-        "B_N/|B|": np.sum(bs_pert.B().reshape((qphi, qtheta, 3)) *
-                s_plot.unitnormal(), axis=2)[:, :, None] /
-        bs_pert.AbsB().reshape((qphi, qtheta, 1)),
-        "modB": bs_pert.AbsB().reshape((qphi, qtheta, 1))}
+                            s_plot.unitnormal(), axis=2)[:, :, None],
+            "B_N/|B|": np.sum(bs_pert.B().reshape((qphi, qtheta, 3)) *
+                            s_plot.unitnormal(), axis=2)[:, :, None] /
+            bs_pert.AbsB().reshape((qphi, qtheta, 1)),
+            "modB": bs_pert.AbsB().reshape((qphi, qtheta, 1))}
     s_plot.to_vtk(OUT_DIR + "surf_optimized_gaussian_auglag_qa_reactorscale", extra_data=pointData)
 
     # Final calculations and output (perturbed coils)
     t2 = time.time()
     max_BdotN_overB = np.max(safe_divide(np.sum(bs_pert.B().reshape((qphi, qtheta, 3)) *
-                s_plot.unitnormal(), axis=2)[:, :, None],
-        bs_pert.AbsB().reshape((qphi, qtheta, 1))))
+                            s_plot.unitnormal(), axis=2)[:, :, None],
+            bs_pert.AbsB().reshape((qphi, qtheta, 1))))
     bs_pert.set_points(s.gamma().reshape((-1, 3)))
     BdotN = np.mean(np.abs(np.sum(bs_pert.B().reshape((nphi, ntheta, 3)) * s.unitnormal(), axis=2)))
     avg_BdotN_over_B = BdotN / bs_pert.AbsB().mean()
@@ -297,13 +301,13 @@ for run in range(4):
     # Save the optimized BiotSavart object directly (CurvePerturbed objects are now serializable)
     #bs_pert.save(OUT_DIR + "biot_savart_optimized_gaussian_auglag_qa_reactorscale.json")
     
-    # Log results for this run
-    print(f"ORDER {order}, RUN {run+1} COMPLETED:")
-    print(f"  Final avg BN/B error: {avg_BdotN_over_B:.2e}")
-    if avg_BdotN_over_B < 0.1:
-        print("  Result accepted (< 0.1)")
-    else:
-        print("  Result rejected (>= 0.1)")
+    # filter out if the average BN/B error is greater than or equal to 0.1 (e-01)
+    if (avg_BdotN_over_B<0.1):
+        results_pruned[(order - 14) // 2].append(f"{avg_BdotN_over_B:.2e}")
+    results_raw[(order - 14) // 2][run] = f"{avg_BdotN_over_B:.2e}"
 
-print(f"All runs completed for order {order}")
+print("Raw data:")
+print(results_raw)
+print("Pruned data:")
+print(results_pruned)
     
