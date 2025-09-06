@@ -129,10 +129,10 @@ for run in range(4):
     print(f"ORDER {order}, RUN {run+1}")
     print(f"{'-'*60}")
     
-    # Define the output directory for this specific order and run
-    OUT_DIR = (f"./output_paper/qa_ncoils{ncoils}_order{order}_run{run+1}_curvature{CURVATURE_THRESHOLD}_msc{MSC_THRESHOLD}_" + \
-                f"force{FORCE_THRESHOLD}_flux{FLUX_THRESHOLD}_length{LENGTH_TARGET}_" + \
-                f"cc{CC_THRESHOLD}_cs{CS_THRESHOLD}_gaussian_initial_auglag/")
+    # Define the output directory for this specific order and run (use scratch space)
+    OUT_DIR = (f"/scratch/projects/kaptanoglulab/JS/simsopt_gil/examples/3_Advanced/auglag/output_paper/qa_ncoils{ncoils}_order{order}_run{run+1}_curvature{CURVATURE_THRESHOLD}_msc{MSC_THRESHOLD}_" + 
+               f"force{FORCE_THRESHOLD}_flux{FLUX_THRESHOLD}_length{LENGTH_TARGET}_" + 
+               f"cc{CC_THRESHOLD}_cs{CS_THRESHOLD}_gaussian_initial_auglag/")
     os.makedirs(OUT_DIR, exist_ok=True)
 
     # Create initial coils using initialize_coils_simple (same as original QA file)
