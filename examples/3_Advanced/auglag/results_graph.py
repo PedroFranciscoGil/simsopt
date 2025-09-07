@@ -1,6 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Set font to Times New Roman
+plt.rcParams['font.family'] = 'Times New Roman'
+plt.rcParams['font.size'] = 12
+
 orders = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
 
 qa_data=[[4.98e-03, 1.33e-03, 1.15e-03, 2.62e-03],
@@ -20,7 +24,7 @@ qa_data=[[4.98e-03, 1.33e-03, 1.15e-03, 2.62e-03],
 qa_means = np.mean(qa_data, axis=1)
 qa_stds = np.std(qa_data, axis=1)
 
-plt.figure(figsize=(12, 8))
+plt.figure(figsize=(10, 6))
 
 colors = {
     'QA': '#1f77b4'
@@ -32,8 +36,8 @@ plt.errorbar(orders, qa_means, yerr=qa_stds,
             linewidth=2, linestyle='-')
 
 plt.xlabel('Order', fontsize=14, fontweight='bold')
-plt.ylabel('|B⋅N|/|B|', fontsize=14, fontweight='bold')
-plt.title('|B⋅N|/|B| vs Order (Semilog Plot)', fontsize=16, fontweight='bold')
+plt.ylabel('|B·n|/|B| (log scale)', fontsize=14, fontweight='bold')
+plt.title('Normal Field Error vs. Order', fontsize=16, fontweight='bold')
 plt.yscale('log')
 plt.grid(True, alpha=0.3, linestyle='--', which='both')
 plt.legend(loc='upper right', fontsize=12, frameon=True, 
@@ -42,3 +46,4 @@ plt.xticks(orders)
 plt.tight_layout()
 plt.show()
 plt.savefig('stellarator_semilog_bdotn_analysis.png', dpi=300, bbox_inches='tight')
+
