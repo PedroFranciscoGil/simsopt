@@ -120,8 +120,8 @@ print(f"Running with order = {order}")
 
 
 
-results_raw=[[0 for i in range(4)] for j in range(12)]
-results_pruned=[[] for _ in range(12)] 
+results_raw=[[0 for i in range(4)] for j in range(30)]  
+results_pruned=[[] for _ in range(30)] 
 
 # Loop over different runs for each order
 for run in range(4):
@@ -303,8 +303,8 @@ for run in range(4):
     
     # filter out if the average BN/B error is greater than or equal to 0.1 (e-01)
     if (avg_BdotN_over_B<0.1):
-        results_pruned[(order - 14) // 2].append(f"{avg_BdotN_over_B:.2e}")
-    results_raw[(order - 14) // 2][run] = f"{avg_BdotN_over_B:.2e}"
+        results_pruned[order - 1].append(f"{avg_BdotN_over_B:.2e}")  # Previous indices were returning negative indices
+    results_raw[order - 1][run] = f"{avg_BdotN_over_B:.2e}" 
 
 print("Raw data:")
 print(results_raw)
