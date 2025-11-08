@@ -11,7 +11,7 @@ import simsoptpp as sopp
 
 __all__ = ['CurveLength', 'LpCurveCurvature', 'LpCurveTorsion',
            'CurveCurveDistance', 'CurveSurfaceDistance', 'ArclengthVariation',
-           'MeanSquaredCurvature', 'LinkingNumber']
+           'MeanSquaredCurvature', 'LinkingNumber', 'LinkingNumberJax']
 
 
 @jit
@@ -517,6 +517,127 @@ class LinkingNumber(Optimizable):
             [c.gammadash() for c in self.curves],
             self.dphis,
             self.downsample,
+        )
+
+    @derivative_dec
+    def dJ(self):
+        return Derivative({})
+
+def linking_number_pure(gammas, gammadashs, dphis, downsample):
+    """
+    Compute the Gauss linking number of a set of curves using JAX arrays.
+    
+    Implements the formula:
+    Link(c_1, c_2) = (1/(4π)) |∮∮ (r_1 - r_2)/|r_1 - r_2|^3 · (dr_1 × dr_2) |
+    """
+    def compute_pair_integral(gamma1, gammadash1, gamma2, gammadash2, dphi1, dphi2):
+        """
+        Compute the linking number contribution for a pair of curves.
+        
+        Args:
+            gamma1: (N1, 3) array of points on curve 1
+            gammadash1: (N1, 3) array of derivatives on curve 1
+            gamma2: (N2, 3) array of points on curve 2
+            gammadash2: (N2, 3) array of derivatives on curve 2
+            dphi1: scalar differential element for curve 1
+            dphi2: scalar differential element for curve 2
+        
+        Returns:
+            Linking number contribution for this pair
+        """
+        # Downsample
+        indices1 = jnp.arange(0, gamma1.shape[0], downsample)
+        indices2 = jnp.arange(0, gamma2.shape[0], downsample)
+        gamma1_down = gamma1[indices1]  # (N1_down, 3)
+        gammadash1_down = gammadash1[indices1]  # (N1_down, 3)
+        gamma2_down = gamma2[indices2]  # (N2_down, 3)
+        gammadash2_down = gammadash2[indices2]  # (N2_down, 3)
+        
+        # Expand dimensions for broadcasting: (N1_down, 1, 3) and (1, N2_down, 3)
+        r1 = gamma1_down[:, None, :]  # (N1_down, 1, 3)
+        dr1 = gammadash1_down[:, None, :]  # (N1_down, 1, 3)
+        r2 = gamma2_down[None, :, :]  # (1, N2_down, 3)
+        dr2 = gammadash2_down[None, :, :]  # (1, N2_down, 3)
+        
+        # Compute difference vector for all pairs: (N1_down, N2_down, 3)
+        diff = r1 - r2
+        
+        # Compute distance for all pairs: (N1_down, N2_down)
+        dr = jnp.linalg.norm(diff, axis=2)
+        
+        # Compute cross product for all pairs: (N1_down, N2_down, 3)
+        cross = jnp.cross(dr1, dr2)
+        
+        # Compute integrand for all pairs: (N1_down, N2_down)
+        # (dr_1 × dr_2) · (r_1 - r_2) / |r_1 - r_2|^3
+        integrand = jnp.sum(cross * diff, axis=2) / (dr ** 3)
+        
+        # Sum over all pairs
+        total = jnp.sum(integrand)
+        
+        # Compute linking number contribution
+        link_contribution = jnp.abs(total * dphi1 * dphi2) / (4 * jnp.pi)
+        return jnp.round(link_contribution)
+    
+    ncurves = len(gammas)
+    linking_number = jnp.array(0.0)
+    
+    # Compute linking number for all pairs
+    # Note: We keep Python loops here because gammas is a Python list,
+    # but the inner computation is fully vectorized using broadcasting
+    for p in range(1, ncurves):
+        for q in range(p):
+            contribution = compute_pair_integral(
+                gammas[p], gammadashs[p],
+                gammas[q], gammadashs[q],
+                dphis[p], dphis[q]
+            )
+            linking_number = linking_number + contribution
+    
+    return linking_number
+
+class LinkingNumberJax(Optimizable):
+
+    def __init__(self, curves, downsample=1):
+        Optimizable.__init__(self, depends_on=curves)
+        self.curves = curves
+        for curve in curves:
+            assert np.mod(len(curve.quadpoints), downsample) == 0, f"Downsample {downsample} does not divide the number of quadpoints {len(curve.quadpoints)}."
+
+        self.downsample = downsample
+        self.dphis = jnp.array([(c.quadpoints[1] - c.quadpoints[0]) * downsample for c in self.curves])
+
+        self.J_jax = jit(lambda gammas, gammadashs: linking_number_pure(gammas, gammadashs, self.dphis, self.downsample))
+        self.dJ_dgammas = jit(lambda gammas, gammadashs: grad(self.J_jax, argnums=0)(gammas, gammadashs))
+        self.dJ_dgammadashs = jit(lambda gammas, gammadashs: grad(self.J_jax, argnums=1)(gammas, gammadashs))
+
+        r"""
+        Compute the Gauss linking number of a set of curves, i.e. whether the curves
+        are interlocked or not.
+
+        The value is an integer, >= 1 if the curves are interlocked, 0 if not. For each pair
+        of curves, the contribution to the linking number is
+        
+        .. math::
+            Link(c_1, c_2) = \frac{1}{4\pi} \left| \oint_{c_1}\oint_{c_2}\frac{\textbf{r}_1 - \textbf{r}_2}{|\textbf{r}_1 - \textbf{r}_2|^3} (d\textbf{r}_1 \times d\textbf{r}_2) \right|
+            
+        where :math:`c_1` is the first curve, :math:`c_2` is the second curve,
+        :math:`\textbf{r}_1` is the position vector along the first curve, and
+        :math:`\textbf{r}_2` is the position vector along the second curve.
+
+        Args:
+            curves: the set of curves for which the linking number should be computed.
+            downsample: integer factor by which to downsample the quadrature
+                points when computing the linking number. Setting this parameter to
+                a value larger than 1 will speed up the calculation, which may
+                be useful if the set of coils is large, though it may introduce
+                inaccuracy if ``downsample`` is set too large.
+        """
+
+    def J(self):
+        return self.J_jax(
+            [c.gamma() for c in self.curves],
+            [c.gammadash() for c in self.curves]
         )
 
     @derivative_dec

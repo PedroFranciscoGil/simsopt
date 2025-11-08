@@ -8,7 +8,7 @@ from simsopt.field.coil import coils_via_symmetries, Current
 from simsopt.geo.curve import create_equally_spaced_curves
 from simsopt.geo.curveobjectives import CurveLength
 from simsopt.field.biotsavart import BiotSavart
-from simsopt.objectives.fluxobjective import SquaredFlux
+from simsopt.objectives.fluxobjective import SquaredFlux, SquaredFluxJax
 from simsopt._core.json import GSONDecoder, GSONEncoder, SIMSON
 
 
@@ -112,3 +112,43 @@ class FluxObjectiveTests(unittest.TestCase):
                 ALPHA = 1e-5
                 JF_scaled_summed = Jf + ALPHA * sum(Jls)
                 self.check_taylor_test(JF_scaled_summed)
+
+    def test_squared_flux_jax_vs_cpp(self):
+        """Test that SquaredFluxJax gives the same results as SquaredFlux (C++ version)."""
+        surf = SurfaceRZFourier.from_vmec_input(filename)
+        ncoils = 3
+
+        base_curves = create_equally_spaced_curves(
+            ncoils, surf.nfp, stellsym=surf.stellsym, R0=1.0, R1=0.5, order=6
+        )
+        base_currents = [Current(1e5) for i in range(ncoils)]
+        coils = coils_via_symmetries(base_curves, base_currents, surf.nfp, surf.stellsym)
+        bs = BiotSavart(coils)
+
+        for definition in ["quadratic flux", "normalized", "local"]:
+            with self.subTest(definition=definition):
+                # Test with no target
+                objective_cpp = SquaredFlux(surf, bs, definition=definition)
+                objective_jax = SquaredFluxJax(surf, bs, definition=definition)
+                result_cpp = objective_cpp.J()
+                result_jax = objective_jax.J()
+                print(f"{definition} (no target): C++={result_cpp}, JAX={result_jax}")
+                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-10)
+
+                # Test with zero target
+                target_zero = np.zeros(surf.gamma().shape[0:2])
+                objective_cpp = SquaredFlux(surf, bs, target=target_zero, definition=definition)
+                objective_jax = SquaredFluxJax(surf, bs, target=target_zero, definition=definition)
+                result_cpp = objective_cpp.J()
+                result_jax = objective_jax.J()
+                print(f"{definition} (zero target): C++={result_cpp}, JAX={result_jax}")
+                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-10)
+
+                # Test with non-zero target
+                target_ones = np.ones(surf.gamma().shape[0:2])
+                objective_cpp = SquaredFlux(surf, bs, target=target_ones, definition=definition)
+                objective_jax = SquaredFluxJax(surf, bs, target=target_ones, definition=definition)
+                result_cpp = objective_cpp.J()
+                result_jax = objective_jax.J()
+                print(f"{definition} (ones target): C++={result_cpp}, JAX={result_jax}")
+                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-10)

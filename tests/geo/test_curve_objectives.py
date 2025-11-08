@@ -9,7 +9,7 @@ from simsopt.geo.curvexyzfourier import CurveXYZFourier, JaxCurveXYZFourier
 from simsopt.geo.curverzfourier import CurveRZFourier
 from simsopt.geo.curveobjectives import CurveLength, LpCurveCurvature, \
     LpCurveTorsion, CurveCurveDistance, ArclengthVariation, \
-    MeanSquaredCurvature, CurveSurfaceDistance, LinkingNumber
+    MeanSquaredCurvature, CurveSurfaceDistance, LinkingNumber, LinkingNumberJax
 from simsopt.geo.surfacerzfourier import SurfaceRZFourier
 from simsopt.field.coil import coils_via_symmetries
 from simsopt.configs.zoo import get_ncsx_data
@@ -385,6 +385,52 @@ class Testing(unittest.TestCase):
             np.testing.assert_allclose(objective1.J(), 0, atol=1e-14, rtol=1e-14)
             np.testing.assert_allclose(objective2.J(), 1, atol=1e-14, rtol=1e-14)
             np.testing.assert_allclose(objective3.J(), 1, atol=1e-14, rtol=1e-14)
+
+    def test_linking_number_jax_vs_cpp(self):
+        """Test that LinkingNumberJax gives the same results as LinkingNumber (C++ version)."""
+        for downsample in [1, 2, 5]:
+            curves1 = create_equally_spaced_curves(2, 1, stellsym=True, R0=1, R1=0.5, order=5, numquadpoints=120)
+            curve1 = CurveXYZFourier(200, 3)
+            coeffs = curve1.dofs_matrix
+            coeffs[1][0] = 1.
+            coeffs[1][1] = 0.5
+            coeffs[2][2] = 0.5
+            curve1.set_dofs(np.concatenate(coeffs))
+
+            curve2 = CurveXYZFourier(150, 3)
+            coeffs = curve2.dofs_matrix
+            coeffs[1][0] = 0.5
+            coeffs[1][1] = 0.5
+            coeffs[0][0] = 0.1
+            coeffs[0][1] = 0.5
+            coeffs[0][2] = 0.5
+            curve2.set_dofs(np.concatenate(coeffs))
+            curves2 = [curve1, curve2]
+            curves3 = [curve2, curve1]
+            
+            # Test with curves1
+            objective_cpp1 = LinkingNumber(curves1, downsample)
+            objective_jax1 = LinkingNumberJax(curves1, downsample)
+            result_cpp1 = objective_cpp1.J()
+            result_jax1 = objective_jax1.J()
+            print(f"curves1 (downsample={downsample}): C++={result_cpp1}, JAX={result_jax1}")
+            np.testing.assert_allclose(result_jax1, result_cpp1, atol=1e-10, rtol=1e-10)
+            
+            # Test with curves2
+            objective_cpp2 = LinkingNumber(curves2, downsample)
+            objective_jax2 = LinkingNumberJax(curves2, downsample)
+            result_cpp2 = objective_cpp2.J()
+            result_jax2 = objective_jax2.J()
+            print(f"curves2 (downsample={downsample}): C++={result_cpp2}, JAX={result_jax2}")
+            np.testing.assert_allclose(result_jax2, result_cpp2, atol=1e-10, rtol=1e-10)
+            
+            # Test with curves3
+            objective_cpp3 = LinkingNumber(curves3, downsample)
+            objective_jax3 = LinkingNumberJax(curves3, downsample)
+            result_cpp3 = objective_cpp3.J()
+            result_jax3 = objective_jax3.J()
+            print(f"curves3 (downsample={downsample}): C++={result_cpp3}, JAX={result_jax3}")
+            np.testing.assert_allclose(result_jax3, result_cpp3, atol=1e-10, rtol=1e-10)
 
 
 if __name__ == "__main__":
