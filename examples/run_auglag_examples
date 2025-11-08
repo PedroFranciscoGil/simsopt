@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# This script runs non-MPI examples. This script is used by the Github
+# Actions continuous integration.
+set -ex
+
+./3_Advanced/auglag/auglag_qa.py
+./3_Advanced/auglag/auglag_qh_reactorscale.py
+./3_Advanced/auglag/auglag_hsx.py
+./3_Advanced/auglag/auglag_w7x.py
+./3_Advanced/auglag/auglag_qa_scan_call.py --cs_threshold 0.2 --length_target 30 --out_dir .
+./3_Advanced/auglag/auglag_qa_scan_call.py --cs_threshold 0.1 --length_target 25

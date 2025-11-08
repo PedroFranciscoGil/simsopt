@@ -51,7 +51,7 @@ class SquaredFlux(Optimizable):
           available options are ``"quadratic flux"``, ``"normalized"``, and ``"local"``.
     """
 
-    def __init__(self, surface, field, target=None, definition="quadratic flux"):
+    def __init__(self, surface, field, target=None, definition="quadratic flux", threshold=0.0):
         self.surface = surface
         if target is not None:
             self.target = np.ascontiguousarray(target)
@@ -63,12 +63,17 @@ class SquaredFlux(Optimizable):
         if definition not in ["quadratic flux", "normalized", "local"]:
             raise ValueError("Unrecognized option for 'definition'.")
         self.definition = definition
+        self.threshold = threshold
         Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field])
 
     def J(self):
         n = self.surface.normal()
         Bcoil = self.field.B().reshape(n.shape)
-        return sopp.integral_BdotN(Bcoil, self.target, n, self.definition)
+        sq_flux = sopp.integral_BdotN(Bcoil, self.target, n, self.definition)
+        if sq_flux < self.threshold:
+            return 0.0
+        else:
+            return sq_flux
 
     @derivative_dec
     def dJ(self):
@@ -106,8 +111,10 @@ class SquaredFlux(Optimizable):
             raise ValueError("Should never get here")
 
         dJdB = dJdB.reshape((-1, 3))
-        return self.field.B_vjp(dJdB)
-
+        if np.isclose(self.J(), 0.0, atol=1e-10, rtol=1e-10):
+            return self.field.B_vjp(np.zeros_like(dJdB))
+        else:
+            return self.field.B_vjp(dJdB)   
 
 def squared_flux_pure(Bcoil, target, normals, definition):
     r"""Pure function for computing squared flux objective using JAX arrays.
@@ -199,7 +206,7 @@ class SquaredFluxJax(Optimizable):
           available options are ``"quadratic flux"``, ``"normalized"``, and ``"local"``.
     """
 
-    def __init__(self, surface, field, target=None, definition="quadratic flux"):
+    def __init__(self, surface, field, target=None, definition="quadratic flux", threshold=0.0):
         self.surface = surface
         if target is not None:
             self.target = np.ascontiguousarray(target)
@@ -211,6 +218,7 @@ class SquaredFluxJax(Optimizable):
         if definition not in ["quadratic flux", "normalized", "local"]:
             raise ValueError("Unrecognized option for 'definition'.")
         self.definition = definition
+        self.threshold = threshold
         Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field])
         # Use JAX's jit directly with static_argnums to mark definition as static (not traced)
         # This allows string arguments to be passed without JAX trying to trace them
@@ -227,7 +235,12 @@ class SquaredFluxJax(Optimizable):
         xyz = self.surface.gamma()
         self.field.set_points(xyz.reshape((-1, 3)))
         Bcoil = self.field.B().reshape(n.shape)
-        return self.J_jax(jnp.asarray(Bcoil), jnp.asarray(self.target), jnp.asarray(n), self.definition)
+        sq_flux = self.J_jax(jnp.asarray(Bcoil), jnp.asarray(self.target), jnp.asarray(n), self.definition)
+        sq_flux_val = float(sq_flux)  # Convert JAX array to Python float
+        if sq_flux_val < self.threshold:
+            return 0.0
+        else:
+            return sq_flux_val
 
     @derivative_dec
     def dJ(self):
@@ -236,6 +249,12 @@ class SquaredFluxJax(Optimizable):
         self.field.set_points(xyz.reshape((-1, 3)))
         n = self.surface.normal()
         Bcoil = self.field.B().reshape(n.shape)
-        return self.field.B_vjp(self.dJ_dBcoil(jnp.asarray(Bcoil), jnp.asarray(self.target), jnp.asarray(n))) #\
+        dJdB = self.dJ_dBcoil(jnp.asarray(Bcoil), jnp.asarray(self.target), jnp.asarray(n))
+        # Reshape dJdB from (nphi, ntheta, 3) to (nphi * ntheta, 3) for B_vjp
+        dJdB_flat = dJdB.reshape((-1, 3))
+        if np.isclose(self.J(), 0.0, atol=1e-10, rtol=1e-10):
+            return self.field.B_vjp(jnp.zeros_like(dJdB_flat))
+        else:
+            return self.field.B_vjp(dJdB_flat) #\
             # + Derivative({self.surface.x: self.dtarget_dcoefs(self.dJ_dtarget(Bcoil, self.target, n))}) \
             # + Derivative({self.surface.x: self.dnormals_dcoefs(self.dJ_dnormals(Bcoil, self.target, n))})

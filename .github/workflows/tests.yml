@@ -14,6 +14,7 @@ on:
     tags-ignore: [v*]
   pull_request:
     branches-ignore: [master]
+    types: [opened, synchronize, reopened] 
 
 jobs:
   test:
@@ -93,7 +94,7 @@ jobs:
     - name: Install python dependencies
       run: |
         sudo apt-get install graphviz graphviz-dev
-        pip install numpy cmake scikit-build f90nml ninja wheel setuptools sympy qsc pyevtk matplotlib plotly networkx pygraphviz mpi4py py_spec h5py ground bentley_ottmann f90wrap
+        pip install numpy cmake scikit-build f90nml ninja wheel setuptools sympy qsc pyevtk matplotlib plotly networkx pygraphviz mpi4py py_spec h5py ground bentley_ottmann f90wrap pandas
 
     - name: Install pyoculus
       run: pip install -v git+https://github.com/zhisong/pyoculus
@@ -185,6 +186,7 @@ jobs:
     - name: Run tests on 1 process using coverage
       if: contains(matrix.test-type, 'unit')
       run: | 
+        coverage run --source=simsopt -m unittest discover -t tests -v -s tests/configs
         coverage run --source=simsopt -m unittest discover -t tests -v -s tests/core
         coverage run --source=simsopt -m unittest discover -t tests -v -s tests/field
         coverage run --source=simsopt -m unittest discover -t tests -v -s tests/geo
