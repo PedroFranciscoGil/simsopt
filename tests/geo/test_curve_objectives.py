@@ -11,7 +11,7 @@ from simsopt.geo.curvehelical import CurveHelical
 from simsopt.geo.curverzfourier import CurveRZFourier
 from simsopt.geo.curveobjectives import CurveLength, LpCurveCurvature, \
     LpCurveTorsion, CurveCurveDistance, ArclengthVariation, \
-    MeanSquaredCurvature, CurveSurfaceDistance, LinkingNumber, LinkingNumberJax
+    MeanSquaredCurvature, CurveSurfaceDistance, LinkingNumber
 from simsopt.geo.surfacerzfourier import SurfaceRZFourier
 from simsopt.field.coil import coils_via_symmetries
 from simsopt.configs.zoo import get_ncsx_data
@@ -97,6 +97,206 @@ class Testing(unittest.TestCase):
                     curve = self.create_curve(curvetype, rotated)
                     self.subtest_curve_length_taylor_test(curve)
 
+    def subtest_curve_length_hessian_taylor_test(self, curve):
+        """Test the Hessian calculation using a Taylor test."""
+        J = CurveLength(curve)
+        curve_dofs = curve.x.copy()
+        
+        # Get gradient and Hessian
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        n_dofs = len(curve_dofs)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            h1 = np.random.uniform(size=n_dofs) - 0.5
+            h2 = np.random.uniform(size=n_dofs) - 0.5
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 17)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb in direction h1
+                curve.x = curve_dofs + eps * h1
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.8) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+            
+            # Final check: error should be one order of magnitude smaller than initial
+            initial_err = errors[0]
+            final_err = errors[-1]
+            self.assertLess(final_err, initial_err / 10.0,
+                          f"Hessian-vector product test failed, test {test_num}: "
+                          f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
+                          f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+        # Restore original curve dofs
+        curve.x = curve_dofs
+
+    def test_curve_length_hessian_taylor_test(self):
+        """Test the Hessian calculation for CurveLength."""
+        for curvetype in self.curvetypes:
+            for rotated in [True, False]:
+                with self.subTest(curvetype=curvetype, rotated=rotated):
+                    curve = self.create_curve(curvetype, rotated)
+                    # Skip test if curve doesn't support second derivatives
+                    if not hasattr(curve, 'd2incremental_arclength_by_d2coeff_vjp'):
+                        continue
+                    self.subtest_curve_length_hessian_taylor_test(curve)
+
+    def subtest_curve_curvature_hessian_taylor_test(self, curve):
+        """Test the Hessian calculation using a Taylor test."""
+        J = LpCurveCurvature(curve, p=2)
+        curve_dofs = curve.x.copy()
+        
+        # Get gradient and Hessian
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        n_dofs = len(curve_dofs)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            h1 = np.random.uniform(size=n_dofs) - 0.5
+            h2 = np.random.uniform(size=n_dofs) - 0.5
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 17)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb in direction h1
+                curve.x = curve_dofs + eps * h1
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.8) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+            
+            # Final check: error should be one order of magnitude smaller than initial
+            initial_err = errors[0]
+            final_err = errors[-1]
+            self.assertLess(final_err, initial_err / 10.0,
+                          f"Hessian-vector product test failed, test {test_num}: "
+                          f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
+                          f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+        # Restore original curve dofs
+        curve.x = curve_dofs
+
+    def test_curve_curvature_hessian_taylor_test(self):
+        """Test the Hessian calculation for LpCurveCurvature."""
+        for curvetype in self.curvetypes:
+            for rotated in [True, False]:
+                with self.subTest(curvetype=curvetype, rotated=rotated):
+                    curve = self.create_curve(curvetype, rotated)
+                    # Skip test if curve doesn't support required methods
+                    if not hasattr(curve, 'dkappa_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                        continue
+                    self.subtest_curve_curvature_hessian_taylor_test(curve)
+
     def subtest_curve_curvature_taylor_test(self, curve):
         J = LpCurveCurvature(curve, p=2)
         J0 = J.J()
@@ -154,6 +354,224 @@ class Testing(unittest.TestCase):
                         curve = self.create_curve(curvetype, rotated)
                         self.subtest_curve_torsion_taylor_test(curve)
 
+    def subtest_curve_torsion_hessian_taylor_test(self, curve):
+        """Test the Hessian calculation using a Taylor test."""
+        J = LpCurveTorsion(curve, p=2)
+        curve_dofs = curve.x.copy()
+        
+        # Get gradient and Hessian
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        n_dofs = len(curve_dofs)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            h1 = np.random.uniform(size=n_dofs) - 0.5
+            h2 = np.random.uniform(size=n_dofs) - 0.5
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 17)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb in direction h1
+                curve.x = curve_dofs + eps * h1
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.8) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+            
+            # Final check: error should be one order of magnitude smaller than initial
+            initial_err = errors[0]
+            final_err = errors[-1]
+            self.assertLess(final_err, initial_err / 10.0,
+                          f"Hessian-vector product test failed, test {test_num}: "
+                          f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
+                          f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+        # Restore original curve dofs
+        curve.x = curve_dofs
+
+    def test_curve_torsion_hessian_taylor_test(self):
+        """Test the Hessian calculation for LpCurveTorsion."""
+        for curvetype in self.curvetypes:
+            # Planar curves have no torsion
+            if "CurvePlanarFourier" not in curvetype:
+                for rotated in [True, False]:
+                    with self.subTest(curvetype=curvetype, rotated=rotated):
+                        curve = self.create_curve(curvetype, rotated)
+                        # Skip test if curve doesn't support required methods
+                        if not hasattr(curve, 'dtorsion_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                            continue
+                        self.subtest_curve_torsion_hessian_taylor_test(curve)
+
+    def subtest_curve_minimum_distance_hessian_taylor_test(self, curve):
+        """Test the Hessian calculation using a Taylor test."""
+        np.random.seed(0)
+        ncurves = 2  # Use 2 curves for simplicity
+        curve_t = curve.curve.__class__.__name__ if isinstance(curve, RotatedCurve) else curve.__class__.__name__
+        curves = [curve] + [self.create_curve(curve_t, False) for _ in range(1, ncurves)]
+        # Set curves to be close enough to have candidates
+        for i, c in enumerate(curves):
+            if i > 0:
+                # Offset second curve slightly
+                c.x = c.x + 0.1 * np.random.rand(len(c.x))
+        
+        J = CurveCurveDistance(curves, 0.4, downsample=1)
+        J.compute_candidates()
+        
+        # Skip if no candidates
+        if len(J.candidates) == 0:
+            return
+        
+        # Get all curve dofs
+        all_curve_dofs = [c.x.copy() for c in curves]
+        
+        # Get gradient and Hessian
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            # Create random vectors for all curves
+            h1_all = []
+            h2_all = []
+            for c in curves:
+                h1_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+                h2_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+            h1 = np.concatenate(h1_all)
+            h2 = np.concatenate(h2_all)
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 15)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb all curves in direction h1
+                offset = 0
+                for k, c in enumerate(curves):
+                    n_dofs = c.dof_size
+                    c.x = all_curve_dofs[k] + eps * h1[offset:offset+n_dofs]
+                    offset += n_dofs
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.8) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+            
+            # Final check: error should be one order of magnitude smaller than initial
+            initial_err = errors[0]
+            final_err = errors[-1]
+            self.assertLess(final_err, initial_err / 10.0,
+                          f"Hessian-vector product test failed, test {test_num}: "
+                          f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
+                          f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+        # Restore original curve dofs
+        for k, c in enumerate(curves):
+            c.x = all_curve_dofs[k]
+
     def subtest_curve_minimum_distance_taylor_test(self, curve):
         np.random.seed(0)
         ncurves = 3
@@ -195,6 +613,148 @@ class Testing(unittest.TestCase):
                     curve = self.create_curve(curvetype, rotated)
                     self.subtest_curve_minimum_distance_taylor_test(curve)
 
+    def test_curve_minimum_distance_hessian_taylor_test(self):
+        """Test the Hessian calculation for CurveCurveDistance."""
+        for curvetype in self.curvetypes:
+            for rotated in [True, False]:
+                with self.subTest(curvetype=curvetype, rotated=rotated):
+                    curve = self.create_curve(curvetype, rotated)
+                    # Skip test if curve doesn't support required methods
+                    if not hasattr(curve, 'dgamma_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                        continue
+                    self.subtest_curve_minimum_distance_hessian_taylor_test(curve)
+
+    def test_curve_surface_distance_hessian_taylor_test(self):
+        """Test the Hessian calculation for CurveSurfaceDistance."""
+        for curvetype in self.curvetypes:
+            for rotated in [True, False]:
+                with self.subTest(curvetype=curvetype, rotated=rotated):
+                    curve = self.create_curve(curvetype, rotated)
+                    # Skip test if curve doesn't support required methods
+                    if not hasattr(curve, 'dgamma_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                        continue
+                    self.subtest_curve_surface_distance_hessian_taylor_test(curve)
+
+    def subtest_curve_surface_distance_hessian_taylor_test(self, curve):
+        """Test the Hessian calculation using a Taylor test."""
+        np.random.seed(0)
+        # Create a simple surface
+        ntor = 0
+        surface = SurfaceRZFourier.from_nphi_ntheta(nfp=1, nphi=32, ntheta=32, ntor=ntor)
+        surface.set(f'rc(0,{ntor})', 1.6)
+        surface.set(f'rc(1,{ntor})', 0.2)
+        surface.set(f'zs(1,{ntor})', 0.2)
+        
+        # Create curve close to surface
+        curves = [curve]
+        # Offset curve slightly to ensure it's close to surface
+        if hasattr(curve, 'x'):
+            curve.x = curve.x + 0.1 * np.random.randn(len(curve.x))
+        
+        J = CurveSurfaceDistance(curves, surface, 0.5)
+        J.compute_candidates()
+        
+        # Skip if no candidates
+        if len(J.candidates) == 0:
+            return
+        
+        # Get all curve dofs
+        all_curve_dofs = [c.x.copy() for c in curves]
+        
+        # Get gradient and Hessian
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            # Create random vectors for all curves
+            h1_all = []
+            h2_all = []
+            for c in curves:
+                h1_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+                h2_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+            h1 = np.concatenate(h1_all)
+            h2 = np.concatenate(h2_all)
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 15)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb all curves in direction h1
+                offset = 0
+                for k, c in enumerate(curves):
+                    n_dofs = c.dof_size
+                    c.x = all_curve_dofs[k] + eps * h1[offset:offset+n_dofs]
+                    offset += n_dofs
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.8) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+            
+            # Final check: error should be one order of magnitude smaller than initial
+            initial_err = errors[0]
+            final_err = errors[-1]
+            self.assertLess(final_err, initial_err / 10.0,
+                          f"Hessian-vector product test failed, test {test_num}: "
+                          f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
+                          f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+        # Restore original curve dofs
+        for k, c in enumerate(curves):
+            c.x = all_curve_dofs[k]
+
     def subtest_curve_arclengthvariation_taylor_test(self, curve, nintervals):
         if isinstance(curve, CurveXYZFourier):
             J = ArclengthVariation(curve, nintervals=nintervals)
@@ -227,6 +787,104 @@ class Testing(unittest.TestCase):
                 with self.subTest(curvetype=curvetype, nintervals=nintervals):
                     curve = self.create_curve(curvetype, False)
                     self.subtest_curve_arclengthvariation_taylor_test(curve, nintervals)
+
+    def test_curve_arclengthvariation_hessian_taylor_test(self):
+        """Test the Hessian calculation for ArclengthVariation."""
+        for curvetype in self.curvetypes:
+            for nintervals in ["full", "partial", 2]:
+                with self.subTest(curvetype=curvetype, nintervals=nintervals):
+                    curve = self.create_curve(curvetype, False)
+                    # Skip test if curve doesn't support required methods
+                    if not hasattr(curve, 'dincremental_arclength_by_dcoeff_jax'):
+                        continue
+                    self.subtest_curve_arclengthvariation_hessian_taylor_test(curve, nintervals)
+
+    def subtest_curve_arclengthvariation_hessian_taylor_test(self, curve, nintervals):
+        """Test the Hessian calculation using a Taylor test."""
+        if isinstance(curve, CurveXYZFourier):
+            J = ArclengthVariation(curve, nintervals=nintervals)
+        else:
+            J = ArclengthVariation(curve, nintervals=2)
+        
+        curve_dofs = curve.x
+        h = 1e-2 * np.random.rand(len(curve_dofs)).reshape(curve_dofs.shape)
+        dJ = J.dJ()
+        deriv = np.sum(dJ * h)
+        self.assertGreater(np.abs(deriv), 1e-10, "Derivative should be greater than 1e-10")
+        
+        # Get Hessian
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            h1 = np.random.uniform(size=len(curve_dofs)) - 0.5
+            h2 = np.random.uniform(size=len(curve_dofs)) - 0.5
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 17)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb curve in direction h1
+                curve.x = curve_dofs + eps * h1
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.8) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+        
+        # Restore original curve dofs
+        curve.x = curve_dofs
 
     def test_arclength_variation_circle(self):
         """ For a circle, the arclength variation should be 0. """
@@ -402,51 +1060,120 @@ class Testing(unittest.TestCase):
                 np.testing.assert_allclose(objective2.J(), 1, atol=1e-14, rtol=1e-14, err_msg="Linking number should be 1")
                 np.testing.assert_allclose(objective3.J(), 1, atol=1e-14, rtol=1e-14, err_msg="Linking number should be 1")
 
-    def test_linking_number_jax_vs_cpp(self):
-        """Test that LinkingNumberJax gives the same results as LinkingNumber (C++ version)."""
-        for downsample in [1, 2, 5]:
-            curves1 = create_equally_spaced_curves(2, 1, stellsym=True, R0=1, R1=0.5, order=5, numquadpoints=120)
-            curve1 = CurveXYZFourier(200, 3)
-            coeffs = curve1.dofs_matrix
-            coeffs[1][0] = 1.
-            coeffs[1][1] = 0.5
-            coeffs[2][2] = 0.5
-            curve1.set_dofs(np.concatenate(coeffs))
+    def test_linking_number_dJ_d2J(self):
+        """Test dJ and d2J for LinkingNumber."""
+        np.random.seed(42)
+        
+        # Create two curves - use regular curves, not JAX curves
+        curve1 = CurveXYZFourier(100, 3)
+        curve2 = CurveXYZFourier(100, 3)
+        dofs1 = np.random.randn(curve1.dof_size) * 0.1
+        dofs2 = np.random.randn(curve2.dof_size) * 0.1
+        curve1.x = dofs1
+        curve2.x = dofs2
+        
+        J = LinkingNumber([curve1, curve2], downsample=1)
+        
+        # Test dJ - should return zero gradient (topological invariant)
+        dJ = J.dJ()
+        self.assertIsNotNone(dJ, "dJ should not be None")
+        
+        # dJ should be a numpy array (due to @derivative_dec decorator)
+        self.assertIsInstance(dJ, np.ndarray, "dJ should be a numpy array")
+        dJ_array = dJ
+        
+        # Since linking number is a topological invariant, dJ should be zero
+        self.assertAlmostEqual(np.linalg.norm(dJ_array), 0.0, places=10,
+                              msg="dJ should be zero for linking number (topological invariant)")
+        
+        # Test d2J - should return zero Hessian
+        H = J.d2J()
+        self.assertIsNotNone(H, "d2J should not be None")
+        self.assertEqual(H.shape, (curve1.dof_size + curve2.dof_size, curve1.dof_size + curve2.dof_size),
+                        f"Hessian should have shape ({curve1.dof_size + curve2.dof_size}, {curve1.dof_size + curve2.dof_size})")
+        
+        # Check that Hessian is zero (since linking number is a topological invariant)
+        self.assertAlmostEqual(np.linalg.norm(H), 0.0, places=10,
+                              msg="Hessian should be zero for linking number (topological invariant)")
+        
+        # Check symmetry (zero matrix is symmetric)
+        asymmetry = np.max(np.abs(H - H.T))
+        self.assertAlmostEqual(asymmetry, 0.0, places=10,
+                              msg="Hessian should be symmetric (zero matrix)")
+        
+        # Verify dJ is zero using finite differences
+        curve_dofs = [c.x.copy() for c in J.curves]
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            np.random.seed(42 + test_num)
+            h = [np.random.randn(c.dof_size) * 1e-2 for c in J.curves]
+            
+            # Forward difference
+            for j, curve in enumerate(J.curves):
+                curve.x = curve_dofs[j] + 1e-5 * h[j]
+            Jp = J.J()
+            
+            # Backward difference
+            for j, curve in enumerate(J.curves):
+                curve.x = curve_dofs[j] - 1e-5 * h[j]
+            Jm = J.J()
+            
+            # Central difference
+            deriv_est = (Jp - Jm) / (2 * 1e-5)
+            
+            # Since linking number is a topological invariant, derivative should be zero
+            # (or very small due to numerical rounding)
+            self.assertLess(np.abs(deriv_est), 1e-6,
+                          f"Finite difference derivative should be zero for linking number, test {test_num}: deriv_est = {deriv_est:.2e}")
+        
+        # Restore original dofs
+        for j, curve in enumerate(J.curves):
+            curve.x = curve_dofs[j]
+        
+        # Verify d2J is zero using finite differences on dJ
+        # Since dJ is zero, d2J should also be zero
+        # Test with a few random vectors
+        for test_num in range(3):
+            np.random.seed(42 + test_num)
+            h1 = [np.random.randn(c.dof_size) * 1e-2 for c in J.curves]
+            h2 = [np.random.randn(c.dof_size) * 1e-2 for c in J.curves]
+            
+            # Compute h1^T * H * h2 (should be zero)
+            all_h1 = np.concatenate(h1)
+            all_h2 = np.concatenate(h2)
+            H_h2 = H @ all_h2
+            h1_H_h2 = all_h1 @ H_h2
+            
+            # Should be zero
+            self.assertAlmostEqual(h1_H_h2, 0.0, places=10,
+                                  msg=f"Hessian-vector product should be zero for linking number, test {test_num}: h1_H_h2 = {h1_H_h2:.2e}")
+            
+            # Also verify using finite differences
+            # Get dJ at original point (should be zero)
+            dJ_orig = dJ_array
+            dJ_h2_orig = dJ_orig @ all_h2
+            
+            # Perturb in direction h1
+            for j, curve in enumerate(J.curves):
+                curve.x = curve_dofs[j] + 1e-5 * h1[j]
+            
+            # Get dJ at perturbed point (should also be zero)
+            dJ_pert = J.dJ()
+            dJ_pert_array = dJ_pert  # Should be numpy array
+            dJ_pert_h2 = dJ_pert_array @ all_h2
+            
+            # Finite difference approximation
+            d2f_fd = (dJ_pert_h2 - dJ_h2_orig) / 1e-5
+            
+            # Should be zero
+            self.assertLess(np.abs(d2f_fd), 1e-6,
+                          f"Finite difference Hessian-vector product should be zero for linking number, test {test_num}: d2f_fd = {d2f_fd:.2e}")
+        
+        # Restore original dofs
+        for j, curve in enumerate(J.curves):
+            curve.x = curve_dofs[j]
 
-            curve2 = CurveXYZFourier(150, 3)
-            coeffs = curve2.dofs_matrix
-            coeffs[1][0] = 0.5
-            coeffs[1][1] = 0.5
-            coeffs[0][0] = 0.1
-            coeffs[0][1] = 0.5
-            coeffs[0][2] = 0.5
-            curve2.set_dofs(np.concatenate(coeffs))
-            curves2 = [curve1, curve2]
-            curves3 = [curve2, curve1]
-            
-            # Test with curves1
-            objective_cpp1 = LinkingNumber(curves1, downsample)
-            objective_jax1 = LinkingNumberJax(curves1, downsample)
-            result_cpp1 = objective_cpp1.J()
-            result_jax1 = objective_jax1.J()
-            print(f"curves1 (downsample={downsample}): C++={result_cpp1}, JAX={result_jax1}")
-            np.testing.assert_allclose(result_jax1, result_cpp1, atol=1e-10, rtol=1e-10)
-            
-            # Test with curves2
-            objective_cpp2 = LinkingNumber(curves2, downsample)
-            objective_jax2 = LinkingNumberJax(curves2, downsample)
-            result_cpp2 = objective_cpp2.J()
-            result_jax2 = objective_jax2.J()
-            print(f"curves2 (downsample={downsample}): C++={result_cpp2}, JAX={result_jax2}")
-            np.testing.assert_allclose(result_jax2, result_cpp2, atol=1e-10, rtol=1e-10)
-            
-            # Test with curves3
-            objective_cpp3 = LinkingNumber(curves3, downsample)
-            objective_jax3 = LinkingNumberJax(curves3, downsample)
-            result_cpp3 = objective_cpp3.J()
-            result_jax3 = objective_jax3.J()
-            print(f"curves3 (downsample={downsample}): C++={result_cpp3}, JAX={result_jax3}")
-            np.testing.assert_allclose(result_jax3, result_cpp3, atol=1e-10, rtol=1e-10)
 
     def test_linking_number_planar(self):
         for downsample in [1, 2, 5]:

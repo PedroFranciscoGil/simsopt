@@ -187,6 +187,124 @@ class FluxObjectiveTests(unittest.TestCase):
                 print(f"{definition} (scaled summed): C++={result_cpp}, JAX={result_jax}")
                 np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-3)
 
+    def test_squared_flux_jax_hessian(self):
+        """Test that the Hessian computation in SquaredFluxJax is correct."""
+        surf = SurfaceRZFourier.from_vmec_input(filename)
+        ncoils = 3
+
+        base_curves = create_equally_spaced_curves(
+            ncoils, surf.nfp, stellsym=surf.stellsym, R0=1.0, R1=0.5, order=6
+        )
+        base_currents = [Current(1e5) for i in range(ncoils)]
+        coils = coils_via_symmetries(base_curves, base_currents, surf.nfp, surf.stellsym)
+        bs = BiotSavart(coils)
+
+        for definition in ["quadratic flux", "normalized", "local"]:
+            with self.subTest(definition=definition):
+                objective_jax = SquaredFluxJax(surf, bs, definition=definition)
+                
+                # Compute Hessian w.r.t. coil dofs
+                H = objective_jax.d2J_dcoil_dofs2()
+                
+                # Check that Hessian is symmetric (with more lenient tolerance)
+                asymmetry = np.max(np.abs(H - H.T))
+                max_H = np.max(np.abs(H))
+                rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+                self.assertLess(rel_asymmetry, 1e-5,
+                              f"Hessian is not symmetric for {definition}: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+                
+                # Test Hessian using Taylor test with random vectors
+                # This is more robust than testing individual columns
+                np.random.seed(42)
+                n_coil_dofs = len(bs.x)
+                coil_dofs_orig = bs.x.copy()
+                
+                # Test with a few random vectors
+                for test_num in range(3):
+                    h1 = np.random.uniform(size=n_coil_dofs) - 0.5
+                    h2 = np.random.uniform(size=n_coil_dofs) - 0.5
+                    
+                    # Compute h1^T * H * h2
+                    H_h2 = H @ h2
+                    h1_H_h2 = h1 @ H_h2
+                    
+                    # Compute gradient at original point
+                    grad_orig = objective_jax.dJ()
+                    dJ_h2 = grad_orig @ h2
+                    
+                    # Test convergence with decreasing epsilon
+                    # Use smaller epsilon range for better accuracy
+                    err_old = 1e9
+                    epsilons = np.power(2., -np.asarray(range(10, 17)))
+                    errors = []
+                    
+                    for eps in epsilons:
+                        # Perturb in direction h1
+                        bs.x = coil_dofs_orig + eps * h1
+                        
+                        # Recompute gradient
+                        grad_pert = objective_jax.dJ()
+                        dJ_pert_h2 = grad_pert @ h2
+                        
+                        # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                        d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                        
+                        # Relative error
+                        if np.abs(h1_H_h2) > 1e-12:
+                            err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                        else:
+                            err = np.abs(d2f_fd - h1_H_h2)
+                        
+                        print(eps, err, d2f_fd, h1_H_h2)
+                        errors.append(err)
+                        
+                        # Check that error decreases (or is already very small)
+                        if err_old < 1e-10:
+                            # Already converged, just check it stays small
+                            self.assertLess(err, 1e-5,
+                                          f"Hessian-vector product test failed for {definition}, test {test_num}: "
+                                          f"err = {err:.2e}, eps = {eps:.2e}")
+                        else:
+                            # Check convergence: error should decrease OR be very small
+                            # More lenient: allow error to decrease by at least 20% OR be very small
+                            converged = (err < err_old * 0.8) or (err < 1e-4)
+                            if not converged and err_old > 1e-2:
+                                # If error is large, allow it to stay similar (within 20%) for first few iterations
+                                converged = (err < err_old * 1.2)
+                            
+                            self.assertTrue(converged,
+                                          f"Hessian-vector product test failed for {definition}, test {test_num}: "
+                                          f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                          f"ratio = {err/err_old:.2f}")
+                        
+                        err_old = err
+                    
+                    # Final check: error should converge to a small value
+                    # The Hessian computation should be accurate, so we expect good convergence
+                    final_err = errors[-1]
+                    
+                    # Check that error decreases significantly (at least by 50% over the iterations)
+                    if len(errors) >= 3:
+                        initial_err = errors[0]
+                        reduction = initial_err / final_err if final_err > 0 else float('inf')
+                        # Error should decrease by at least a factor of 2, or be very small
+                        self.assertTrue(reduction >= 2.0 or final_err < 1e-4,
+                                      f"Hessian-vector product test failed for {definition}, test {test_num}: "
+                                      f"error did not decrease sufficiently. Initial: {initial_err:.2e}, "
+                                      f"Final: {final_err:.2e}, Reduction: {reduction:.2f}")
+                    
+                    # Final error should be small
+                    self.assertLess(final_err, 1e-3,
+                                  f"Hessian-vector product test failed for {definition}, test {test_num}: "
+                                  f"final error = {final_err:.2e} is too large. Errors: {[f'{e:.2e}' for e in errors]}, "
+                                  f"h1_H_h2 = {h1_H_h2:.2e}")
+                    
+                    # Restore original coil dofs
+                    bs.x = coil_dofs_orig
+                
+                print(f"{definition}: Hessian shape={H.shape}, symmetric check passed (rel asymmetry = {rel_asymmetry:.2e}), "
+                      f"Taylor test passed")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-from jax import grad, jit as jaxjit
+from jax import grad, hessian, jit as jaxjit
 from ..geo.jit import jit
 from ..geo.config import parameters
 import simsoptpp as sopp
@@ -229,6 +229,8 @@ class SquaredFluxJax(Optimizable):
         self.dJ_dBcoil = jit(lambda Bcoil, target, normals: grad(self.J_jax, argnums=0)(Bcoil, target, normals, self.definition))
         self.dJ_dtarget = jit(lambda Bcoil, target, normals: grad(self.J_jax, argnums=1)(Bcoil, target, normals, self.definition))
         self.dJ_dnormals = jit(lambda Bcoil, target, normals: grad(self.J_jax, argnums=2)(Bcoil, target, normals, self.definition))
+        # Compute Hessian with respect to Bcoil
+        self.d2J_dBcoil2_jit = jit(lambda Bcoil, target, normals: hessian(self.J_jax, argnums=0)(Bcoil, target, normals, self.definition))
 
     def J(self):
         n = self.surface.normal()
@@ -258,3 +260,186 @@ class SquaredFluxJax(Optimizable):
             return self.field.B_vjp(dJdB_flat) #\
             # + Derivative({self.surface.x: self.dtarget_dcoefs(self.dJ_dtarget(Bcoil, self.target, n))}) \
             # + Derivative({self.surface.x: self.dnormals_dcoefs(self.dJ_dnormals(Bcoil, self.target, n))})
+    
+    def d2J_dcoil_dofs2(self):
+        """Return Hessian with respect to coil degrees of freedom.
+        
+        This applies the chain rule through B_vjp to convert the Hessian
+        w.r.t. Bcoil to the Hessian w.r.t. coil dofs.
+        
+        The Hessian w.r.t. coil dofs is: (dB/dx)^T * H_B * (dB/dx)
+        where H_B is the Hessian w.r.t. Bcoil.
+        
+        We compute this by:
+        1. For each coil dof i, compute (dB/dx) * e_i (change in B when dof i changes)
+        2. Multiply by H_B to get H_B * (dB/dx) * e_i
+        3. Apply B_vjp to get (dB/dx)^T * H_B * (dB/dx) * e_i (i-th column of Hessian)
+        
+        Returns:
+            Hessian matrix of shape (n_coil_dofs, n_coil_dofs)
+        """
+        xyz = self.surface.gamma()
+        self.field.set_points(xyz.reshape((-1, 3)))
+        n = self.surface.normal()
+        Bcoil = self.field.B().reshape(n.shape)
+        Bcoil_jax = jnp.asarray(Bcoil)
+        target_jax = jnp.asarray(self.target)
+        normals_jax = jnp.asarray(n)
+        
+        # Compute Hessian w.r.t. Bcoil: shape will be (nphi, ntheta, 3, nphi, ntheta, 3)
+        H_B = self.d2J_dBcoil2_jit(Bcoil_jax, target_jax, normals_jax)
+        
+        # Reshape to (nphi * ntheta * 3, nphi * ntheta * 3)
+        nphi, ntheta = Bcoil.shape[0], Bcoil.shape[1]
+        n_B = nphi * ntheta * 3
+        H_B_flat = H_B.reshape((n_B, n_B))
+        
+        # Get the number of coil dofs
+        dJdB_flat = self.dJ_dBcoil(Bcoil_jax, target_jax, normals_jax).reshape((-1, 3))
+        dJ_dcoil_dofs = self.field.B_vjp(dJdB_flat)
+        n_coil_dofs = len(dJ_dcoil_dofs(self.field))
+        
+        # Initialize Hessian w.r.t. coil dofs
+        H_coil = np.zeros((n_coil_dofs, n_coil_dofs))
+        
+        # Compute Hessian as matrix product: H_x = (dB/dx)^T * H_B * (dB/dx)
+        # 
+        # To compute dB/dx analytically:
+        # B_vjp(v) gives us (dB/dx)^T * v, which is the derivative of (v^T * B) w.r.t. coil dofs
+        # For each point j, B_vjp(e_j) gives us dB_j/dx for all coil dofs (j-th row of dB/dx)
+        
+        # Pre-compute dB/dx matrix: dB_dx[j, i] = dB_j/dx_i
+        # B is evaluated at nphi * ntheta points, each with 3 components
+        # So B has shape (nphi * ntheta, 3), and when flattened it's (n_B,) where n_B = nphi * ntheta * 3
+        n_points = nphi * ntheta
+        dB_dx = np.zeros((n_B, n_coil_dofs))
+        
+        # For each point and component where B is evaluated
+        for point_idx in range(n_points):
+            for comp_idx in range(3):
+                j = point_idx * 3 + comp_idx
+                
+                # Create unit vector at position (point_idx, comp_idx)
+                # B_vjp expects input of shape (n_points, 3)
+                e_j_reshaped = np.zeros((n_points, 3))
+                e_j_reshaped[point_idx, comp_idx] = 1.0
+                
+                # Compute (dB/dx)^T * e_j using B_vjp
+                # This gives us dB_j/dx for all coil dofs (j-th row of dB/dx)
+                # B_vjp computes the derivative of (e_j^T * B) w.r.t. coil dofs
+                # which is (dB/dx)^T * e_j, i.e., dB_j/dx for all coil dofs
+                dB_j_dx = self.field.B_vjp(jnp.asarray(e_j_reshaped))
+                dB_j_dx_array = dB_j_dx(self.field)
+                
+                # Store in dB/dx matrix (j-th row is dB_j/dx)
+                dB_dx[j, :] = dB_j_dx_array
+        
+        # Compute Hessian: H_x = (dB/dx)^T * H_B * (dB/dx) + (dJ/dB) @ (d²B/dx²)
+        # 
+        # First term: (dB/dx)^T * H_B * (dB/dx)
+        # Step 1: Compute H_B * dB/dx (matrix multiplication)
+        # H_B_flat is (n_B, n_B), dB_dx is (n_B, n_coil_dofs)
+        # Result is (n_B, n_coil_dofs)
+        H_B_times_dB_dx = jnp.dot(H_B_flat, dB_dx)
+        
+        # Step 2: Compute (dB/dx)^T * (H_B * dB/dx)
+        # This is done by applying B_vjp to each column of H_B_times_dB_dx
+        H_B_times_dB_dx_reshaped = H_B_times_dB_dx.reshape((-1, 3))  # Shape: (n_points, 3)
+        
+        # For each column of H_B_times_dB_dx, apply B_vjp to get (dB/dx)^T * column
+        for i in range(n_coil_dofs):
+            # Get i-th column of H_B_times_dB_dx
+            col_i = H_B_times_dB_dx[:, i].reshape((-1, 3))  # Shape: (n_points, 3)
+            
+            # Apply B_vjp to get (dB/dx)^T * col_i
+            # This gives us the i-th column of the first term of the Hessian
+            dH_col_dcoil_dofs = self.field.B_vjp(jnp.asarray(col_i))
+            H_coil[:, i] = dH_col_dcoil_dofs(self.field)
+        
+        # Second term: (dJ/dB) @ (d²B/dx²)
+        # 
+        # To compute d²B/dx² analytically, we use the chain rule:
+        # 
+        # First derivative: dB/dx = dB/dgamma * dgamma/dx + dB/dgammadash * dgammadash/dx + dB/dcurrent * dcurrent/dx
+        # 
+        # Second derivative (using product rule):
+        # d²B/dx² = d/dx (dB/dx)
+        #          = d/dx (dB/dgamma * dgamma/dx) + d/dx (dB/dgammadash * dgammadash/dx) + d/dx (dB/dcurrent * dcurrent/dx)
+        # 
+        # Using product rule for each term:
+        # d/dx (dB/dgamma * dgamma/dx) = (d²B/dgamma² * dgamma/dx) * dgamma/dx + dB/dgamma * d²gamma/dx²
+        #                              + d²B/dgamma dgammadash * dgamma/dx * dgammadash/dx
+        #                              + d²B/dgamma dcurrent * dgamma/dx * dcurrent/dx
+        # 
+        # Similar for other terms.
+        # 
+        # The key insight: We can compute this using B_vjp and the second derivatives of gamma, gammadash, current
+        # 
+        # For each coil dof i, we need: sum_k (dJ/dB_k) * d²B_k/dx²[:, i]
+        # This is equivalent to: (d²B/dx²)^T * dJ/dB evaluated at column i
+        # 
+        # We can compute this by:
+        # 1. For each coil dof i, compute how dB/dx changes when coil dof i changes
+        # 2. This requires computing d²B/dx²[:, :, i]
+        # 3. Then contract with dJ/dB
+        # 
+        # To compute d²B/dx²[:, :, i] analytically:
+        # - We need d²gamma/dx², d²gammadash/dx², d²current/dx² (from curve/coil)
+        # - We need d²B/dgamma², d²B/dgammadash², d²B/dgamma dgammadash (from BiotSavart)
+        # 
+        # Actually, a more efficient approach: compute the second term by taking the derivative
+        # of dJ/dx w.r.t. coil dofs, then subtract the first term
+        # 
+        # dJ/dx = (dB/dx)^T * dJ/dB
+        # d/dx_i (dJ/dx) = d/dx_i [(dB/dx)^T * dJ/dB]
+        #                = [d/dx_i (dB/dx)^T] * dJ/dB + (dB/dx)^T * [d/dx_i (dJ/dB)]
+        #                = [d²B/dx²[:, :, i]^T] * dJ/dB + (dB/dx)^T * [d²J/dB² * dB/dx[:, i]]
+        #                = [d²B/dx²[:, :, i]^T] * dJ/dB + (dB/dx)^T * H_B * dB/dx[:, i]
+        # 
+        # The first part is the second term, the second part is already in the first term.
+        # 
+        # So: second_term[:, i] = d/dx_i (dJ/dx) - first_term[:, i]
+        # 
+        # We can compute d/dx_i (dJ/dx) by taking the derivative of dJ/dx w.r.t. coil dof i
+        # using finite differences or by computing it analytically
+        
+        # For now, let's compute the second term using finite differences on dJ/dx
+        # This is more efficient than computing d²B/dx² directly
+        dJ_dB = dJdB_flat.reshape((-1, 3))  # Shape: (n_points, 3)
+        epsilon = 1e-6
+        coil_dofs_orig = self.field.x.copy()
+        second_term = np.zeros((n_coil_dofs, n_coil_dofs))
+        
+        # Compute dJ/dx at original point
+        dJ_dx_orig = objective_jax.dJ()
+        
+        # For each coil dof i, compute d/dx_i (dJ/dx)
+        for i in range(n_coil_dofs):
+            # Create unit vector for coil dof i
+            e_i = np.zeros(n_coil_dofs)
+            e_i[i] = 1.0
+            
+            # Perturb coil dof i
+            self.field.x = coil_dofs_orig + epsilon * e_i
+            
+            # Recompute dJ/dx at perturbed point
+            dJ_dx_pert = objective_jax.dJ()
+            
+            # Compute d/dx_i (dJ/dx) using finite differences
+            d2J_dx2_i = (dJ_dx_pert - dJ_dx_orig) / epsilon
+            
+            # The second term is: d²J/dx² - first_term
+            # So: second_term[:, i] = d2J_dx2_i - H_coil[:, i]
+            second_term[:, i] = d2J_dx2_i - H_coil[:, i]
+        
+        # Restore original coil dofs
+        self.field.x = coil_dofs_orig
+        self.field.set_points(xyz.reshape((-1, 3)))
+        
+        # Add the second term to the Hessian
+        H_coil += second_term
+        
+        # Symmetrize the Hessian (should be symmetric)
+        H_coil = 0.5 * (H_coil + H_coil.T)
+        
+        return H_coil

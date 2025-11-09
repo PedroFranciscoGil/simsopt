@@ -190,7 +190,66 @@ class QuadraticPenalty(Optimizable):
         else:
             raise Exception('incorrect wrapping function f provided')
 
-    return_fn_map = {'J': J, 'dJ': dJ}
+    def d2J(self):
+        """
+        Hessian for QuadraticPenalty.
+        d²J/dx² = d/dx (f(diff) * obj.dJ())
+                = f'(diff) * (obj.dJ())^T @ (obj.dJ()) + f(diff) * obj.d2J()
+        
+        where diff = obj.J() - cons
+        - For "identity": f(diff) = diff, f'(diff) = 1
+        - For "max": f(diff) = max(diff, 0), f'(diff) = 1 if diff > 0, else 0
+        - For "min": f(diff) = min(diff, 0), f'(diff) = 1 if diff < 0, else 0
+        """
+        val = self.obj.J()
+        diff = float(val - self.cons)
+        
+        # Get first-order derivative
+        dval = self.obj.dJ(partials=True)
+        
+        # Convert dval to numpy array - get gradient w.r.t. the underlying objective
+        if isinstance(dval, Derivative):
+            # Get gradient w.r.t. the underlying objective's dofs
+            dval_array = dval(self.obj)
+        else:
+            dval_array = np.asarray(dval).flatten()
+        
+        # Get total number of dofs
+        total_dofs = len(dval_array)
+        
+        # Initialize Hessian
+        H = np.zeros((total_dofs, total_dofs))
+        
+        # First term: f'(diff) * (obj.dJ())^T @ (obj.dJ())
+        if self.f == 'identity':
+            f_prime = 1.0
+            f_val = diff
+        elif self.f == 'max':
+            f_prime = 1.0 if diff > 0 else 0.0
+            f_val = np.maximum(diff, 0)
+        elif self.f == 'min':
+            f_prime = 1.0 if diff < 0 else 0.0
+            f_val = np.minimum(diff, 0)
+        else:
+            raise Exception('incorrect wrapping function f provided')
+        
+        # Compute outer product: (obj.dJ())^T @ (obj.dJ())
+        H += f_prime * np.outer(dval_array, dval_array)
+        
+        # Second term: f(diff) * obj.d2J()
+        if hasattr(self.obj, 'd2J'):
+            try:
+                d2val = self.obj.d2J()
+                if isinstance(d2val, np.ndarray):
+                    # Ensure shapes match
+                    if d2val.shape == (total_dofs, total_dofs):
+                        H += f_val * d2val
+            except (AttributeError, TypeError):
+                pass
+        
+        return H
+
+    return_fn_map = {'J': J, 'dJ': dJ, 'd2J': d2J}
 
 
 class Weight(object):

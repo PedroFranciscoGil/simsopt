@@ -491,13 +491,17 @@ class JaxCurve(sopp.Curve, Curve):
         self.gamma_impl_jax = jit(lambda dofs, p: self.gamma_pure(dofs, p))
         self.dgamma_by_dcoeff_jax = jit(jacfwd(self.gamma_jax))
         self.dgamma_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(self.gamma_jax, x)[1](v)[0])
-
+        self.d2gamma_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: self.dgamma_by_dcoeff_jax(d, p), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2gamma_by_d2coeff_jax = jit(jacfwd(self.dgamma_by_dcoeff_jax))
+        
         self.gammadash_pure = lambda x, q: jvp(lambda p: self.gamma_pure(x, p), (q,), (ones,))[1]
         self.gammadash_jax = jit(lambda x: self.gammadash_pure(x, points))
         self.gammadash_impl_jax = jit(lambda x, p: self.gammadash_pure(x, p))
         self.dgammadash_by_dcoeff_jax = jit(jacfwd(self.gammadash_jax))
         self.dgammadash_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(self.gammadash_jax, x)[1](v)[0])
-
+        self.d2gammadash_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: self.dgammadash_by_dcoeff_jax(d, p), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2gammadash_by_d2coeff_jax = jit(jacfwd(self.dgammadash_by_dcoeff_jax))
+        
         self.gammadashdash_pure = lambda x, q: jvp(lambda p: self.gammadash_pure(x, p), (q,), (ones,))[1]
         self.gammadashdash_jax = jit(lambda x: self.gammadashdash_pure(x, points))
         self.gammadashdash_impl_jax = jit(lambda x, p: self.gammadashdash_pure(x, p))
@@ -510,8 +514,18 @@ class JaxCurve(sopp.Curve, Curve):
         self.dgammadashdashdash_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(self.gammadashdashdash_jax, x)[1](v)[0])
 
         self.incremental_arclength_jax = jit(lambda x: incremental_arclength_pure(self.gammadash_jax(x)))
+        self.dincremental_arclength_by_dcoeff_jax = jit(jacfwd(self.incremental_arclength_jax))
+        self.dincremental_arclength_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(lambda d: incremental_arclength_pure(self.gammadash_jax(d)), x)[1](v)[0])
+        self.d2incremental_arclength_by_d2coeff_vjp = jit(lambda x, v: vjp(lambda d: jvp(lambda p: incremental_arclength_pure(self.gammadash_jax(d, p)), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2incremental_arclength_by_d2coeff_jax = jit(jacfwd(self.dincremental_arclength_by_dcoeff_jax))
         self.dkappa_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(lambda d: kappa_pure(self.gammadash_jax(d), self.gammadashdash_jax(d)), x)[1](v)[0])
+        self.dkappa_by_dcoeff_jax = jit(jacfwd(lambda x: kappa_pure(self.gammadash_jax(x), self.gammadashdash_jax(x))))
+        self.d2kappa_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: kappa_pure(self.gammadash_jax(d, p), self.gammadashdash_jax(d, p)), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2kappa_by_d2coeff_jax = jit(jacfwd(self.dkappa_by_dcoeff_jax))
         self.dtorsion_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(lambda d: torsion_pure(self.gammadash_jax(d), self.gammadashdash_jax(d), self.gammadashdashdash_jax(d)), x)[1](v)[0])
+        self.dtorsion_by_dcoeff_jax = jit(jacfwd(lambda x: torsion_pure(self.gammadash_jax(x), self.gammadashdash_jax(x), self.gammadashdashdash_jax(x))))
+        self.d2torsion_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: torsion_pure(self.gammadash_jax(d, p), self.gammadashdash_jax(d, p), self.gammadashdashdash_jax(d, p)), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2torsion_by_d2coeff_jax = jit(jacfwd(self.dtorsion_by_dcoeff_jax))
 
     def set_dofs(self, dofs):
         """
@@ -531,6 +545,30 @@ class JaxCurve(sopp.Curve, Curve):
         This function returns the incremental arclength of the curve.
         """
         return self.incremental_arclength_jax(self.get_dofs())
+
+    def dincremental_arclength_by_dcoeff_impl(self, dincremental_arclength_by_dcoeff):
+        """
+        This function returns the derivative of the incremental arclength with respect to the curve dofs.
+        """
+        dincremental_arclength_by_dcoeff[:, :] = self.dincremental_arclength_by_dcoeff_jax(self.get_dofs())
+
+    def dincremental_arclength_by_dcoeff_vjp_impl(self, v):
+        """
+        This function returns the vector Jacobian product of the derivative of the incremental arclength with respect to the curve dofs.
+        """
+        return self.dincremental_arclength_by_dcoeff_vjp_jax(self.get_dofs(), v)
+
+    def d2incremental_arclength_by_d2coeff_impl(self, d2incremental_arclength_by_d2coeff):
+        """
+        This function returns the second derivative of the incremental arclength with respect to the curve dofs.
+        """
+        d2incremental_arclength_by_d2coeff[:, :, :] = self.d2incremental_arclength_by_d2coeff_jax(self.get_dofs())
+
+    def d2incremental_arclength_by_d2coeff_vjp_impl(self, v):
+        """
+        This function returns the vector Jacobian product of the second derivative of the incremental arclength with respect to the curve dofs.
+        """
+        return self.d2incremental_arclength_by_d2coeff_vjp(self.get_dofs(), v)
 
     def dgamma_by_dcoeff_impl(self, dgamma_by_dcoeff):
         r"""
@@ -555,6 +593,18 @@ class JaxCurve(sopp.Curve, Curve):
         of the curve.
         """
         return self.dgamma_by_dcoeff_vjp_jax(self.get_dofs(), v)
+
+    def d2gamma_by_d2coeff_impl(self, d2gamma_by_d2coeff):
+        r"""
+        This function returns the second derivative of the curve with respect to the curve dofs.
+        """
+        d2gamma_by_d2coeff[:, :, :] = self.d2gamma_by_d2coeff_jax(self.get_dofs())
+
+    def d2gamma_by_d2coeff_vjp_impl(self, v):
+        r"""
+        This function returns the vector Jacobian product of the second derivative of the curve with respect to the curve dofs.
+        """
+        return self.d2gamma_by_d2coeff_vjp_jax(self.get_dofs(), v)
 
     def gammadash_impl(self, gammadash):
         r"""
@@ -588,6 +638,18 @@ class JaxCurve(sopp.Curve, Curve):
         of the curve.
         """
         return self.dgammadash_by_dcoeff_vjp_jax(self.get_dofs(), v)
+
+    def d2gammadash_by_d2coeff_impl(self, d2gammadash_by_d2coeff):
+        r"""
+        This function returns the second derivative of the curve with respect to the curve dofs.
+        """
+        d2gammadash_by_d2coeff[:, :, :] = self.d2gammadash_by_d2coeff_jax(self.get_dofs())
+
+    def d2gammadash_by_d2coeff_vjp_impl(self, v):
+        r"""
+        This function returns the vector Jacobian product of the second derivative of the curve with respect to the curve dofs.
+        """
+        return self.d2gammadash_by_d2coeff_vjp_jax(self.get_dofs(), v)
 
     def gammadashdash_impl(self, gammadashdash):
         r"""
@@ -671,6 +733,27 @@ class JaxCurve(sopp.Curve, Curve):
         """
         return Derivative({self: self.dkappa_by_dcoeff_vjp_jax(self.get_dofs(), v)})
 
+    def d2kappa_by_d2coeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product
+
+        .. math::
+            v^T \frac{\partial \kappa}{\partial \mathbf{c}} 
+        """
+        return self.d2kappa_by_d2coeff_vjp_jax(self.get_dofs(), v)
+
+    def d2kappa_by_d2coeff_impl(self, d2kappa_by_d2coeff):
+        r"""
+        This function returns the second derivative of the curve with respect to the curve dofs.
+        """
+        d2kappa_by_d2coeff[:, :, :] = self.d2kappa_by_d2coeff_jax(self.get_dofs())
+
+    def d2kappa_by_d2coeff_vjp_impl(self, v):
+        r"""
+        This function returns the vector Jacobian product of the second derivative of the curve with respect to the curve dofs.
+        """
+        return self.d2kappa_by_d2coeff_vjp_jax(self.get_dofs(), v)
+
     def dtorsion_by_dcoeff_vjp(self, v):
         r"""
         This function returns the vector Jacobian product
@@ -684,6 +767,26 @@ class JaxCurve(sopp.Curve, Curve):
 
         return Derivative({self: self.dtorsion_by_dcoeff_vjp_jax(self.get_dofs(), v)})
 
+    def d2torsion_by_d2coeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product
+
+        .. math::
+            v^T \frac{\partial \tau}{\partial \mathbf{c}} 
+        """
+        return self.d2torsion_by_d2coeff_vjp_jax(self.get_dofs(), v)
+
+    def d2torsion_by_d2coeff_impl(self, d2torsion_by_d2coeff):
+        r"""
+        This function returns the second derivative of the curve with respect to the curve dofs.
+        """
+        d2torsion_by_d2coeff[:, :, :] = self.d2torsion_by_d2coeff_jax(self.get_dofs())
+
+    def d2torsion_by_d2coeff_vjp_impl(self, v):
+        r"""
+        This function returns the vector Jacobian product of the second derivative of the curve with respect to the curve dofs.
+        """
+        return self.d2torsion_by_d2coeff_vjp_jax(self.get_dofs(), v)
 
 class RotatedCurve(sopp.Curve, Curve):
     """
