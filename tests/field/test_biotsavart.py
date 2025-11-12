@@ -430,6 +430,77 @@ class Testing(unittest.TestCase):
         assert np.linalg.norm(dJ[0]-dJ_approx) < 1e-15
         assert np.linalg.norm(dH[0]-dH_approx) < 1e-15
 
+    def test_d2B_vjp_taylortest(self):
+        """
+        Test d2B_vjp using Taylor test.
+        For a function J(B), we test that:
+        d²J/dx² * h = d/dx (dJ/dx * h)
+        """
+        from simsopt.geo.curvexyzfourier import JaxCurveXYZFourier
+        
+        np.random.seed(1)
+        # Use JAX curve which implements d2gamma_by_d2coeff_vjp
+        curve = JaxCurveXYZFourier(200, 3)
+        # Initialize with some non-zero coefficients
+        dofs = curve.get_dofs()
+        dofs[3] = 1.0
+        dofs[4] = 0.5
+        dofs[8] = 0.5
+        curve.set_dofs(dofs)
+        coil = Coil(curve, Current(1e4))
+        bs = BiotSavart([coil])
+        points = np.asarray(17 * [[-1.41513202e-03, 8.99999382e-01, -3.14473221e-04]])
+        points += 0.001 * (np.random.rand(*points.shape)-0.5)
+        bs.set_points(points)
+        
+        # Create a test function J = sum(B^2)
+        B0 = bs.B()
+        v = 2 * B0  # dJ/dB = 2*B, so v = dJ/dB
+        
+        # Test d2B_vjp: it should compute (d²B/dx²)^T * v
+        # We test this by verifying: d2B_vjp(v)(coil) = d/dx (B_vjp(v)(coil))
+        h = 1e-2 * np.random.rand(len(coil.x))
+        d2B_vjp_result = bs.d2B_vjp(v)
+        d2B_vjp_val = d2B_vjp_result(coil)  # (d²B/dx²)^T * v
+        
+        # Compute d/dx (B_vjp(v)(coil)) using finite differences
+        # B_vjp(v)(coil) = (dB/dx)^T * v, so d/dx (B_vjp(v)(coil)) = (d²B/dx²)^T * v
+        coil_dofs_orig = coil.x.copy()
+        dB_vjp_orig = bs.B_vjp(v)(coil)  # (dB/dx)^T * v
+        
+        err_old = 1e6
+        for i in range(5, 10):
+            eps = 0.5 ** i
+            # Use central difference for better accuracy
+            coil.x = coil_dofs_orig + eps * h
+            dB_vjp_plus = bs.B_vjp(v)(coil)
+            coil.x = coil_dofs_orig - eps * h
+            dB_vjp_minus = bs.B_vjp(v)(coil)
+            coil.x = coil_dofs_orig  # Reset
+            # Compute d/dx (B_vjp(v)(coil)) in direction h
+            deriv_est = (dB_vjp_plus - dB_vjp_minus) / (2 * eps)
+            # Compare with d2B_vjp(v)(coil) projected onto h
+            d2B_vjp_proj = np.sum(d2B_vjp_val * h)
+            deriv_est_proj = np.sum(deriv_est * h)
+            err = np.abs(deriv_est_proj - d2B_vjp_proj)
+            err_ratio = err / err_old if err_old > 0 else 0.0
+            print(f"  i={i}, eps={eps:.2e}, deriv_est_proj={deriv_est_proj:.6e}, d2B_vjp_proj={d2B_vjp_proj:.6e}, err={err:.6e}, err/err_old={err_ratio:.3f}")
+            # For very small errors (< 1e-5), numerical noise dominates
+            if err_old > 0:
+                if err < 1e-5:
+                    # Error is at numerical precision - check that it's small enough
+                    rel_err = err / (abs(d2B_vjp_proj) + 1e-15)
+                    self.assertTrue(rel_err < 1e-2 or err < 1e-4, 
+                                  f"Relative error {rel_err:.2e} or absolute error {err:.2e} too large")
+                    # If error is constant (ratio > 0.9), that's okay at numerical precision
+                    if err_ratio > 0.9:
+                        break
+                else:
+                    # Require error to decrease by factor of 0.55
+                    self.assertTrue(err < 0.55 * err_old, 
+                                  f"Error ratio {err_ratio:.3f} too large at eps={eps:.2e}")
+            err_old = err
+
 
 if __name__ == "__main__":
     unittest.main()

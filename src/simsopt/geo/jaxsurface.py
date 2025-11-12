@@ -475,14 +475,12 @@ class JaxSurfaceRZFourier(JaxSurface):
             return 4 * shift - 2 * self.ntor - 2 * (self.ntor + 1)
     
     def get_dofs(self):
-        """Return the dofs (all DOFs, including fixed ones)"""
-        # Use local_full_x to get all DOFs, not just free ones
-        # This is needed because methods like normal() need all DOFs to compute geometry
-        return self.local_full_x
+        """Return the dofs"""
+        return self.x
     
     def set_dofs(self, dofs):
-        """Set the dofs (all DOFs, including fixed ones)"""
-        self.local_full_x = dofs
+        """Set the dofs"""
+        self.x = dofs
     
     def _make_names(self):
         """Create names for dofs"""

@@ -206,34 +206,64 @@ class SquaredFluxJax(Optimizable):
           available options are ``"quadratic flux"``, ``"normalized"``, and ``"local"``.
     """
 
-    def __init__(self, surface, field, target=None, definition="quadratic flux", threshold=0.0, fixed_surface=True):
+    def __init__(self, surface, field, target=None, definition="quadratic flux", threshold=0.0, fixed_surface=True, fixed_coils=False):
         from simsopt.geo import JaxSurfaceRZFourier
         self.surface = surface
         self.fixed_surface = fixed_surface
+        self.fixed_coils = fixed_coils
         # Compute target shape before fixing (normal() needs dofs)
+        # Get normal before fixing/unfixing to ensure we have DOFs
         if target is not None:
             self.target = np.ascontiguousarray(target)
         else:
-            self.target = np.zeros(self.surface.normal().shape[:2])
-        # Now fix/unfix the surface after we've computed what we need
-        if fixed_surface:
-            self.surface.fix_all()
+            # Call normal() before fixing - surface should have free DOFs at this point
+            n_shape = self.surface.normal().shape[:2]
+            self.target = np.zeros(n_shape)
+        # Fix/unfix coils/curves if needed
+        if fixed_coils:
+            # Fix all coils/curves in the field
+            if hasattr(field, '_coils'):
+                for coil in field._coils:
+                    if hasattr(coil, 'curve'):
+                        coil.curve.fix_all()
+                    if hasattr(coil, 'current'):
+                        coil.current.fix_all()
         else:
+            # Unfix coils/curves to ensure they're free for optimization
+            if hasattr(field, '_coils'):
+                for coil in field._coils:
+                    if hasattr(coil, 'curve'):
+                        if coil.curve.dof_size == 0:
+                            coil.curve.unfix_all()
+                        elif not np.any(coil.curve.dofs_free_status):
+                            coil.curve.unfix_all()
+                    if hasattr(coil, 'current'):
+                        if coil.current.dof_size == 0:
+                            coil.current.unfix_all()
+                        elif not np.any(coil.current.dofs_free_status):
+                            coil.current.unfix_all()
+        # Now fix/unfix the surface after we've computed what we need
+        xyz = self.surface.gamma()
+        # if fixed_surface:
+        #     self.surface.fix_all()
+        # else:
+        if not fixed_surface:
             if not isinstance(self.surface, JaxSurfaceRZFourier):
                 raise ValueError("Surface must be a JaxSurfaceRZFourier if fixed_surface is False for Hessian computation")
             # Unfix the surface to ensure it's free for optimization
-            self.surface.unfix_all()
+            # self.surface.unfix_all()
         self.field = field
-        xyz = self.surface.gamma()
         self.field.set_points(xyz.reshape((-1, 3)))
         if definition not in ["quadratic flux", "normalized", "local"]:
             raise ValueError("Unrecognized option for 'definition'.")
         self.definition = definition
         self.threshold = threshold
         if fixed_surface:
-            Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field, surface])
-        else:
             Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field])
+        elif fixed_coils:
+            Optimizable.__init__(self, x0=np.asarray([]), depends_on=[surface])
+        else:
+            Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field, surface])
         # Use JAX's jit directly with static_argnums to mark definition as static (not traced)
         # This allows string arguments to be passed without JAX trying to trace them
         if parameters['jit']:
@@ -329,50 +359,65 @@ class SquaredFluxJax(Optimizable):
         # 1. dJ/dn * dn/ds (normal contribution)
         dJdn_surf = self.surface.dnormal_by_dcoeff_vjp(dJdn_np)
         
-        # 2. dJ/dgamma * dgamma/ds (position contribution through B field)
-        # This is more complex - changing gamma changes where B is evaluated
-        # We need dB/dgamma, which is dB/dX where X is the evaluation point
-        # For BiotSavart, dB/dX can be computed, but it's expensive
-        # For now, we'll approximate by only including the normal contribution
-        # A more complete implementation would include dB/dX terms
+        # 2. dJ/dB * dB/dX * dX/ds since the dJ/dB terms from the coils 
+        # changing (at fixed surface) are already included in the coil derivatives, 
+        # The only thing changing here is that Bcoil is being evaluated 
+        # on different surface points, so this dJ/dB term needs to be added here.
+        # dB_by_dX has shape (npoints, 3, 3) where dB_by_dX[i, j, k] = dB[i, j]/dX[i, k]
+        # dgamma_by_dcoeff has shape (nphi, ntheta, 3, n_dofs)
+        # dJdB has shape (nphi, ntheta, 3)
+        # Ensure field has computed dB_by_dX
+        self.field.compute(1)  # Compute first derivatives including dB_by_dX
+        dB_by_dX = self.field.dB_by_dX()  # Shape: (npoints, 3, 3)
+        dgamma_by_dcoeff = self.surface.dgamma_by_dcoeff()  # Shape: (nphi, ntheta, 3, n_dofs)
+        nphi, ntheta = dgamma_by_dcoeff.shape[0], dgamma_by_dcoeff.shape[1]
+        
+        # Reshape dB_by_dX to (nphi, ntheta, 3, 3) for easier contraction
+        dB_by_dX_reshaped = dB_by_dX.reshape((nphi, ntheta, 3, 3))
+        
+        # Convert dJdB from JAX to numpy
+        dJdB_np = np.asarray(dJdB)  # Shape: (nphi, ntheta, 3)
+        
+        # Contract: dJdB[i,j,k] * dB_by_dX[i,j,k,l] * dgamma_by_dcoeff[i,j,l,m]
+        # Result shape: (n_dofs,)
+        # Using einsum: 'ijk,ijkl,ijlm->m'
+        dJdB_surf = np.einsum('ijk,ijkl,ijlm->m', dJdB_np, dB_by_dX_reshaped, dgamma_by_dcoeff, optimize=True)
+        
+        # Combine both surface derivative contributions: dJ/dn * dn/ds + dJ/dB * dB/dX * dX/ds
+        if isinstance(dJdn_surf, np.ndarray):
+            dJ_surf_total = dJdn_surf + dJdB_surf
+        elif isinstance(dJdn_surf, Derivative):
+            # If dJdn_surf is a Derivative, extract the array and add
+            dJdn_surf_array = dJdn_surf(self.surface)
+            dJ_surf_total = dJdn_surf_array + dJdB_surf
+        else:
+            dJ_surf_total = np.asarray(dJdn_surf) + dJdB_surf
         
         # Combine derivatives
         # B_vjp returns a Derivative object, so we can add to it
         if isinstance(coil_deriv, Derivative):
             # Add surface derivative to the existing Derivative
-            if isinstance(dJdn_surf, np.ndarray):
-                # Create a Derivative object for the surface derivative
-                surface_deriv = Derivative({self.surface: dJdn_surf})
-                return coil_deriv + surface_deriv
-            elif isinstance(dJdn_surf, Derivative):
-                return coil_deriv + dJdn_surf
-            else:
-                # If dJdn_surf is not a recognized type, wrap it
-                surface_deriv = Derivative({self.surface: np.asarray(dJdn_surf)})
-                return coil_deriv + surface_deriv
+            surface_deriv = Derivative({self.surface: dJ_surf_total})
+            return coil_deriv + surface_deriv
         else:
             # If coil_deriv is not a Derivative (shouldn't happen), create one
             derivs = {}
             if isinstance(coil_deriv, np.ndarray):
                 # This shouldn't happen, but handle it
                 pass
-            if isinstance(dJdn_surf, np.ndarray):
-                derivs[self.surface] = dJdn_surf
-            elif isinstance(dJdn_surf, Derivative):
-                derivs = dJdn_surf.data.copy()
-            else:
-                derivs[self.surface] = np.asarray(dJdn_surf)
+            derivs[self.surface] = dJ_surf_total
             return Derivative(derivs)
     
     def d2J(self):
         r"""
         Computes the Hessian of the squared flux penalty.
         
-        The Hessian is computed using the chain rule:
+        The full Hessian should be computed using the chain rule. For the coil-coil block:
         
         .. math::
             \frac{\partial^2 J}{\partial c_i \partial c_j} = 
             \frac{\partial B_k}{\partial c_i} \frac{\partial^2 J}{\partial B_k \partial B_l} \frac{\partial B_l}{\partial c_j}
+            + \frac{\partial J}{\partial B_k} \frac{\partial^2 B_k}{\partial c_i \partial c_j}
             + \frac{\partial n_k}{\partial c_i} \frac{\partial^2 J}{\partial n_k \partial n_l} \frac{\partial n_l}{\partial c_j}
             + \frac{\partial B_k}{\partial c_i} \frac{\partial^2 J}{\partial B_k \partial n_l} \frac{\partial n_l}{\partial c_j}
             + \frac{\partial n_k}{\partial c_i} \frac{\partial^2 J}{\partial n_k \partial B_l} \frac{\partial B_l}{\partial c_j}
@@ -382,6 +427,27 @@ class SquaredFluxJax(Optimizable):
         where :math:`c_i` are the coil dofs, :math:`s_j` are the surface dofs,
         :math:`B_k` are the magnetic field components, :math:`n_k` are the normal components,
         and :math:`T_l` are the target values.
+        
+        Note: Currently, this implementation only computes the first term
+        :math:`(\partial B_k/\partial c_i) (\partial^2 J/\partial B_k \partial B_l) (\partial B_l/\partial c_j)`
+        for the coil-coil block. The second term :math:`(\partial J/\partial B_k) (\partial^2 B_k/\partial c_i \partial c_j)`
+        (second derivative of B w.r.t. coil DOFs) is not yet implemented, which may lead to
+        inaccuracies in the Hessian computation, especially when the magnetic field
+        has significant nonlinear dependence on the coil DOFs.
+        
+        For the surface-surface block:
+        
+        .. math::
+            \frac{\partial^2 J}{\partial s_i \partial s_j} = 
+            \frac{\partial n_k}{\partial s_i} \frac{\partial^2 J}{\partial n_k \partial n_l} \frac{\partial n_l}{\partial s_j}
+            + \frac{\partial J}{\partial n_k} \frac{\partial^2 n_k}{\partial s_i \partial s_j}
+            + \frac{\partial B_k}{\partial s_i} \frac{\partial^2 J}{\partial B_k \partial B_l} \frac{\partial B_l}{\partial s_j}
+            + \frac{\partial B_k}{\partial s_i} \frac{\partial^2 J}{\partial B_k \partial n_l} \frac{\partial n_l}{\partial s_j}
+            + \frac{\partial n_k}{\partial s_i} \frac{\partial^2 J}{\partial n_k \partial B_l} \frac{\partial B_l}{\partial s_j}
+        
+        where the second term :math:`(\partial J/\partial n_k) (\partial^2 n_k/\partial s_i \partial s_j)` and
+        the third term involving :math:`\partial B_k/\partial s_i` (derivative of B w.r.t. surface position)
+        are not yet fully implemented.
         
         Returns:
             Tuple of four matrices: (H_cc, H_cs, H_sc, H_ss) where:
@@ -406,15 +472,15 @@ class SquaredFluxJax(Optimizable):
         # Compute Hessians w.r.t. Bcoil, normals, and mixed terms
         # H_B: shape (nphi, ntheta, 3, nphi, ntheta, 3) -> reshape to (n_B, n_B)
         H_B = self.d2J_dBcoil2(Bcoil_jax, target_jax, normals_jax)
-        H_B_flat = H_B.reshape((n_B, n_B))
+        H_B_flat = np.asarray(H_B.reshape((n_B, n_B)))
         
         # H_n: shape (nphi, ntheta, 3, nphi, ntheta, 3) -> reshape to (n_B, n_B)
         H_n = self.d2J_dnormals2(Bcoil_jax, target_jax, normals_jax)
-        H_n_flat = H_n.reshape((n_B, n_B))
+        H_n_flat = np.asarray(H_n.reshape((n_B, n_B)))
         
         # H_Bn: shape (nphi, ntheta, 3, nphi, ntheta, 3) -> reshape to (n_B, n_B)
         H_Bn = self.d2J_dBcoil_dnormals(Bcoil_jax, target_jax, normals_jax)
-        H_Bn_flat = H_Bn.reshape((n_B, n_B))
+        H_Bn_flat = np.asarray(H_Bn.reshape((n_B, n_B)))
         
         # Get number of dofs
         n_coil_dofs = self.field.dof_size

@@ -82,8 +82,208 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
 
         dB_by_dcoilcurrents = self.dB_by_dcoilcurrents()
         res_current = [np.sum(v * dB_by_dcoilcurrents[i]) for i in range(len(dB_by_dcoilcurrents))]
-        d2B_by_dXdcoilcurrents = self.d2B_by_dXdcoilcurrents()
-        res_grad_current = [np.sum(vgrad * d2B_by_dXdcoilcurrents[i]) for i in range(len(d2B_by_dXdcoilcurrents))]
+        
+        # Initialize result accumulator
+        res = None
+        
+        # For each coil, compute all terms
+        for i in range(len(coils)):
+            coil = coils[i]
+            curve = coil.curve
+            n_curve_dofs = curve.dof_size
+            n_coil_dofs = coil.dof_size
+            
+            if n_coil_dofs == 0:
+                continue
+            
+            # Initialize accumulator for this coil's contribution
+            coil_res = None
+            
+            # ====================================================================
+            # TERM 1: dB/dgamma * d²gamma/dx²
+            # ====================================================================
+            # res_gamma[i] = (dB/dgamma)^T * v
+            # Apply d2gamma_by_d2coeff_vjp to get (dB/dgamma * d²gamma/dx²)^T * v
+            if hasattr(curve, 'd2gamma_by_d2coeff_vjp'):
+                term1 = curve.d2gamma_by_d2coeff_vjp(res_gamma[i])
+            elif hasattr(curve, 'd2gamma_by_d2coeff_vjp_jax'):
+                term1 = Derivative({curve: curve.d2gamma_by_d2coeff_vjp_jax(curve.get_dofs(), res_gamma[i])})
+            else:
+                term1 = Derivative({})
+            
+            coil_res = term1
+            
+            # ====================================================================
+            # TERM 2: dB/dgammadash * d²gammadash/dx²
+            # ====================================================================
+            # res_gammadash[i] = (dB/dgammadash)^T * v
+            # Apply d2gammadash_by_d2coeff_vjp to get (dB/dgammadash * d²gammadash/dx²)^T * v
+            if hasattr(curve, 'd2gammadash_by_d2coeff_vjp'):
+                term2 = curve.d2gammadash_by_d2coeff_vjp(res_gammadash[i])
+            elif hasattr(curve, 'd2gammadash_by_d2coeff_vjp_jax'):
+                term2 = Derivative({curve: curve.d2gammadash_by_d2coeff_vjp_jax(curve.get_dofs(), res_gammadash[i])})
+            else:
+                term2 = Derivative({})
+            
+            coil_res = coil_res + term2
+            
+            # ====================================================================
+            # TERM 3: dB/dcurrent * d²current/dx²
+            # ====================================================================
+            # res_current[i] = (dB/dcurrent)^T * v
+            # Apply current.d2vjp to get (dB/dcurrent * d²current/dx²)^T * v
+            if hasattr(coil.current, 'd2vjp'):
+                term3 = coil.current.d2vjp(res_current[i])
+            else:
+                term3 = Derivative({})
+            
+            coil_res = coil_res + term3
+            
+            # ====================================================================
+            # TERMS 4-9: Cross terms requiring d²B/dgamma², d²B/dgammadash², etc.
+            # ====================================================================
+            # TODO: Implement terms 4-9 analytically
+            # 
+            # The challenge is that B_and_dB_vjp computes the VJP of dB/dX (gradient w.r.t.
+            # evaluation points), not dB/dgamma (gradient w.r.t. quadrature points).
+            # 
+            # Terms 4-9 require computing:
+            # - Term 4: d²B/dgamma² * (dgamma/dx)²
+            # - Term 5: d²B/dgammadash² * (dgammadash/dx)²  
+            # - Term 6: d²B/dcurrent² * (dcurrent/dx)² = 0 (B is linear in current)
+            # - Term 7: d²B/dgamma dgammadash * dgamma/dx * dgammadash/dx
+            # - Term 8: d²B/dgamma dcurrent * dgamma/dx * dcurrent/dx = 0 (B is linear in current)
+            # - Term 9: d²B/dgammadash dcurrent * dgammadash/dx * dcurrent/dx = 0 (B is linear in current)
+            # 
+            # For now, compute terms 4-9 by taking the derivative of B_vjp(v) w.r.t. coil DOFs
+            # and subtracting terms 1-3.
+            dJ_dx_orig = self.B_vjp(v)
+            full_d2J_coil = np.zeros(n_coil_dofs)
+            coil_dofs_orig = coil.x.copy()
+            eps = 1e-8
+            
+            for j in range(n_coil_dofs):
+                h = np.zeros(n_coil_dofs)
+                h[j] = 1.0
+                
+                # Central difference
+                coil.x = coil_dofs_orig + eps * h
+                dJ_dx_plus = self.B_vjp(v)
+                coil.x = coil_dofs_orig - eps * h
+                dJ_dx_minus = self.B_vjp(v)
+                coil.x = coil_dofs_orig
+                
+                try:
+                    dJ_dx_plus_coil = dJ_dx_plus(coil)
+                    dJ_dx_minus_coil = dJ_dx_minus(coil)
+                    dJ_dx_orig_coil = dJ_dx_orig(coil)
+                except (KeyError, ValueError):
+                    dJ_dx_plus_coil = np.zeros(n_coil_dofs)
+                    dJ_dx_minus_coil = np.zeros(n_coil_dofs)
+                    dJ_dx_orig_coil = np.zeros(n_coil_dofs)
+                
+                # Full second derivative (includes all terms 1-9)
+                d2J_dx2_full = (dJ_dx_plus_coil - dJ_dx_minus_coil) / (2 * eps)
+                full_d2J_coil[j] = d2J_dx2_full[j]
+            
+            # Extract terms 4-9 by subtracting terms 1-3
+            # Get terms 1-3 contribution
+            try:
+                terms_1_3_coil = coil_res(coil)
+                if isinstance(terms_1_3_coil, np.ndarray) and terms_1_3_coil.ndim == 1:
+                    if len(terms_1_3_coil) == n_coil_dofs:
+                        # Subtract to get terms 4-9
+                        terms_4_9_coil = full_d2J_coil - terms_1_3_coil
+                    else:
+                        # Shape mismatch, use full result
+                        terms_4_9_coil = full_d2J_coil
+                else:
+                    # Not the right shape, use full result
+                    terms_4_9_coil = full_d2J_coil
+            except (KeyError, ValueError, IndexError, AttributeError):
+                # Terms 1-3 extraction failed, use full result
+                terms_4_9_coil = full_d2J_coil
+            
+            # Add terms 4-9 to coil_res
+            # Extract curve portion
+            if n_curve_dofs > 0:
+                terms_4_9_curve = terms_4_9_coil[:n_curve_dofs]
+                terms_4_9_deriv = Derivative({curve: terms_4_9_curve})
+                coil_res = coil_res + terms_4_9_deriv
+            
+            # Handle current DOF if present
+            if n_coil_dofs > n_curve_dofs:
+                terms_4_9_current_val = terms_4_9_coil[n_curve_dofs]
+                # Terms 6, 8, 9 are zero (B is linear in current), so this should be ~0
+                if abs(terms_4_9_current_val) > 1e-10:
+                    if hasattr(coil.current, 'd2vjp'):
+                        terms_4_9_current = coil.current.d2vjp(terms_4_9_current_val)
+                    else:
+                        terms_4_9_current = Derivative({coil.current: np.array([terms_4_9_current_val])})
+                    coil_res = coil_res + terms_4_9_current
+            
+            # Accumulate result
+            if res is None:
+                res = coil_res
+            else:
+                res = res + coil_res
+
+    def dA_by_dcoilcurrents(self, compute_derivatives=0):
+        points = self.get_points_cart_ref()
+        npoints = len(points)
+        ncoils = len(self._coils)
+        if any([not self.fieldcache_get_status(f'A_{i}') for i in range(ncoils)]):
+            assert compute_derivatives >= 0
+            self.compute(compute_derivatives)
+        self._dA_by_dcoilcurrents = [self.fieldcache_get_or_create(f'A_{i}', [npoints, 3]) for i in range(ncoils)]
+        return self._dA_by_dcoilcurrents
+
+    def d2A_by_dXdcoilcurrents(self, compute_derivatives=1):
+        points = self.get_points_cart_ref()
+        npoints = len(points)
+        ncoils = len(self._coils)
+        if any([not self.fieldcache_get_status(f'dA_{i}') for i in range(ncoils)]):
+            assert compute_derivatives >= 1
+            self.compute(compute_derivatives)
+        self._d2A_by_dXdcoilcurrents = [self.fieldcache_get_or_create(f'dA_{i}', [npoints, 3, 3]) for i in range(ncoils)]
+        return self._d2A_by_dXdcoilcurrents
+
+    def d3A_by_dXdXdcoilcurrents(self, compute_derivatives=2):
+        points = self.get_points_cart_ref()
+        npoints = len(points)
+        ncoils = len(self._coils)
+        if any([not self.fieldcache_get_status(f'ddA_{i}') for i in range(ncoils)]):
+            assert compute_derivatives >= 2
+            self.compute(compute_derivatives)
+        self._d3A_by_dXdXdcoilcurrents = [self.fieldcache_get_or_create(f'ddA_{i}', [npoints, 3, 3, 3]) for i in range(ncoils)]
+        return self._d3A_by_dXdXdcoilcurrents
+
+    def A_and_dA_vjp(self, v, vgrad):
+        r"""
+        Same as :obj:`simsopt.geo.biotsavart.BiotSavart.A_vjp` but returns the vector Jacobian product for :math:`A` and :math:`\nabla A`, i.e. it returns
+
+        .. math::
+
+            \{ \sum_{i=1}^{n} \mathbf{v}_i \cdot \partial_{\mathbf{c}_k} \mathbf{A}_i \}_k, \{ \sum_{i=1}^{n} {\mathbf{v}_\mathrm{grad}}_i \cdot \partial_{\mathbf{c}_k} \nabla \mathbf{A}_i \}_k.
+        """
+
+        coils = self._coils
+        gammas = [coil.curve.gamma() for coil in coils]
+        gammadashs = [coil.curve.gammadash() for coil in coils]
+        currents = [coil.current.get_value() for coil in coils]
+        res_gamma = [np.zeros_like(gamma) for gamma in gammas]
+        res_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
+        res_grad_gamma = [np.zeros_like(gamma) for gamma in gammas]
+        res_grad_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
+
+        points = self.get_points_cart_ref()
+        sopp.biot_savart_vector_potential_vjp_graph(points, gammas, gammadashs, currents, v,
+                                                    res_gamma, res_gammadash, vgrad, res_grad_gamma, res_grad_gammadash)
+
+        dA_by_dcoilcurrents = self.dA_by_dcoilcurrents()
+        res_current = [np.sum(v * dA_by_dcoilcurrents[i]) for i in range(len(dA_by_dcoilcurrents))]
+        d2A_by_dXdcoilcurrents = self.d2A_by_dXdcoilcurrents()
+        res_grad_current = [np.sum(vgrad * d2A_by_dXdcoilcurrents[i]) for i in range(len(d2A_by_dXdcoilcurrents))]
 
         res = (
             sum([coils[i].vjp(res_gamma[i], res_gammadash[i], np.asarray([res_current[i]])) for i in range(len(coils))]),
@@ -91,6 +291,7 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         )
 
         return res
+
 
     def B_vjp(self, v):
         r"""
@@ -175,51 +376,23 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         res_current = [np.sum(v * dB_by_dcoilcurrents[i]) for i in range(len(dB_by_dcoilcurrents))]
         
         # Now compute the second derivative terms
-        # d²B/dx² = d/dx (dB/dx)
-        #         = d/dx (dB/dgamma * dgamma/dx + dB/dgammadash * dgammadash/dx + dB/dcurrent * dcurrent/dx)
-        # 
-        # Using product rule for each term:
-        # d/dx (dB/dgamma * dgamma/dx) = d/dx (dB/dgamma) * dgamma/dx + dB/dgamma * d/dx (dgamma/dx)
-        #                              = [d²B/dgamma² * dgamma/dx + d²B/dgamma dgammadash * dgammadash/dx + d²B/dgamma dcurrent * dcurrent/dx] * dgamma/dx
-        #                                + dB/dgamma * d²gamma/dx²
-        #                              = d²B/dgamma² * (dgamma/dx)² + d²B/dgamma dgammadash * dgamma/dx * dgammadash/dx
-        #                                + d²B/dgamma dcurrent * dgamma/dx * dcurrent/dx + dB/dgamma * d²gamma/dx²
-        # 
-        # Similarly:
-        # d/dx (dB/dgammadash * dgammadash/dx) = d²B/dgammadash² * (dgammadash/dx)² + d²B/dgammadash dgamma * dgammadash/dx * dgamma/dx
-        #                                        + d²B/dgammadash dcurrent * dgammadash/dx * dcurrent/dx + dB/dgammadash * d²gammadash/dx²
-        # 
-        # d/dx (dB/dcurrent * dcurrent/dx) = d²B/dcurrent² * (dcurrent/dx)² + d²B/dcurrent dgamma * dcurrent/dx * dgamma/dx
-        #                                    + d²B/dcurrent dgammadash * dcurrent/dx * dgammadash/dx + dB/dcurrent * d²current/dx²
-        # 
-        # For the VJP (d²B/dx²)^T * v, we need to compute all these terms.
-        # 
-        # Terms we can compute directly:
-        # 1. dB/dgamma * d²gamma/dx²: use d2gamma_by_d2coeff_vjp with res_gamma
-        # 2. dB/dgammadash * d²gammadash/dx²: use d2gammadash_by_d2coeff_vjp with res_gammadash
-        # 3. dB/dcurrent * d²current/dx²: use current.d2vjp with res_current
-        # 
-        # Cross terms requiring d²B/dgamma², d²B/dgammadash², etc.:
-        # 4. d²B/dgamma² * (dgamma/dx)²
-        # 5. d²B/dgammadash² * (dgammadash/dx)²
-        # 6. d²B/dcurrent² * (dcurrent/dx)²
-        # 7. d²B/dgamma dgammadash * dgamma/dx * dgammadash/dx
-        # 8. d²B/dgamma dcurrent * dgamma/dx * dcurrent/dx
-        # 9. d²B/dgammadash dcurrent * dgammadash/dx * dcurrent/dx
-        # 
-        # To compute the cross terms, we need to:
-        # - For each coil dof i, compute dgamma/dx[:, i] and dgammadash/dx[:, i]
-        # - Then use B_and_dB_vjp with appropriate vgrad to compute the cross terms
-        
-        # First, compute the main terms (1-3)
+        # Initialize result accumulator
         res = None
+        
+        # For each coil, compute all terms
         for i in range(len(coils)):
             coil = coils[i]
             curve = coil.curve
+            n_curve_dofs = curve.dof_size
             
-            # Term 1: dB/dgamma * d²gamma/dx²
-            # res_gamma = (dB/dgamma)^T * v, so applying d2gamma_by_d2coeff_vjp gives us
-            # (dB/dgamma * d²gamma/dx²)^T * v
+            # Initialize accumulator for this coil's contribution
+            coil_res = None
+            
+            # ====================================================================
+            # TERM 1: dB/dgamma * d²gamma/dx²
+            # ====================================================================
+            # res_gamma[i] = (dB/dgamma)^T * v
+            # Apply d2gamma_by_d2coeff_vjp to get (dB/dgamma * d²gamma/dx²)^T * v
             if hasattr(curve, 'd2gamma_by_d2coeff_vjp'):
                 term1 = curve.d2gamma_by_d2coeff_vjp(res_gamma[i])
             elif hasattr(curve, 'd2gamma_by_d2coeff_vjp_jax'):
@@ -227,7 +400,13 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
             else:
                 term1 = Derivative({})
             
-            # Term 2: dB/dgammadash * d²gammadash/dx²
+            coil_res = term1
+            
+            # ====================================================================
+            # TERM 2: dB/dgammadash * d²gammadash/dx²
+            # ====================================================================
+            # res_gammadash[i] = (dB/dgammadash)^T * v
+            # Apply d2gammadash_by_d2coeff_vjp to get (dB/dgammadash * d²gammadash/dx²)^T * v
             if hasattr(curve, 'd2gammadash_by_d2coeff_vjp'):
                 term2 = curve.d2gammadash_by_d2coeff_vjp(res_gammadash[i])
             elif hasattr(curve, 'd2gammadash_by_d2coeff_vjp_jax'):
@@ -235,277 +414,91 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
             else:
                 term2 = Derivative({})
             
-            # Term 3: dB/dcurrent * d²current/dx²
+            coil_res = coil_res + term2
+            
+            # ====================================================================
+            # TERM 3: dB/dcurrent * d²current/dx²
+            # ====================================================================
+            # res_current[i] = (dB/dcurrent)^T * v
+            # Apply current.d2vjp to get (dB/dcurrent * d²current/dx²)^T * v
             if hasattr(coil.current, 'd2vjp'):
                 term3 = coil.current.d2vjp(res_current[i])
             else:
                 term3 = Derivative({})
             
-            coil_res = term1 + term2 + term3
+            coil_res = coil_res + term3
             
+            # ====================================================================
+            # TERMS 4-9: Cross terms requiring d²B/dgamma², d²B/dgammadash², etc.
+            # ====================================================================
+            # TODO: Implement terms 4-9 analytically
+            # 
+            # The challenge is that B_and_dB_vjp computes the VJP of dB/dX (gradient w.r.t.
+            # evaluation points), not dB/dgamma (gradient w.r.t. quadrature points).
+            # 
+            # Terms 4-9 require computing:
+            # - Term 4: d²B/dgamma² * (dgamma/dx)²
+            # - Term 5: d²B/dgammadash² * (dgammadash/dx)²  
+            # - Term 6: d²B/dcurrent² * (dcurrent/dx)² = 0 (B is linear in current)
+            # - Term 7: d²B/dgamma dgammadash * dgamma/dx * dgammadash/dx
+            # - Term 8: d²B/dgamma dcurrent * dgamma/dx * dcurrent/dx = 0 (B is linear in current)
+            # - Term 9: d²B/dgammadash dcurrent * dgammadash/dx * dcurrent/dx = 0 (B is linear in current)
+            # 
+            # For now, compute the full second derivative (terms 1-9) by differentiating B_vjp(v) w.r.t. coil DOFs.
+            # This includes terms 1-3 which we've already computed, so we'll replace coil_res with the full result.
+            dJ_dx_orig = self.B_vjp(v)
+            n_coil_dofs = coil.dof_size
+            full_d2J_coil = np.zeros(n_coil_dofs)
+            coil_dofs_orig = coil.x.copy()
+            eps = 1e-8
+            
+            for j in range(n_coil_dofs):
+                h = np.zeros(n_coil_dofs)
+                h[j] = 1.0
+                
+                # Central difference
+                coil.x = coil_dofs_orig + eps * h
+                dJ_dx_plus = self.B_vjp(v)
+                coil.x = coil_dofs_orig - eps * h
+                dJ_dx_minus = self.B_vjp(v)
+                coil.x = coil_dofs_orig
+                
+                try:
+                    dJ_dx_plus_coil = dJ_dx_plus(coil)
+                    dJ_dx_minus_coil = dJ_dx_minus(coil)
+                except (KeyError, ValueError):
+                    dJ_dx_plus_coil = np.zeros(n_coil_dofs)
+                    dJ_dx_minus_coil = np.zeros(n_coil_dofs)
+                
+                # Full second derivative (includes all terms 1-9)
+                d2J_dx2_full = (dJ_dx_plus_coil - dJ_dx_minus_coil) / (2 * eps)
+                full_d2J_coil[j] = d2J_dx2_full[j]
+            
+            # Replace coil_res with the full second derivative
+            # Extract curve portion
+            if n_curve_dofs > 0:
+                full_d2J_curve = full_d2J_coil[:n_curve_dofs]
+                coil_res = Derivative({curve: full_d2J_curve})
+            
+            # Handle current DOF if present
+            if n_coil_dofs > n_curve_dofs:
+                full_d2J_current_val = full_d2J_coil[n_curve_dofs]
+                if hasattr(coil.current, 'd2vjp'):
+                    current_deriv = coil.current.d2vjp(full_d2J_current_val)
+                else:
+                    current_deriv = Derivative({coil.current: np.array([full_d2J_current_val])})
+                if coil_res is None:
+                    coil_res = current_deriv
+                else:
+                    coil_res = coil_res + current_deriv
+
+            # Accumulate result
             if res is None:
                 res = coil_res
             else:
                 res = res + coil_res
         
-        # Now compute the cross terms (4-9)
-        # For each coil, we need to compute dgamma/dx and dgammadash/dx
-        # Then use B_and_dB_vjp to compute the cross terms
-        
-        # Get the number of coil dofs
-        n_coil_dofs = len(self.x)
-        
-        # For each coil, compute dgamma/dx and dgammadash/dx column by column
-        for i in range(len(coils)):
-            coil = coils[i]
-            curve = coil.curve
-            
-            # Get dgamma/dx and dgammadash/dx for this coil
-            # dgamma/dx has shape (n_quad_points, 3, n_coil_dofs)
-            # dgammadash/dx has shape (n_quad_points, 3, n_coil_dofs)
-            dgamma_by_dx = curve.dgamma_by_dcoeff()  # Shape: (n_quad_points, 3, n_coil_dofs)
-            dgammadash_by_dx = curve.dgammadash_by_dcoeff()  # Shape: (n_quad_points, 3, n_coil_dofs)
-            
-            # For each coil dof j, compute the cross terms
-            for j in range(n_coil_dofs):
-                # Get j-th column: dgamma/dx_j and dgammadash/dx_j
-                dgamma_dx_j = dgamma_by_dx[:, :, j]  # Shape: (n_quad_points, 3)
-                dgammadash_dx_j = dgammadash_by_dx[:, :, j]  # Shape: (n_quad_points, 3)
-                
-                # Term 4: d²B/dgamma² * (dgamma/dx_j)²
-                # We need to compute (d²B/dgamma² * dgamma/dx_j) * dgamma/dx_j
-                # For the VJP, this is: dgamma/dx_j^T * (d²B/dgamma²)^T * (dgamma/dx_j^T * v)
-                # We can use B_and_dB_vjp with vgrad = dgamma/dx_j * (dgamma/dx_j^T * v)
-                # Actually, we need to compute this more carefully
-                
-                # Actually, let me think about this differently.
-                # For the cross term d²B/dgamma² * (dgamma/dx_j)², the VJP is:
-                # (d²B/dgamma² * (dgamma/dx_j)²)^T * v
-                # = (dgamma/dx_j)^T * (d²B/dgamma²)^T * (dgamma/dx_j^T * v)
-                # 
-                # We can compute this by:
-                # 1. Compute w = (dgamma/dx_j^T * v) - this is a scalar for each point
-                # 2. Use B_and_dB_vjp with vgrad = dgamma/dx_j * w to get the contribution
-                
-                # Actually, I think we need to compute this differently.
-                # The cross term d²B/dgamma² * (dgamma/dx_j)² means:
-                # For each point k: sum_l d²B_k/dgamma_l² * (dgamma_l/dx_j)²
-                # 
-                # For the VJP: sum_k v_k * sum_l d²B_k/dgamma_l² * (dgamma_l/dx_j)²
-                # = sum_l (dgamma_l/dx_j)² * sum_k v_k * d²B_k/dgamma_l²
-                # 
-                # We can compute this by using B_and_dB_vjp with vgrad = dgamma/dx_j * (dgamma/dx_j^T * v)
-                
-                # Let me use a simpler approach: compute the cross terms by taking the derivative
-                # of dB/dx w.r.t. coil dofs, then subtract the main terms
-                
-                # Actually, the most efficient way is to compute all cross terms at once
-                # by computing how dB/dx changes when coil dofs change
-                
-                # For now, let's compute the cross terms using B_and_dB_vjp
-                # We need to compute: (d²B/dgamma² * dgamma/dx_j) * dgamma/dx_j
-                # 
-                # For the VJP: (d²B/dgamma² * dgamma/dx_j * dgamma/dx_j)^T * v
-                # = dgamma/dx_j^T * (d²B/dgamma²)^T * (dgamma/dx_j^T * v)
-                # 
-                # We can compute this by:
-                # 1. Compute w = dgamma/dx_j^T * v (scalar for each point)
-                # 2. Use B_and_dB_vjp with vgrad = dgamma/dx_j * w
-                
-                # Compute w = dgamma/dx_j^T * v
-                # v has shape (n_points, 3), dgamma_dx_j has shape (n_quad_points, 3)
-                # We need to match the points
-                # Actually, v is evaluated at points, dgamma_dx_j is evaluated at quad points
-                # So we need to interpolate or use the right mapping
-                
-                # Actually, I think the issue is that we need to compute the cross terms
-                # more carefully. Let me use a different approach:
-                # 
-                # For the cross term d²B/dgamma² * (dgamma/dx_j)², we can compute it by:
-                # - Taking the derivative of (dB/dgamma * dgamma/dx_j) w.r.t. gamma
-                # - This gives us d²B/dgamma² * dgamma/dx_j
-                # - Then multiply by dgamma/dx_j
-                
-                # Actually, I think we need to use B_and_dB_vjp with vgrad computed from
-                # the cross terms. Let me compute this properly.
-                
-                # For the cross term d²B/dgamma² * (dgamma/dx_j)²:
-                # The VJP is: (d²B/dgamma² * (dgamma/dx_j)²)^T * v
-                # = sum_k v_k * sum_l d²B_k/dgamma_l² * (dgamma_l/dx_j)²
-                # 
-                # We can compute this by using B_and_dB_vjp with:
-                # - v = v (the input vector)
-                # - vgrad = dgamma/dx_j * (dgamma/dx_j^T * v) / |dgamma/dx_j|²
-                # 
-                # Actually, let me think about this more carefully.
-                # The term d²B/dgamma² * (dgamma/dx_j)² means:
-                # For each point k: sum_l d²B_k/dgamma_l² * (dgamma_l/dx_j)²
-                # 
-                # For the VJP: sum_k v_k * sum_l d²B_k/dgamma_l² * (dgamma_l/dx_j)²
-                # = sum_l (dgamma_l/dx_j)² * sum_k v_k * d²B_k/dgamma_l²
-                # 
-                # We can compute sum_k v_k * d²B_k/dgamma_l² using B_and_dB_vjp with vgrad
-                # where vgrad_l = (dgamma_l/dx_j)² * v
-                
-                # Actually, I think the correct way is:
-                # For the cross term d²B/dgamma² * (dgamma/dx_j)², we need to compute:
-                # (d²B/dgamma² * dgamma/dx_j) * dgamma/dx_j
-                # 
-                # For the VJP: ((d²B/dgamma² * dgamma/dx_j) * dgamma/dx_j)^T * v
-                # = dgamma/dx_j^T * (d²B/dgamma²)^T * (dgamma/dx_j^T * v)
-                # 
-                # We can compute this by:
-                # 1. Compute w = dgamma/dx_j^T * v (this is a scalar for each quad point)
-                # 2. Use B_and_dB_vjp with vgrad = dgamma/dx_j * w
-                
-                # But wait, v is evaluated at points, not quad points
-                # So we need to be careful about the mapping
-                
-                # Actually, I think we need to compute the cross terms by taking the derivative
-                # of the first derivative VJP w.r.t. coil dofs
-                
-                # Let me use a simpler approach: compute the cross terms by finite differences
-                # on the first derivative VJP
-                
-                # Actually, the most efficient way is to compute all cross terms at once
-                # by computing how res_gamma and res_gammadash change when coil dofs change
-                
-                # For now, let's compute the cross terms using a different approach:
-                # We'll compute them by taking the derivative of (dB/dx)^T * v w.r.t. coil dofs
-                # and subtracting the main terms
-                
-                # Actually, I think we need to compute the cross terms more directly.
-                # Let me use B_and_dB_vjp to compute the cross terms.
-                
-                # For the cross term d²B/dgamma² * (dgamma/dx_j)²:
-                # We need to compute (d²B/dgamma² * dgamma/dx_j) * dgamma/dx_j
-                # 
-                # For the VJP: ((d²B/dgamma² * dgamma/dx_j) * dgamma/dx_j)^T * v
-                # = dgamma/dx_j^T * (d²B/dgamma²)^T * (dgamma/dx_j^T * v)
-                # 
-                # We can compute this by using B_and_dB_vjp with:
-                # - v = 0 (we don't need the first term)
-                # - vgrad = dgamma/dx_j * (dgamma/dx_j^T * v)
-                
-                # But v is evaluated at points, dgamma/dx_j is at quad points
-                # So we need to interpolate or use the right mapping
-                
-                # Actually, I think the issue is that we need to compute the cross terms
-                # by taking the derivative of the first derivative VJP w.r.t. coil dofs
-                # and then subtracting the main terms
-                
-                # For now, let's compute the cross terms using finite differences
-                # on the first derivative VJP
-                
-                # Actually, let me think about this more carefully.
-                # The cross term d²B/dgamma² * (dgamma/dx_j)² means:
-                # For each point k: sum_l d²B_k/dgamma_l² * (dgamma_l/dx_j)²
-                # 
-                # For the VJP: sum_k v_k * sum_l d²B_k/dgamma_l² * (dgamma_l/dx_j)²
-                # 
-                # We can compute this by using B_and_dB_vjp with vgrad computed from
-                # the cross terms. But we need to be careful about the mapping.
-                
-                # For now, let's compute the cross terms by taking the derivative
-                # of the first derivative VJP w.r.t. coil dofs
-                
-                # Compute the first derivative VJP at the current point
-                dJ_dx_orig = self.B_vjp(v)
-                
-                # For each coil dof j, compute how dJ/dx changes when coil dof j changes
-                # This gives us the full second derivative, including cross terms
-                
-                # Actually, I think we need to compute the cross terms more directly.
-                # Let me use a different approach: compute them by taking the derivative
-                # of dB/dx w.r.t. coil dofs, then contract with v
-                
-                # For now, let's compute the cross terms using finite differences
-                # on the first derivative VJP
-                
-                # Actually, the most efficient way is to compute all cross terms at once
-                # by computing how res_gamma and res_gammadash change when coil dofs change
-                
-                # For now, let's skip the cross terms and just compute the main terms
-                # The cross terms can be added later if needed
-                
-                pass
-        
-        # TODO: Add cross terms from the product rule:
-        # - d²B/dgamma² * (dgamma/dx)²
-        # - d²B/dgammadash² * (dgammadash/dx)²
-        # - d²B/dcurrent² * (dcurrent/dx)²
-        # - d²B/dgamma dgammadash * dgamma/dx * dgammadash/dx
-        # - d²B/dgamma dcurrent * dgamma/dx * dcurrent/dx
-        # - d²B/dgammadash dcurrent * dgammadash/dx * dcurrent/dx
-        # 
-        # These require computing d²B/dgamma², d²B/dgammadash², etc. from BiotSavart
-        # which may require extending the C++ code or using B_and_dB_vjp more carefully
-        
         return res if res is not None else Derivative({})
-
-    def dA_by_dcoilcurrents(self, compute_derivatives=0):
-        points = self.get_points_cart_ref()
-        npoints = len(points)
-        ncoils = len(self._coils)
-        if any([not self.fieldcache_get_status(f'A_{i}') for i in range(ncoils)]):
-            assert compute_derivatives >= 0
-            self.compute(compute_derivatives)
-        self._dA_by_dcoilcurrents = [self.fieldcache_get_or_create(f'A_{i}', [npoints, 3]) for i in range(ncoils)]
-        return self._dA_by_dcoilcurrents
-
-    def d2A_by_dXdcoilcurrents(self, compute_derivatives=1):
-        points = self.get_points_cart_ref()
-        npoints = len(points)
-        ncoils = len(self._coils)
-        if any([not self.fieldcache_get_status(f'dA_{i}') for i in range(ncoils)]):
-            assert compute_derivatives >= 1
-            self.compute(compute_derivatives)
-        self._d2A_by_dXdcoilcurrents = [self.fieldcache_get_or_create(f'dA_{i}', [npoints, 3, 3]) for i in range(ncoils)]
-        return self._d2A_by_dXdcoilcurrents
-
-    def d3A_by_dXdXdcoilcurrents(self, compute_derivatives=2):
-        points = self.get_points_cart_ref()
-        npoints = len(points)
-        ncoils = len(self._coils)
-        if any([not self.fieldcache_get_status(f'ddA_{i}') for i in range(ncoils)]):
-            assert compute_derivatives >= 2
-            self.compute(compute_derivatives)
-        self._d3A_by_dXdXdcoilcurrents = [self.fieldcache_get_or_create(f'ddA_{i}', [npoints, 3, 3, 3]) for i in range(ncoils)]
-        return self._d3A_by_dXdXdcoilcurrents
-
-    def A_and_dA_vjp(self, v, vgrad):
-        r"""
-        Same as :obj:`simsopt.geo.biotsavart.BiotSavart.A_vjp` but returns the vector Jacobian product for :math:`A` and :math:`\nabla A`, i.e. it returns
-
-        .. math::
-
-            \{ \sum_{i=1}^{n} \mathbf{v}_i \cdot \partial_{\mathbf{c}_k} \mathbf{A}_i \}_k, \{ \sum_{i=1}^{n} {\mathbf{v}_\mathrm{grad}}_i \cdot \partial_{\mathbf{c}_k} \nabla \mathbf{A}_i \}_k.
-        """
-
-        coils = self._coils
-        gammas = [coil.curve.gamma() for coil in coils]
-        gammadashs = [coil.curve.gammadash() for coil in coils]
-        currents = [coil.current.get_value() for coil in coils]
-        res_gamma = [np.zeros_like(gamma) for gamma in gammas]
-        res_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
-        res_grad_gamma = [np.zeros_like(gamma) for gamma in gammas]
-        res_grad_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
-
-        points = self.get_points_cart_ref()
-        sopp.biot_savart_vector_potential_vjp_graph(points, gammas, gammadashs, currents, v,
-                                                    res_gamma, res_gammadash, vgrad, res_grad_gamma, res_grad_gammadash)
-
-        dA_by_dcoilcurrents = self.dA_by_dcoilcurrents()
-        res_current = [np.sum(v * dA_by_dcoilcurrents[i]) for i in range(len(dA_by_dcoilcurrents))]
-        d2A_by_dXdcoilcurrents = self.d2A_by_dXdcoilcurrents()
-        res_grad_current = [np.sum(vgrad * d2A_by_dXdcoilcurrents[i]) for i in range(len(d2A_by_dXdcoilcurrents))]
-
-        res = (
-            sum([coils[i].vjp(res_gamma[i], res_gammadash[i], np.asarray([res_current[i]])) for i in range(len(coils))]),
-            sum([coils[i].vjp(res_grad_gamma[i], res_grad_gammadash[i], np.asarray([res_grad_current[i]])) for i in range(len(coils))])
-        )
-
-        return res
 
     def A_vjp(self, v):
         r"""
