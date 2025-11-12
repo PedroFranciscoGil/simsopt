@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-from jax import grad, hessian, jit as jaxjit
+from jax import grad, hessian, jit as jaxjit, jacfwd
 from ..geo.jit import jit
 from ..geo.config import parameters
 import simsoptpp as sopp
@@ -206,12 +206,23 @@ class SquaredFluxJax(Optimizable):
           available options are ``"quadratic flux"``, ``"normalized"``, and ``"local"``.
     """
 
-    def __init__(self, surface, field, target=None, definition="quadratic flux", threshold=0.0):
+    def __init__(self, surface, field, target=None, definition="quadratic flux", threshold=0.0, fixed_surface=True):
+        from simsopt.geo import JaxSurfaceRZFourier
         self.surface = surface
+        self.fixed_surface = fixed_surface
+        # Compute target shape before fixing (normal() needs dofs)
         if target is not None:
             self.target = np.ascontiguousarray(target)
         else:
             self.target = np.zeros(self.surface.normal().shape[:2])
+        # Now fix/unfix the surface after we've computed what we need
+        if fixed_surface:
+            self.surface.fix_all()
+        else:
+            if not isinstance(self.surface, JaxSurfaceRZFourier):
+                raise ValueError("Surface must be a JaxSurfaceRZFourier if fixed_surface is False for Hessian computation")
+            # Unfix the surface to ensure it's free for optimization
+            self.surface.unfix_all()
         self.field = field
         xyz = self.surface.gamma()
         self.field.set_points(xyz.reshape((-1, 3)))
@@ -219,19 +230,40 @@ class SquaredFluxJax(Optimizable):
             raise ValueError("Unrecognized option for 'definition'.")
         self.definition = definition
         self.threshold = threshold
-        Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field])
+        if fixed_surface:
+            Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field, surface])
+        else:
+            Optimizable.__init__(self, x0=np.asarray([]), depends_on=[field])
         # Use JAX's jit directly with static_argnums to mark definition as static (not traced)
         # This allows string arguments to be passed without JAX trying to trace them
         if parameters['jit']:
             self.J_jax = jaxjit(squared_flux_pure, static_argnums=(3,))
         else:
             self.J_jax = squared_flux_pure
+        # Create wrapper functions that take definition as a parameter for mixed derivatives
+        def dJ_dnormals_wrapper(Bcoil, target, normals, definition):
+            return grad(self.J_jax, argnums=2)(Bcoil, target, normals, definition)
+        
+        # First-order derivatives
         self.dJ_dBcoil = jit(lambda Bcoil, target, normals: grad(self.J_jax, argnums=0)(Bcoil, target, normals, self.definition))
         self.dJ_dtarget = jit(lambda Bcoil, target, normals: grad(self.J_jax, argnums=1)(Bcoil, target, normals, self.definition))
         self.dJ_dnormals = jit(lambda Bcoil, target, normals: grad(self.J_jax, argnums=2)(Bcoil, target, normals, self.definition))
-        # Compute Hessian with respect to Bcoil
-        self.d2J_dBcoil2_jit = jit(lambda Bcoil, target, normals: hessian(self.J_jax, argnums=0)(Bcoil, target, normals, self.definition))
-
+        
+        # Second-order derivatives - pure Hessians
+        self.d2J_dBcoil2 = jit(lambda Bcoil, target, normals: hessian(self.J_jax, argnums=0)(Bcoil, target, normals, self.definition))
+        self.d2J_dnormals2 = jit(lambda Bcoil, target, normals: hessian(self.J_jax, argnums=2)(Bcoil, target, normals, self.definition))
+        
+        # Mixed second-order derivatives - need to use wrappers with static_argnums
+        def make_d2J_dBcoil_dnormals(definition):
+            def mixed_deriv(Bcoil, target, normals):
+                return jacfwd(dJ_dnormals_wrapper, argnums=0)(Bcoil, target, normals, definition)
+            if parameters['jit']:
+                return jaxjit(mixed_deriv)
+            else:
+                return mixed_deriv
+        
+        self.d2J_dBcoil_dnormals = make_d2J_dBcoil_dnormals(self.definition)
+   
     def J(self):
         n = self.surface.normal()
         xyz = self.surface.gamma()
@@ -246,200 +278,232 @@ class SquaredFluxJax(Optimizable):
 
     @derivative_dec
     def dJ(self):
-        """Return Jacobian with respect to both coil and plasma dofs"""
+        """Return Jacobian with respect to both coil and surface dofs"""
+        from .._core.derivative import Derivative
+        
         xyz = self.surface.gamma()
         self.field.set_points(xyz.reshape((-1, 3)))
         n = self.surface.normal()
         Bcoil = self.field.B().reshape(n.shape)
-        dJdB = self.dJ_dBcoil(jnp.asarray(Bcoil), jnp.asarray(self.target), jnp.asarray(n))
-        # Reshape dJdB from (nphi, ntheta, 3) to (nphi * ntheta, 3) for B_vjp
-        dJdB_flat = dJdB.reshape((-1, 3))
-        if np.isclose(self.J(), 0.0, atol=1e-10, rtol=1e-10):
-            return self.field.B_vjp(jnp.zeros_like(dJdB_flat))
-        else:
-            return self.field.B_vjp(dJdB_flat) #\
-            # + Derivative({self.surface.x: self.dtarget_dcoefs(self.dJ_dtarget(Bcoil, self.target, n))}) \
-            # + Derivative({self.surface.x: self.dnormals_dcoefs(self.dJ_dnormals(Bcoil, self.target, n))})
-    
-    def d2J_dcoil_dofs2(self):
-        """Return Hessian with respect to coil degrees of freedom.
         
-        This applies the chain rule through B_vjp to convert the Hessian
-        w.r.t. Bcoil to the Hessian w.r.t. coil dofs.
-        
-        The Hessian w.r.t. coil dofs is: (dB/dx)^T * H_B * (dB/dx)
-        where H_B is the Hessian w.r.t. Bcoil.
-        
-        We compute this by:
-        1. For each coil dof i, compute (dB/dx) * e_i (change in B when dof i changes)
-        2. Multiply by H_B to get H_B * (dB/dx) * e_i
-        3. Apply B_vjp to get (dB/dx)^T * H_B * (dB/dx) * e_i (i-th column of Hessian)
-        
-        Returns:
-            Hessian matrix of shape (n_coil_dofs, n_coil_dofs)
-        """
-        xyz = self.surface.gamma()
-        self.field.set_points(xyz.reshape((-1, 3)))
-        n = self.surface.normal()
-        Bcoil = self.field.B().reshape(n.shape)
+        # Convert to JAX arrays
         Bcoil_jax = jnp.asarray(Bcoil)
         target_jax = jnp.asarray(self.target)
         normals_jax = jnp.asarray(n)
         
-        # Compute Hessian w.r.t. Bcoil: shape will be (nphi, ntheta, 3, nphi, ntheta, 3)
-        H_B = self.d2J_dBcoil2_jit(Bcoil_jax, target_jax, normals_jax)
+        # Compute dJ/dB (derivative w.r.t. B field)
+        dJdB = self.dJ_dBcoil(Bcoil_jax, target_jax, normals_jax)
+        # Reshape dJdB from (nphi, ntheta, 3) to (nphi * ntheta, 3) for B_vjp
+        # Convert JAX array to numpy array for B_vjp
+        dJdB_flat = np.asarray(dJdB.reshape((-1, 3)))
         
-        # Reshape to (nphi * ntheta * 3, nphi * ntheta * 3)
+        # Compute derivative w.r.t. coil dofs
+        # Only use zeros if J() actually returns 0.0 (i.e., below threshold)
+        J_val = self.J()
+        if J_val == 0.0:
+            coil_deriv = self.field.B_vjp(np.zeros_like(dJdB_flat))
+        else:
+            coil_deriv = self.field.B_vjp(dJdB_flat)
+        
+        # If surface is fixed, only return coil derivatives
+        if self.fixed_surface:
+            return coil_deriv
+        
+        # Compute derivatives w.r.t. surface dofs
+        # dJ/ds = dJ/dn * dn/ds + dJ/dB * dB/dgamma * dgamma/ds
+        # where dB/dgamma comes from the fact that B is evaluated at surface points
+        
+        # dJ/dn (derivative w.r.t. normals)
+        dJdn = self.dJ_dnormals(Bcoil_jax, target_jax, normals_jax)
+        # Convert JAX array to numpy array for dnormal_by_dcoeff_vjp
+        # dnormal_by_dcoeff_vjp expects shape (nphi, ntheta, 3), not flattened
+        dJdn_np = np.asarray(dJdn)
+        
+        # Compute dJ/dgamma (derivative w.r.t. surface position through B field)
+        # This is dJ/dB * dB/dgamma, where dB/dgamma comes from evaluating B at different points
+        # We can compute this using B_vjp with dJdB, but we need to account for the fact
+        # that changing gamma changes where B is evaluated
+        # Actually, B_vjp already accounts for this through the field's dependence on points
+        
+        # For now, we'll compute the surface derivative contributions:
+        # 1. dJ/dn * dn/ds (normal contribution)
+        dJdn_surf = self.surface.dnormal_by_dcoeff_vjp(dJdn_np)
+        
+        # 2. dJ/dgamma * dgamma/ds (position contribution through B field)
+        # This is more complex - changing gamma changes where B is evaluated
+        # We need dB/dgamma, which is dB/dX where X is the evaluation point
+        # For BiotSavart, dB/dX can be computed, but it's expensive
+        # For now, we'll approximate by only including the normal contribution
+        # A more complete implementation would include dB/dX terms
+        
+        # Combine derivatives
+        # B_vjp returns a Derivative object, so we can add to it
+        if isinstance(coil_deriv, Derivative):
+            # Add surface derivative to the existing Derivative
+            if isinstance(dJdn_surf, np.ndarray):
+                # Create a Derivative object for the surface derivative
+                surface_deriv = Derivative({self.surface: dJdn_surf})
+                return coil_deriv + surface_deriv
+            elif isinstance(dJdn_surf, Derivative):
+                return coil_deriv + dJdn_surf
+            else:
+                # If dJdn_surf is not a recognized type, wrap it
+                surface_deriv = Derivative({self.surface: np.asarray(dJdn_surf)})
+                return coil_deriv + surface_deriv
+        else:
+            # If coil_deriv is not a Derivative (shouldn't happen), create one
+            derivs = {}
+            if isinstance(coil_deriv, np.ndarray):
+                # This shouldn't happen, but handle it
+                pass
+            if isinstance(dJdn_surf, np.ndarray):
+                derivs[self.surface] = dJdn_surf
+            elif isinstance(dJdn_surf, Derivative):
+                derivs = dJdn_surf.data.copy()
+            else:
+                derivs[self.surface] = np.asarray(dJdn_surf)
+            return Derivative(derivs)
+    
+    def d2J(self):
+        r"""
+        Computes the Hessian of the squared flux penalty.
+        
+        The Hessian is computed using the chain rule:
+        
+        .. math::
+            \frac{\partial^2 J}{\partial c_i \partial c_j} = 
+            \frac{\partial B_k}{\partial c_i} \frac{\partial^2 J}{\partial B_k \partial B_l} \frac{\partial B_l}{\partial c_j}
+            + \frac{\partial n_k}{\partial c_i} \frac{\partial^2 J}{\partial n_k \partial n_l} \frac{\partial n_l}{\partial c_j}
+            + \frac{\partial B_k}{\partial c_i} \frac{\partial^2 J}{\partial B_k \partial n_l} \frac{\partial n_l}{\partial c_j}
+            + \frac{\partial n_k}{\partial c_i} \frac{\partial^2 J}{\partial n_k \partial B_l} \frac{\partial B_l}{\partial c_j}
+            + \frac{\partial B_k}{\partial c_i} \frac{\partial^2 J}{\partial B_k \partial T_l} \frac{\partial T_l}{\partial c_j}
+            + \frac{\partial n_k}{\partial c_i} \frac{\partial^2 J}{\partial n_k \partial T_l} \frac{\partial T_l}{\partial c_j}
+        
+        where :math:`c_i` are the coil dofs, :math:`s_j` are the surface dofs,
+        :math:`B_k` are the magnetic field components, :math:`n_k` are the normal components,
+        and :math:`T_l` are the target values.
+        
+        Returns:
+            Tuple of four matrices: (H_cc, H_cs, H_sc, H_ss) where:
+            - H_cc: Hessian w.r.t. coil dofs (shape: (n_coil_dofs, n_coil_dofs))
+            - H_cs: Mixed Hessian coil-surface (shape: (n_coil_dofs, n_surf_dofs))
+            - H_sc: Mixed Hessian surface-coil (shape: (n_surf_dofs, n_coil_dofs))
+            - H_ss: Hessian w.r.t. surface dofs (shape: (n_surf_dofs, n_surf_dofs))
+        """
+        n = self.surface.normal()
+        xyz = self.surface.gamma()
+        self.field.set_points(xyz.reshape((-1, 3)))
+        Bcoil = self.field.B().reshape(n.shape)
+        
         nphi, ntheta = Bcoil.shape[0], Bcoil.shape[1]
         n_B = nphi * ntheta * 3
+        
+        # Convert to JAX arrays
+        Bcoil_jax = jnp.asarray(Bcoil)
+        target_jax = jnp.asarray(self.target)
+        normals_jax = jnp.asarray(n)
+        
+        # Compute Hessians w.r.t. Bcoil, normals, and mixed terms
+        # H_B: shape (nphi, ntheta, 3, nphi, ntheta, 3) -> reshape to (n_B, n_B)
+        H_B = self.d2J_dBcoil2(Bcoil_jax, target_jax, normals_jax)
         H_B_flat = H_B.reshape((n_B, n_B))
         
-        # Get the number of coil dofs
-        dJdB_flat = self.dJ_dBcoil(Bcoil_jax, target_jax, normals_jax).reshape((-1, 3))
-        dJ_dcoil_dofs = self.field.B_vjp(dJdB_flat)
-        n_coil_dofs = len(dJ_dcoil_dofs(self.field))
+        # H_n: shape (nphi, ntheta, 3, nphi, ntheta, 3) -> reshape to (n_B, n_B)
+        H_n = self.d2J_dnormals2(Bcoil_jax, target_jax, normals_jax)
+        H_n_flat = H_n.reshape((n_B, n_B))
         
-        # Initialize Hessian w.r.t. coil dofs
-        H_coil = np.zeros((n_coil_dofs, n_coil_dofs))
+        # H_Bn: shape (nphi, ntheta, 3, nphi, ntheta, 3) -> reshape to (n_B, n_B)
+        H_Bn = self.d2J_dBcoil_dnormals(Bcoil_jax, target_jax, normals_jax)
+        H_Bn_flat = H_Bn.reshape((n_B, n_B))
         
-        # Compute Hessian as matrix product: H_x = (dB/dx)^T * H_B * (dB/dx)
-        # 
-        # To compute dB/dx analytically:
-        # B_vjp(v) gives us (dB/dx)^T * v, which is the derivative of (v^T * B) w.r.t. coil dofs
-        # For each point j, B_vjp(e_j) gives us dB_j/dx for all coil dofs (j-th row of dB/dx)
+        # Get number of dofs
+        n_coil_dofs = self.field.dof_size
+        # Check if surface is fixed - use dof_size == 0 as indicator
+        n_surf_dofs = self.surface.dof_size
         
-        # Pre-compute dB/dx matrix: dB_dx[j, i] = dB_j/dx_i
-        # B is evaluated at nphi * ntheta points, each with 3 components
-        # So B has shape (nphi * ntheta, 3), and when flattened it's (n_B,) where n_B = nphi * ntheta * 3
-        n_points = nphi * ntheta
-        dB_dx = np.zeros((n_B, n_coil_dofs))
+        # Initialize output Hessian blocks
+        H_cc = np.zeros((n_coil_dofs, n_coil_dofs))
+        H_cs = np.zeros((n_coil_dofs, n_surf_dofs))
+        H_sc = np.zeros((n_surf_dofs, n_coil_dofs))
+        H_ss = np.zeros((n_surf_dofs, n_surf_dofs))
         
-        # For each point and component where B is evaluated
-        for point_idx in range(n_points):
-            for comp_idx in range(3):
-                j = point_idx * 3 + comp_idx
-                
-                # Create unit vector at position (point_idx, comp_idx)
-                # B_vjp expects input of shape (n_points, 3)
-                e_j_reshaped = np.zeros((n_points, 3))
-                e_j_reshaped[point_idx, comp_idx] = 1.0
-                
-                # Compute (dB/dx)^T * e_j using B_vjp
-                # This gives us dB_j/dx for all coil dofs (j-th row of dB/dx)
-                # B_vjp computes the derivative of (e_j^T * B) w.r.t. coil dofs
-                # which is (dB/dx)^T * e_j, i.e., dB_j/dx for all coil dofs
-                dB_j_dx = self.field.B_vjp(jnp.asarray(e_j_reshaped))
-                dB_j_dx_array = dB_j_dx(self.field)
-                
-                # Store in dB/dx matrix (j-th row is dB_j/dx)
-                dB_dx[j, :] = dB_j_dx_array
+        # Compute dB/dc (derivative of B w.r.t. coil dofs)
+        # Shape: (npoints, 3, n_coil_dofs)
+        dB_dc = self._compute_B_derivs()
+        dB_dc_flat = dB_dc.reshape((n_B, n_coil_dofs))
         
-        # Compute Hessian: H_x = (dB/dx)^T * H_B * (dB/dx) + (dJ/dB) @ (d²B/dx²)
-        # 
-        # First term: (dB/dx)^T * H_B * (dB/dx)
-        # Step 1: Compute H_B * dB/dx (matrix multiplication)
-        # H_B_flat is (n_B, n_B), dB_dx is (n_B, n_coil_dofs)
-        # Result is (n_B, n_coil_dofs)
-        H_B_times_dB_dx = jnp.dot(H_B_flat, dB_dx)
+        # Compute dn/ds (derivative of normal w.r.t. surface dofs)
+        # Shape: (nphi, ntheta, 3, n_surf_dofs)
+        if n_surf_dofs > 0:
+            dn_ds = self.surface.dnormal_by_dcoeff()  # Shape: (nphi, ntheta, 3, n_surf_dofs)
+            dn_ds_flat = dn_ds.reshape((n_B, n_surf_dofs))
+        else:
+            dn_ds_flat = np.zeros((n_B, 0))
         
-        # Step 2: Compute (dB/dx)^T * (H_B * dB/dx)
-        # This is done by applying B_vjp to each column of H_B_times_dB_dx
-        H_B_times_dB_dx_reshaped = H_B_times_dB_dx.reshape((-1, 3))  # Shape: (n_points, 3)
+        # Compute Hessian blocks using chain rule:
+        # Since target is fixed (dT/dc = 0, dT/ds = 0), we only need:
+        # H_cc = (dB/dc)^T @ H_B @ (dB/dc)
+        H_cc = dB_dc_flat.T @ H_B_flat @ dB_dc_flat
         
-        # For each column of H_B_times_dB_dx, apply B_vjp to get (dB/dx)^T * column
-        for i in range(n_coil_dofs):
-            # Get i-th column of H_B_times_dB_dx
-            col_i = H_B_times_dB_dx[:, i].reshape((-1, 3))  # Shape: (n_points, 3)
+        if n_surf_dofs > 0:
+            # H_ss = (dn/ds)^T @ H_n @ (dn/ds)
+            H_ss = dn_ds_flat.T @ H_n_flat @ dn_ds_flat
             
-            # Apply B_vjp to get (dB/dx)^T * col_i
-            # This gives us the i-th column of the first term of the Hessian
-            dH_col_dcoil_dofs = self.field.B_vjp(jnp.asarray(col_i))
-            H_coil[:, i] = dH_col_dcoil_dofs(self.field)
-        
-        # Second term: (dJ/dB) @ (d²B/dx²)
-        # 
-        # To compute d²B/dx² analytically, we use the chain rule:
-        # 
-        # First derivative: dB/dx = dB/dgamma * dgamma/dx + dB/dgammadash * dgammadash/dx + dB/dcurrent * dcurrent/dx
-        # 
-        # Second derivative (using product rule):
-        # d²B/dx² = d/dx (dB/dx)
-        #          = d/dx (dB/dgamma * dgamma/dx) + d/dx (dB/dgammadash * dgammadash/dx) + d/dx (dB/dcurrent * dcurrent/dx)
-        # 
-        # Using product rule for each term:
-        # d/dx (dB/dgamma * dgamma/dx) = (d²B/dgamma² * dgamma/dx) * dgamma/dx + dB/dgamma * d²gamma/dx²
-        #                              + d²B/dgamma dgammadash * dgamma/dx * dgammadash/dx
-        #                              + d²B/dgamma dcurrent * dgamma/dx * dcurrent/dx
-        # 
-        # Similar for other terms.
-        # 
-        # The key insight: We can compute this using B_vjp and the second derivatives of gamma, gammadash, current
-        # 
-        # For each coil dof i, we need: sum_k (dJ/dB_k) * d²B_k/dx²[:, i]
-        # This is equivalent to: (d²B/dx²)^T * dJ/dB evaluated at column i
-        # 
-        # We can compute this by:
-        # 1. For each coil dof i, compute how dB/dx changes when coil dof i changes
-        # 2. This requires computing d²B/dx²[:, :, i]
-        # 3. Then contract with dJ/dB
-        # 
-        # To compute d²B/dx²[:, :, i] analytically:
-        # - We need d²gamma/dx², d²gammadash/dx², d²current/dx² (from curve/coil)
-        # - We need d²B/dgamma², d²B/dgammadash², d²B/dgamma dgammadash (from BiotSavart)
-        # 
-        # Actually, a more efficient approach: compute the second term by taking the derivative
-        # of dJ/dx w.r.t. coil dofs, then subtract the first term
-        # 
-        # dJ/dx = (dB/dx)^T * dJ/dB
-        # d/dx_i (dJ/dx) = d/dx_i [(dB/dx)^T * dJ/dB]
-        #                = [d/dx_i (dB/dx)^T] * dJ/dB + (dB/dx)^T * [d/dx_i (dJ/dB)]
-        #                = [d²B/dx²[:, :, i]^T] * dJ/dB + (dB/dx)^T * [d²J/dB² * dB/dx[:, i]]
-        #                = [d²B/dx²[:, :, i]^T] * dJ/dB + (dB/dx)^T * H_B * dB/dx[:, i]
-        # 
-        # The first part is the second term, the second part is already in the first term.
-        # 
-        # So: second_term[:, i] = d/dx_i (dJ/dx) - first_term[:, i]
-        # 
-        # We can compute d/dx_i (dJ/dx) by taking the derivative of dJ/dx w.r.t. coil dof i
-        # using finite differences or by computing it analytically
-        
-        # For now, let's compute the second term using finite differences on dJ/dx
-        # This is more efficient than computing d²B/dx² directly
-        dJ_dB = dJdB_flat.reshape((-1, 3))  # Shape: (n_points, 3)
-        epsilon = 1e-6
-        coil_dofs_orig = self.field.x.copy()
-        second_term = np.zeros((n_coil_dofs, n_coil_dofs))
-        
-        # Compute dJ/dx at original point
-        dJ_dx_orig = objective_jax.dJ()
-        
-        # For each coil dof i, compute d/dx_i (dJ/dx)
-        for i in range(n_coil_dofs):
-            # Create unit vector for coil dof i
-            e_i = np.zeros(n_coil_dofs)
-            e_i[i] = 1.0
+            # H_cs = (dB/dc)^T @ H_Bn @ (dn/ds)
+            H_cs = dB_dc_flat.T @ H_Bn_flat @ dn_ds_flat
             
-            # Perturb coil dof i
-            self.field.x = coil_dofs_orig + epsilon * e_i
-            
-            # Recompute dJ/dx at perturbed point
-            dJ_dx_pert = objective_jax.dJ()
-            
-            # Compute d/dx_i (dJ/dx) using finite differences
-            d2J_dx2_i = (dJ_dx_pert - dJ_dx_orig) / epsilon
-            
-            # The second term is: d²J/dx² - first_term
-            # So: second_term[:, i] = d2J_dx2_i - H_coil[:, i]
-            second_term[:, i] = d2J_dx2_i - H_coil[:, i]
+            # H_sc = (dn/ds)^T @ H_Bn^T @ (dB/dc) = H_cs^T
+            H_sc = dn_ds_flat.T @ H_Bn_flat.T @ dB_dc_flat
         
-        # Restore original coil dofs
-        self.field.x = coil_dofs_orig
-        self.field.set_points(xyz.reshape((-1, 3)))
+        return H_cc, H_cs, H_sc, H_ss
+    
+    def _compute_B_derivs(self):
+        """
+        Compute the derivative of B with respect to coil dofs.
+        Returns a matrix of shape (npoints, 3, n_coil_dofs) where
+        dB_derivs[i, j, k] = d(B[i, j])/d(coil_dof[k])
+        """
+        from .._core.derivative import Derivative
         
-        # Add the second term to the Hessian
-        H_coil += second_term
+        points = self.field.get_points_cart_ref()
+        npoints = len(points)
+        n_coil_dofs = self.field.dof_size
         
-        # Symmetrize the Hessian (should be symmetric)
-        H_coil = 0.5 * (H_coil + H_coil.T)
+        # Initialize output array
+        dB_dc = np.zeros((npoints, 3, n_coil_dofs))
         
-        return H_coil
+        # Compute derivative by calling B_vjp with unit vectors for each output component
+        for i in range(npoints):
+            for j in range(3):
+                # Create unit vector for point i, component j
+                v = np.zeros((npoints, 3))
+                v[i, j] = 1.0
+                # B_vjp returns a Derivative object containing gradients w.r.t. coil dofs
+                grad_deriv = self.field.B_vjp(v)
+                # Extract the full gradient array from the Derivative object
+                if isinstance(grad_deriv, Derivative):
+                    # Get the full gradient by calling the Derivative with the field object
+                    # This returns the gradient w.r.t. all coil dofs concatenated
+                    grad_array = grad_deriv(self.field)
+                    if grad_array.shape[0] == n_coil_dofs:
+                        dB_dc[i, j, :] = grad_array
+                    else:
+                        # If shape doesn't match, try to extract from individual coils
+                        # This shouldn't happen, but handle it
+                        raise ValueError(f"Gradient shape mismatch: expected {n_coil_dofs}, got {grad_array.shape[0]}")
+                elif isinstance(grad_deriv, np.ndarray):
+                    if grad_deriv.shape[0] == n_coil_dofs:
+                        dB_dc[i, j, :] = grad_deriv
+                    else:
+                        raise ValueError(f"Gradient shape mismatch: expected {n_coil_dofs}, got {grad_deriv.shape[0]}")
+                else:
+                    # Try to convert to array
+                    grad_array = np.asarray(grad_deriv)
+                    if grad_array.shape[0] == n_coil_dofs:
+                        dB_dc[i, j, :] = grad_array
+                    else:
+                        raise ValueError(f"Gradient shape mismatch: expected {n_coil_dofs}, got {grad_array.shape[0]}")
+        
+        return dB_dc
+
+    return_fn_map = {'J': J, 'dJ': dJ, 'd2J': d2J}

@@ -808,14 +808,32 @@ class CurveSurfaceDistance(Optimizable):
 
     """
 
-    def __init__(self, curves, surface, minimum_distance):
+    def __init__(self, curves, surface, minimum_distance, fix_surface=True, fix_curves=False):
         self.curves = curves
         self.surface = surface
         self.minimum_distance = minimum_distance
+        self.fix_curves = fix_curves
+        # Fix surface dofs by default (only curves are optimized)
+        if fix_surface:
+            self.surface.fix_all()
+        else:
+            # If surface is not fixed, it must be JaxSurfaceRZFourier for Hessian computation
+            from .jaxsurface import JaxSurfaceRZFourier
+            if not isinstance(surface, JaxSurfaceRZFourier):
+                raise ValueError(
+                    "If fix_surface=False, the surface must be of type JaxSurfaceRZFourier "
+                    "to enable Hessian computation. Got type: {}".format(type(surface).__name__)
+                )
+
+        if fix_curves:
+            for c in curves:
+                c.fix_all()
 
         self.J_jax = jit(lambda gammac, lc, gammas, ns: cs_distance_pure(gammac, lc, gammas, ns, minimum_distance))
         self.dJ_dgamma = jit(lambda gammac, lc, gammas, ns: grad(self.J_jax, argnums=0)(gammac, lc, gammas, ns))
         self.dJ_dlc = jit(lambda gammac, lc, gammas, ns: grad(self.J_jax, argnums=1)(gammac, lc, gammas, ns))
+        self.dJ_dgammas = jit(lambda gammac, lc, gammas, ns: grad(self.J_jax, argnums=2)(gammac, lc, gammas, ns))
+        self.dJ_dns = jit(lambda gammac, lc, gammas, ns: grad(self.J_jax, argnums=3)(gammac, lc, gammas, ns))
         
         # Hessian computation methods
         # Note: gammas and ns are arrays, so we can't use static_argnums for them
@@ -839,8 +857,114 @@ class CurveSurfaceDistance(Optimizable):
             return grad(self.J_jax, argnums=0)(gammac_flat.reshape((n_quad, 3)), lc, gammas, ns)
         self.d2J_dlc_dgamma = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dgamma_flat, argnums=1)(gammac.flatten(), lc, gammas, ns))
         
+        # Hessian w.r.t. gammas
+        def J_jax_flat_gammas(gammac, lc, gammas_flat, ns):
+            n_surf = ns.shape[0]
+            return self.J_jax(gammac, lc, gammas_flat.reshape((n_surf, 3)), ns)
+        self.d2J_dgammas2 = jit(lambda gammac, lc, gammas, ns: hessian(J_jax_flat_gammas, argnums=2)(gammac, lc, gammas.flatten(), ns))
+        
+        # Hessian w.r.t. ns
+        def J_jax_flat_ns(gammac, lc, gammas, ns_flat):
+            n_surf = gammas.shape[0]
+            return self.J_jax(gammac, lc, gammas, ns_flat.reshape((n_surf, 3)))
+        self.d2J_dns2 = jit(lambda gammac, lc, gammas, ns: hessian(J_jax_flat_ns, argnums=3)(gammac, lc, gammas, ns.flatten()))
+        
+        # Cross terms: gammac-gammas
+        def dJ_dgammas_flat(gammac, lc, gammas_flat, ns):
+            n_surf = ns.shape[0]
+            return grad(self.J_jax, argnums=2)(gammac, lc, gammas_flat.reshape((n_surf, 3)), ns)
+        self.d2J_dgamma_dgammas = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dgammas_flat, argnums=0)(gammac, lc, gammas.flatten(), ns))
+        self.d2J_dgammas_dgamma = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dgamma_flat, argnums=2)(gammac.flatten(), lc, gammas, ns))
+        
+        # Cross terms: lc-gammas
+        def dJ_dgammas_flat_for_lc(gammac, lc_flat, gammas_flat, ns):
+            n_quad = gammac.shape[0]
+            n_surf = ns.shape[0]
+            return grad(self.J_jax, argnums=2)(gammac, lc_flat.reshape((n_quad, 3)), gammas_flat.reshape((n_surf, 3)), ns)
+        self.d2J_dlc_dgammas = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dgammas_flat_for_lc, argnums=1)(gammac, lc.flatten(), gammas.flatten(), ns))
+        def dJ_dlc_flat_for_gammas(gammac, lc_flat, gammas, ns):
+            n_quad = gammac.shape[0]
+            return grad(self.J_jax, argnums=1)(gammac, lc_flat.reshape((n_quad, 3)), gammas, ns)
+        self.d2J_dgammas_dlc = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dlc_flat_for_gammas, argnums=2)(gammac, lc.flatten(), gammas.flatten(), ns))
+        
+        # Cross terms: gammac-ns
+        def dJ_dns_flat(gammac, lc, gammas, ns_flat):
+            n_surf = gammas.shape[0]
+            return grad(self.J_jax, argnums=3)(gammac, lc, gammas, ns_flat.reshape((n_surf, 3)))
+        self.d2J_dgamma_dns = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dns_flat, argnums=0)(gammac, lc, gammas, ns.flatten()))
+        def dJ_dgamma_flat_for_ns(gammac_flat, lc, gammas, ns):
+            n_quad = lc.shape[0]
+            return grad(self.J_jax, argnums=0)(gammac_flat.reshape((n_quad, 3)), lc, gammas, ns)
+        self.d2J_dns_dgamma = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dgamma_flat_for_ns, argnums=3)(gammac.flatten(), lc, gammas, ns.flatten()))
+        
+        # Cross terms: lc-ns
+        def dJ_dns_flat_for_lc(gammac, lc_flat, gammas, ns_flat):
+            n_quad = gammac.shape[0]
+            n_surf = gammas.shape[0]
+            return grad(self.J_jax, argnums=3)(gammac, lc_flat.reshape((n_quad, 3)), gammas, ns_flat.reshape((n_surf, 3)))
+        self.d2J_dlc_dns = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dns_flat_for_lc, argnums=1)(gammac, lc.flatten(), gammas, ns.flatten()))
+        def dJ_dlc_flat_for_ns(gammac, lc_flat, gammas, ns):
+            n_quad = gammac.shape[0]
+            return grad(self.J_jax, argnums=1)(gammac, lc_flat.reshape((n_quad, 3)), gammas, ns)
+        self.d2J_dns_dlc = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dlc_flat_for_ns, argnums=3)(gammac, lc.flatten(), gammas, ns.flatten()))
+        
+        # Cross terms: gammas-ns
+        def dJ_dns_flat_for_gammas(gammac, lc, gammas_flat, ns_flat):
+            n_surf = gammas_flat.shape[0] // 3
+            return grad(self.J_jax, argnums=3)(gammac, lc, gammas_flat.reshape((n_surf, 3)), ns_flat.reshape((n_surf, 3)))
+        self.d2J_dgammas_dns = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dns_flat_for_gammas, argnums=2)(gammac, lc, gammas.flatten(), ns.flatten()))
+        def dJ_dgammas_flat_for_ns(gammac, lc, gammas_flat, ns):
+            n_surf = gammas_flat.shape[0] // 3
+            return grad(self.J_jax, argnums=2)(gammac, lc, gammas_flat.reshape((n_surf, 3)), ns)
+        self.d2J_dns_dgammas = jit(lambda gammac, lc, gammas, ns: jacfwd(dJ_dgammas_flat_for_ns, argnums=3)(gammac, lc, gammas.flatten(), ns.flatten()))
+        
+        # VJP functions for efficient cross-term computation
+        # These compute products directly without forming full Jacobians
+        # For (dgammac/dx)^T @ (d²J/(dgammac dgammas)) @ (dgammas/ds)
+        def dJ_dgammas_fn(gammac, lc, gammas, ns):
+            return self.dJ_dgammas(gammac, lc, gammas, ns)
+        # VJP of dJ_dgammas w.r.t. gammac: computes (d²J/(dgammac dgammas))^T @ v
+        self.d2J_dgamma_dgammas_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda g: dJ_dgammas_fn(g, lc, gammas, ns), gammac)[1](v)[0])
+        # VJP of dJ_dgammas w.r.t. lc: computes (d²J/(dlc dgammas))^T @ v
+        self.d2J_dlc_dgammas_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda l: dJ_dgammas_fn(gammac, l, gammas, ns), lc)[1](v)[0])
+        # VJP of dJ_dns w.r.t. gammac: computes (d²J/(dgammac dns))^T @ v
+        def dJ_dns_fn(gammac, lc, gammas, ns):
+            return self.dJ_dns(gammac, lc, gammas, ns)
+        self.d2J_dgamma_dns_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda g: dJ_dns_fn(g, lc, gammas, ns), gammac)[1](v)[0])
+        # VJP of dJ_dns w.r.t. lc: computes (d²J/(dlc dns))^T @ v
+        self.d2J_dlc_dns_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda l: dJ_dns_fn(gammac, l, gammas, ns), lc)[1](v)[0])
+        
+        # VJP functions for efficient Hessian computation
+        # For (dgammac/dx)^T @ (d²J/dgammac²) @ (dgammac/dx)
+        def dJ_dgamma_fn(gammac, lc, gammas, ns):
+            return self.dJ_dgamma(gammac, lc, gammas, ns)
+        # VJP of dJ_dgamma w.r.t. gammac: computes (d²J/dgammac²)^T @ v
+        self.d2J_dgamma2_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda g: dJ_dgamma_fn(g, lc, gammas, ns), gammac)[1](v)[0])
+        
+        # For (dlc/dx)^T @ (d²J/dlc²) @ (dlc/dx)
+        def dJ_dlc_fn(gammac, lc, gammas, ns):
+            return self.dJ_dlc(gammac, lc, gammas, ns)
+        # VJP of dJ_dlc w.r.t. lc: computes (d²J/dlc²)^T @ v
+        self.d2J_dlc2_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda l: dJ_dlc_fn(gammac, l, gammas, ns), lc)[1](v)[0])
+        
+        # For (dgammac/dx)^T @ (d²J/(dgammac dlc)) @ (dlc/dx)
+        # VJP of dJ_dlc w.r.t. gammac: computes (d²J/(dgammac dlc))^T @ v
+        self.d2J_dgamma_dlc_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda g: dJ_dlc_fn(g, lc, gammas, ns), gammac)[1](v)[0])
+        
+        # For surface terms: (dgammas/ds)^T @ (d²J/dgammas²) @ (dgammas/ds)
+        # VJP of dJ_dgammas w.r.t. gammas: computes (d²J/dgammas²)^T @ v
+        self.d2J_dgammas2_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda g: dJ_dgammas_fn(gammac, lc, g, ns), gammas)[1](v)[0])
+        
+        # For (dns/ds)^T @ (d²J/dns²) @ (dns/ds)
+        # VJP of dJ_dns w.r.t. ns: computes (d²J/dns²)^T @ v
+        self.d2J_dns2_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda n: dJ_dns_fn(gammac, lc, gammas, n), ns)[1](v)[0])
+        
+        # For (dgammas/ds)^T @ (d²J/(dgammas dns)) @ (dns/ds)
+        # VJP of dJ_dns w.r.t. gammas: computes (d²J/(dgammas dns))^T @ v
+        self.d2J_dgammas_dns_vjp = jit(lambda gammac, lc, gammas, ns, v: vjp(lambda g: dJ_dns_fn(gammac, lc, g, ns), gammas)[1](v)[0])
+        
         self.candidates = None
-        super().__init__(depends_on=curves)  # Bharat's comment: Shouldn't we add surface here
+        super().__init__(depends_on=curves + [surface])
 
     def recompute_bell(self, parent=None):
         self.candidates = None
@@ -882,26 +1006,57 @@ class CurveSurfaceDistance(Optimizable):
     @derivative_dec
     def dJ(self):
         """
-        This returns the derivative of the quantity with respect to the curve dofs.
+        This returns the derivative of the quantity with respect to the curve dofs and surface dofs.
         """
         self.compute_candidates()
         dgamma_by_dcoeff_vjp_vecs = [np.zeros_like(c.gamma()) for c in self.curves]
         dgammadash_by_dcoeff_vjp_vecs = [np.zeros_like(c.gammadash()) for c in self.curves]
-        gammas = self.surface.gamma().reshape((-1, 3))
-
+        
         gammas = self.surface.gamma().reshape((-1, 3))
         ns = self.surface.normal().reshape((-1, 3))
+        
+        # Accumulate surface contributions
+        dgammas_vjp_vec = np.zeros_like(gammas)
+        dns_vjp_vec = np.zeros_like(ns)
+        
         for i, _ in self.candidates:
             gammac = self.curves[i].gamma()
             lc = self.curves[i].gammadash()
             dgamma_by_dcoeff_vjp_vecs[i] += self.dJ_dgamma(gammac, lc, gammas, ns)
             dgammadash_by_dcoeff_vjp_vecs[i] += self.dJ_dlc(gammac, lc, gammas, ns)
-        res = [self.curves[i].dgamma_by_dcoeff_vjp(dgamma_by_dcoeff_vjp_vecs[i]) + self.curves[i].dgammadash_by_dcoeff_vjp(dgammadash_by_dcoeff_vjp_vecs[i]) for i in range(len(self.curves))]
-        return sum(res)
+            dgammas_vjp_vec += self.dJ_dgammas(gammac, lc, gammas, ns)
+            dns_vjp_vec += self.dJ_dns(gammac, lc, gammas, ns)
+        
+        # Curve contributions
+        curve_res = []
+        for i in range(len(self.curves)):
+            curve_res.append(self.curves[i].dgamma_by_dcoeff_vjp(dgamma_by_dcoeff_vjp_vecs[i]))
+            curve_res.append(self.curves[i].dgammadash_by_dcoeff_vjp(dgammadash_by_dcoeff_vjp_vecs[i]))
+        
+        # Surface contributions
+        # Reshape dgammas_vjp_vec and dns_vjp_vec to match surface shape (n_phi, n_theta, 3)
+        n_phi, n_theta = self.surface.gamma().shape[:2]
+        dgammas_vjp_vec_reshaped = dgammas_vjp_vec.reshape((n_phi, n_theta, 3))
+        dns_vjp_vec_reshaped = dns_vjp_vec.reshape((n_phi, n_theta, 3))
+        
+        # Surface vjp methods return numpy arrays, not Derivative objects
+        # So we need to wrap them in Derivative objects
+        from simsopt._core.derivative import Derivative
+        dgammas_deriv = np.asarray(self.surface.dgamma_by_dcoeff_vjp(dgammas_vjp_vec_reshaped))
+        dns_deriv = np.asarray(self.surface.dnormal_by_dcoeff_vjp(dns_vjp_vec_reshaped))
+        
+        # Combine surface contributions and wrap in Derivative
+        surface_deriv = Derivative({self.surface: dgammas_deriv + dns_deriv})
+        
+        # Add surface contribution to list
+        curve_res.append(surface_deriv)
+        
+        # Combine all contributions
+        return sum(curve_res)
 
     def d2J(self):
         """
-        Hessian for x = all curve dofs.
+        Hessian for x = all curve dofs and surface dofs.
         For each curve i, we compute:
         d²J/dx² = d/dx (dJ/dx)
                 = d/dx (dJ/dgammac * dgammac/dx_i + dJ/dlc * dlc/dx_i)
@@ -911,23 +1066,83 @@ class CurveSurfaceDistance(Optimizable):
         + dJ/dlc * d²lc/dx_i² + (dlc/dx_i)^T @ (d²J/dlc²) @ (dlc/dx_i)
         + (dgammac/dx_i)^T @ (d²J/(dgammac dlc)) @ (dlc/dx_i)
         + (dlc/dx_i)^T @ (d²J/(dlc dgammac)) @ (dgammac/dx_i)
+        
+        Plus surface terms:
+        d²J/ds² = dJ/dgammas * d²gammas/ds² + (dgammas/ds)^T @ (d²J/dgammas²) @ (dgammas/ds)
+        + dJ/dns * d²ns/ds² + (dns/ds)^T @ (d²J/dns²) @ (dns/ds)
+        + (dgammas/ds)^T @ (d²J/(dgammas dns)) @ (dns/ds)
+        + (dns/ds)^T @ (d²J/(dns dgammas)) @ (dgammas/ds)
+        
+        Plus cross terms between curves and surface.
         """
         self.compute_candidates()
         
-        # Get total number of dofs across all curves
-        dof_sizes = [c.dof_size for c in self.curves]
-        total_dofs = sum(dof_sizes)
-        dof_offsets = np.cumsum([0] + dof_sizes[:-1])
+        # Get total number of dofs across all curves and surface
+        # Use dof_size which returns the number of free dofs
+        curve_dof_sizes = [c.dof_size for c in self.curves]
+        surface_dof_size = self.surface.dof_size
+        total_curve_dofs = sum(curve_dof_sizes)
+        total_dofs = total_curve_dofs + surface_dof_size
+        curve_dof_offsets = np.cumsum([0] + curve_dof_sizes[:-1])
+        surface_dof_offset = total_curve_dofs
+        
+        # Check if curves are fixed
+        curves_fixed = [not c._dofs.any_free() for c in self.curves]
+        all_curves_fixed = all(curves_fixed)
         
         # Initialize Hessian matrix
         H = np.zeros((total_dofs, total_dofs))
         
-        # Get surface data (fixed)
+        # Get surface data
         gammas = self.surface.gamma().reshape((-1, 3))
         ns = self.surface.normal().reshape((-1, 3))
+        n_surf = gammas.shape[0]
+        
+        # Get surface derivatives w.r.t. surface dofs (only if surface has free dofs)
+        # Use surface.dof_size which returns only free dofs
+        if surface_dof_size > 0:
+            dgammas_ds = np.asarray(self.surface.dgamma_by_dcoeff())  # Shape: (n_phi, n_theta, 3, n_dofs_s_total)
+            dns_ds = np.asarray(self.surface.dnormal_by_dcoeff())  # Shape: (n_phi, n_theta, 3, n_dofs_s_total)
+            _, _, _, n_dofs_s_total = dgammas_ds.shape
+            
+            # Pre-compute surface shape once
+            n_phi, n_theta = self.surface.gamma().shape[:2]
+            n_surf = n_phi * n_theta
+            
+            # Reshape to (n_surf, 3, n_dofs_s_total) for easier computation
+            # Note: dgamma_by_dcoeff returns derivatives w.r.t. ALL dofs, but VJPs will handle fixed dofs
+            dgammas_ds_flat = dgammas_ds.reshape((n_surf, 3, n_dofs_s_total))
+            dns_ds_flat = dns_ds.reshape((n_surf, 3, n_dofs_s_total))
+            
+            # Pre-compute d²gammas/ds² if available (independent of curve, so compute once)
+            # This is used in the first term: dJ/dgammas * d²gammas/ds²
+            d2gammas_ds2 = None
+            if hasattr(self.surface, 'd2gamma_by_d2coeff'):
+                try:
+                    d2gammas_ds2 = np.asarray(self.surface.d2gamma_by_d2coeff())  # Shape: (n_phi, n_theta, 3, n_dofs, n_dofs)
+                except (AttributeError, TypeError):
+                    # Method doesn't exist or failed, skip this term
+                    pass
+            
+            # Initialize surface-surface Hessian once (will accumulate contributions from all curves)
+            H_ss = np.zeros((surface_dof_size, surface_dof_size))
+            free_dof_indices = np.where(self.surface._dofs.free_status)[0]
+        else:
+            # Surface is fixed, no need to compute surface derivatives
+            dgammas_ds_flat = None
+            dns_ds_flat = None
+            d2gammas_ds2 = None
+            H_ss = None
+            free_dof_indices = None
+            n_phi, n_theta = self.surface.gamma().shape[:2]
+            n_surf = n_phi * n_theta
         
         # Process each candidate curve
         for i, _ in self.candidates:
+            # Skip if curve is fixed
+            if curves_fixed[i]:
+                continue
+                
             gammac = self.curves[i].gamma()
             lc = self.curves[i].gammadash()
             
@@ -939,64 +1154,315 @@ class CurveSurfaceDistance(Optimizable):
             dgammac_dx = np.asarray(self.curves[i].dgamma_by_dcoeff())  # Shape: (n_quad, 3, n_dofs_i)
             dlc_dx = np.asarray(self.curves[i].dgammadash_by_dcoeff())  # Shape: (n_quad, 3, n_dofs_i)
             
-            n_quad, n_components, n_dofs_i = dgammac_dx.shape
+            n_quad, _, n_dofs_i = dgammac_dx.shape
             
             # Get indices for this curve in the global Hessian
-            idx_i_start = dof_offsets[i]
+            idx_i_start = curve_dof_offsets[i]
             idx_i_end = idx_i_start + n_dofs_i
-            
-            # Get Hessian w.r.t. gammac and lc
-            d2J_dgammac2_flat = np.asarray(self.d2J_dgamma2(gammac, lc, gammas, ns))  # Shape: (n_quad*3, n_quad*3)
-            d2J_dlc2_flat = np.asarray(self.d2J_dlc2(gammac, lc, gammas, ns))  # Shape: (n_quad*3, n_quad*3)
-            
-            # Reshape flattened Hessians
-            d2J_dgammac2 = d2J_dgammac2_flat.reshape((n_quad, 3, n_quad, 3))
-            d2J_dlc2 = d2J_dlc2_flat.reshape((n_quad, 3, n_quad, 3))
-            
-            # Get cross terms
-            # Note: jacfwd returns d(output)/d(input), so we need to transpose
-            # d2J_dgamma_dlc from jacfwd: [k, c, l, m] = d(dJ/dlc[k, c]) / d(gammac[l, m])
-            # But we want: [k, c, l, m] = d(dJ/dlc[l, m]) / d(gammac[k, c])
-            # So we transpose: [l, m, k, c] -> [k, c, l, m]
-            d2J_dgammac_dlc_raw = np.asarray(self.d2J_dgamma_dlc(gammac, lc, gammas, ns))  # Shape: (n_quad, 3, n_quad, 3)
-            d2J_dgammac_dlc = d2J_dgammac_dlc_raw.transpose(2, 3, 0, 1)  # Swap indices to get correct order
             
             # Terms for curve i (d²J/dx_i²)
             H_ii = np.zeros((n_dofs_i, n_dofs_i))
             
             # First term: dJ/dgammac * d²gammac/dx_i²
+            # Use VJP if available
             try:
-                if hasattr(self.curves[i], 'd2gamma_by_d2coeff_impl') and hasattr(self.curves[i], 'd2gamma_by_d2coeff_jax'):
-                    d2gammac_dx2 = np.zeros((n_quad, 3, n_dofs_i, n_dofs_i))
-                    self.curves[i].d2gamma_by_d2coeff_impl(d2gammac_dx2)
-                    H_ii += np.einsum('kc,kcij->ij', dJ_dgammac, d2gammac_dx2)
+                if hasattr(self.curves[i], 'd2gamma_by_d2coeff_vjp'):
+                    # Use VJP: compute (d²gamma/dx²)^T @ dJ_dgammac
+                    d2gammac_dx2_T_v = self.curves[i].d2gamma_by_d2coeff_vjp(dJ_dgammac)
+                    if isinstance(d2gammac_dx2_T_v, Derivative):
+                        d2gammac_dx2_T_v = d2gammac_dx2_T_v(self.curves[i])
+                    d2gammac_dx2_T_v = np.asarray(d2gammac_dx2_T_v)
+                    if d2gammac_dx2_T_v.ndim == 1:
+                        # It's a vector, so it's the diagonal contribution
+                        H_ii += np.diag(d2gammac_dx2_T_v)
+                    else:
+                        # It's a matrix, so add it directly
+                        H_ii += d2gammac_dx2_T_v
             except (AttributeError, TypeError):
                 pass
             
             # Second term: (dgammac/dx_i)^T @ (d²J/dgammac²) @ (dgammac/dx_i)
-            H_ii += np.einsum('kci,kclm,lmj->ij', dgammac_dx, d2J_dgammac2, dgammac_dx)
+            # Compute column by column using VJPs
+            for j in range(n_dofs_i):
+                # Get j-th column of dgammac/dx
+                dgammac_dx_j = dgammac_dx[:, :, j]  # Shape: (n_quad, 3)
+                # Compute (d²J/dgammac²)^T @ dgammac_dx_j using VJP
+                d2J_dgamma2_T_v = np.asarray(self.d2J_dgamma2_vjp(gammac, lc, gammas, ns, dgammac_dx_j))
+                # Then use curve VJP to compute (dgammac/dx)^T @ d2J_dgamma2_T_v
+                vjp_result = self.curves[i].dgamma_by_dcoeff_vjp(d2J_dgamma2_T_v)
+                H_ii[:, j] += np.asarray(vjp_result(self.curves[i]) if isinstance(vjp_result, Derivative) else vjp_result)
             
             # Third term: dJ/dlc * d²lc/dx_i²
+            # Use VJP if available
             try:
-                if hasattr(self.curves[i], 'd2gammadash_by_d2coeff_impl') and hasattr(self.curves[i], 'd2gammadash_by_d2coeff_jax'):
-                    d2lc_dx2 = np.zeros((n_quad, 3, n_dofs_i, n_dofs_i))
-                    self.curves[i].d2gammadash_by_d2coeff_impl(d2lc_dx2)
-                    H_ii += np.einsum('kc,kcij->ij', dJ_dlc, d2lc_dx2)
+                if hasattr(self.curves[i], 'd2gammadash_by_d2coeff_vjp'):
+                    # Use VJP: compute (d²gammadash/dx²)^T @ dJ_dlc
+                    d2lc_dx2_T_v = self.curves[i].d2gammadash_by_d2coeff_vjp(dJ_dlc)
+                    if isinstance(d2lc_dx2_T_v, Derivative):
+                        d2lc_dx2_T_v = d2lc_dx2_T_v(self.curves[i])
+                    d2lc_dx2_T_v = np.asarray(d2lc_dx2_T_v)
+                    if d2lc_dx2_T_v.ndim == 1:
+                        # It's a vector, so it's the diagonal contribution
+                        H_ii += np.diag(d2lc_dx2_T_v)
+                    else:
+                        # It's a matrix, so add it directly
+                        H_ii += d2lc_dx2_T_v
             except (AttributeError, TypeError):
                 pass
             
             # Fourth term: (dlc/dx_i)^T @ (d²J/dlc²) @ (dlc/dx_i)
-            H_ii += np.einsum('kci,kclm,lmj->ij', dlc_dx, d2J_dlc2, dlc_dx)
+            # Compute column by column using VJPs
+            for j in range(n_dofs_i):
+                # Get j-th column of dlc/dx
+                dlc_dx_j = dlc_dx[:, :, j]  # Shape: (n_quad, 3)
+                # Compute (d²J/dlc²)^T @ dlc_dx_j using VJP
+                d2J_dlc2_T_v = np.asarray(self.d2J_dlc2_vjp(gammac, lc, gammas, ns, dlc_dx_j))
+                # Then use curve VJP to compute (dlc/dx)^T @ d2J_dlc2_T_v
+                vjp_result = self.curves[i].dgammadash_by_dcoeff_vjp(d2J_dlc2_T_v)
+                H_ii[:, j] += np.asarray(vjp_result(self.curves[i]) if isinstance(vjp_result, Derivative) else vjp_result)
             
             # Fifth term: (dgammac/dx_i)^T @ (d²J/(dgammac dlc)) @ (dlc/dx_i)
             # Note: This term is not symmetric by itself, so we need to add its transpose
-            # to ensure the Hessian is symmetric. Since d²J/(dlc dgammac) = (d²J/(dgammac dlc))^T,
-            # term6 = term5.T, so we can compute term5 + term5.T directly.
-            term5 = np.einsum('kci,kclm,lmj->ij', dgammac_dx, d2J_dgammac_dlc, dlc_dx)
+            # Compute column by column using VJPs
+            term5 = np.zeros((n_dofs_i, n_dofs_i))
+            for j in range(n_dofs_i):
+                # Get j-th column of dlc/dx
+                dlc_dx_j = dlc_dx[:, :, j]  # Shape: (n_quad, 3)
+                # Compute (d²J/(dgammac dlc))^T @ dlc_dx_j using VJP
+                d2J_dgamma_dlc_T_v = np.asarray(self.d2J_dgamma_dlc_vjp(gammac, lc, gammas, ns, dlc_dx_j))
+                # Then use curve VJP to compute (dgammac/dx)^T @ d2J_dgamma_dlc_T_v
+                vjp_result = self.curves[i].dgamma_by_dcoeff_vjp(d2J_dgamma_dlc_T_v)
+                term5[:, j] = np.asarray(vjp_result(self.curves[i]) if isinstance(vjp_result, Derivative) else vjp_result)
             H_ii += term5 + term5.T
             
-            # Add contributions to global Hessian
+            # Add curve-curve contributions to global Hessian
             H[idx_i_start:idx_i_end, idx_i_start:idx_i_end] += H_ii
+            
+            # Get first-order derivatives w.r.t. surface (only if surface is not fixed)
+            if surface_dof_size > 0:
+                # Get first-order derivatives w.r.t. surface
+                dJ_dgammas = np.asarray(self.dJ_dgammas(gammac, lc, gammas, ns))
+                dJ_dns = np.asarray(self.dJ_dns(gammac, lc, gammas, ns))
+                
+                # First term: dJ/dgammas * d²gammas/ds²
+                # Use pre-computed d2gammas_ds2 if available (e.g., for JaxSurfaceRZFourier)
+                # This term is accumulated over all curves since dJ/dgammas depends on the curve
+                if d2gammas_ds2 is not None:
+                    # Reshape dJ_dgammas to match surface shape
+                    dJ_dgammas_reshaped = dJ_dgammas.reshape((n_phi, n_theta, 3))
+                    # Compute dJ/dgammas * d²gammas/ds² for each dof pair
+                    # dJ_dgammas_reshaped has shape (n_phi, n_theta, 3)
+                    # d2gammas_ds2 has shape (n_phi, n_theta, 3, n_dofs, n_dofs)
+                    # We want to compute sum over (n_phi, n_theta, 3) of dJ_dgammas * d2gammas_ds2
+                    # Result should be (n_dofs, n_dofs)
+                    term1 = np.einsum('ijk,ijkmn->mn', dJ_dgammas_reshaped, d2gammas_ds2)
+                    # Extract only free dofs and accumulate
+                    H_ss += term1[np.ix_(free_dof_indices, free_dof_indices)]
+                
+                # Second term: (dgammas/ds)^T @ (d²J/dgammas²) @ (dgammas/ds)
+                # Compute column by column using VJPs
+                for j_idx, j in enumerate(free_dof_indices):
+                    # Get j-th column of dgammas/ds (j is the actual dof index, including fixed ones)
+                    dgammas_ds_j = dgammas_ds_flat[:, :, j]  # Shape: (n_surf, 3)
+                    # Compute (d²J/dgammas²)^T @ dgammas_ds_j using VJP
+                    d2J_dgammas2_T_v = np.asarray(self.d2J_dgammas2_vjp(gammac, lc, gammas, ns, dgammas_ds_j))
+                    # Reshape to match surface shape and use surface VJP
+                    d2J_dgammas2_T_v_reshaped = d2J_dgammas2_T_v.reshape((n_phi, n_theta, 3))
+                    vjp_result = self.surface.dgamma_by_dcoeff_vjp(d2J_dgammas2_T_v_reshaped)
+                    vjp_result_array = np.asarray(vjp_result)
+                    # VJP returns derivatives w.r.t. all dofs, extract only free dofs
+                    H_ss[:, j_idx] += vjp_result_array[free_dof_indices]
+                
+                # Third term: dJ/dns * d²ns/ds²
+                # Use d2normal_by_dcoeffdcoeff if available
+                # NOTE: This term only requires first derivatives of gammadash1 and gammadash2,
+                # which are available in both SurfaceRZFourier and JaxSurfaceRZFourier.
+                # The normal is computed as n = gammadash1 × gammadash2,
+                # so d²n/ds² = 2 * (dgammadash1/ds) × (dgammadash2/ds), which only requires first derivatives.
+                if hasattr(self.surface, 'd2normal_by_dcoeffdcoeff'):
+                    try:
+                        d2ns_ds2 = np.asarray(self.surface.d2normal_by_dcoeffdcoeff())  # Shape: (n_phi, n_theta, 3, n_dofs, n_dofs)
+                        # Reshape dJ_dns to match surface shape
+                        dJ_dns_reshaped = dJ_dns.reshape((n_phi, n_theta, 3))
+                        # Compute dJ/dns * d²ns/ds² for each dof pair
+                        term3 = np.einsum('ijk,ijkmn->mn', dJ_dns_reshaped, d2ns_ds2)
+                        # Extract only free dofs and accumulate
+                        H_ss += term3[np.ix_(free_dof_indices, free_dof_indices)]
+                    except (AttributeError, TypeError):
+                        # Method doesn't exist or failed, skip this term
+                        pass
+                
+                # Fourth term: (dns/ds)^T @ (d²J/dns²) @ (dns/ds)
+                # Compute column by column using VJPs
+                for j_idx, j in enumerate(free_dof_indices):
+                    # Get j-th column of dns/ds (j is the actual dof index)
+                    dns_ds_j = dns_ds_flat[:, :, j]  # Shape: (n_surf, 3)
+                    # Compute (d²J/dns²)^T @ dns_ds_j using VJP
+                    d2J_dns2_T_v = np.asarray(self.d2J_dns2_vjp(gammac, lc, gammas, ns, dns_ds_j))
+                    # Reshape to match surface shape and use surface VJP
+                    d2J_dns2_T_v_reshaped = d2J_dns2_T_v.reshape((n_phi, n_theta, 3))
+                    vjp_result = self.surface.dnormal_by_dcoeff_vjp(d2J_dns2_T_v_reshaped)
+                    vjp_result_array = np.asarray(vjp_result)
+                    # VJP returns derivatives w.r.t. all dofs, extract only free dofs
+                    H_ss[:, j_idx] += vjp_result_array[free_dof_indices]
+                
+                # Fifth term: (dgammas/ds)^T @ (d²J/(dgammas dns)) @ (dns/ds)
+                term5_surf = np.zeros((surface_dof_size, surface_dof_size))
+                for j_idx, j in enumerate(free_dof_indices):
+                    # Get j-th column of dns/ds (j is the actual dof index)
+                    dns_ds_j = dns_ds_flat[:, :, j]  # Shape: (n_surf, 3)
+                    # Compute (d²J/(dgammas dns))^T @ dns_ds_j using VJP
+                    d2J_dgammas_dns_T_v = np.asarray(self.d2J_dgammas_dns_vjp(gammac, lc, gammas, ns, dns_ds_j))
+                    # Reshape to match surface shape and use surface VJP
+                    d2J_dgammas_dns_T_v_reshaped = d2J_dgammas_dns_T_v.reshape((n_phi, n_theta, 3))
+                    vjp_result = self.surface.dgamma_by_dcoeff_vjp(d2J_dgammas_dns_T_v_reshaped)
+                    vjp_result_array = np.asarray(vjp_result)
+                    # VJP returns derivatives w.r.t. all dofs, extract only free dofs
+                    term5_surf[:, j_idx] = vjp_result_array[free_dof_indices]
+                H_ss += term5_surf + term5_surf.T
+                
+                # Cross terms between curve i and surface (d²J/(dx_i ds))
+                # Use direct einsum computation (matching test file) instead of VJPs
+                # This ensures exact match with the test file's computation
+                
+                # Get raw Hessian terms
+                d2J_dgamma_dgammas_raw = np.asarray(self.d2J_dgamma_dgammas(gammac, lc, gammas, ns))
+                d2J_dgamma_dns_raw = np.asarray(self.d2J_dgamma_dns(gammac, lc, gammas, ns))
+                d2J_dlc_dgammas_raw = np.asarray(self.d2J_dlc_dgammas(gammac, lc, gammas, ns))
+                d2J_dlc_dns_raw = np.asarray(self.d2J_dlc_dns(gammac, lc, gammas, ns))
+                
+                # Reshape to match test file format: (n_surf, 3, n_quad, 3)
+                d2J_dgamma_dgammas_reshaped = d2J_dgamma_dgammas_raw.reshape((n_surf, 3, n_quad, 3))
+                d2J_dgamma_dns_reshaped = d2J_dgamma_dns_raw.reshape((n_surf, 3, n_quad, 3))
+                d2J_dlc_dgammas_reshaped = d2J_dlc_dgammas_raw.reshape((n_surf, 3, n_quad, 3))
+                d2J_dlc_dns_reshaped = d2J_dlc_dns_raw.reshape((n_surf, 3, n_quad, 3))
+                
+                # Compute cross-terms using direct einsum (as in test file)
+                # Term 1: (dgammac/dx_i)^T @ (d²J/(dgammac dgammas)) @ (dgammas/ds)
+                # einsum: 'kci,lmkc,lmj->ij' where k=quad, c=component, i=dof_i, l=surf_quad, m=surf_component, j=dof_s
+                term1_full = np.einsum('kci,lmkc,lmj->ij', dgammac_dx, d2J_dgamma_dgammas_reshaped, dgammas_ds_flat)
+                # Extract only free surface dofs
+                H_is = term1_full[:, free_dof_indices]
+                
+                # Term 2: (dgammac/dx_i)^T @ (d²J/(dgammac dns)) @ (dns/ds)
+                term2_full = np.einsum('kci,lmkc,lmj->ij', dgammac_dx, d2J_dgamma_dns_reshaped, dns_ds_flat)
+                H_is += term2_full[:, free_dof_indices]
+                
+                # Term 3: (dlc/dx_i)^T @ (d²J/(dlc dgammas)) @ (dgammas/ds)
+                term3_full = np.einsum('kci,lmkc,lmj->ij', dlc_dx, d2J_dlc_dgammas_reshaped, dgammas_ds_flat)
+                H_is += term3_full[:, free_dof_indices]
+                
+                # Term 4: (dlc/dx_i)^T @ (d²J/(dlc dns)) @ (dns/ds)
+                term4_full = np.einsum('kci,lmkc,lmj->ij', dlc_dx, d2J_dlc_dns_reshaped, dns_ds_flat)
+                H_is += term4_full[:, free_dof_indices]
+                
+                # Add cross-term contributions to global Hessian
+                H[idx_i_start:idx_i_end, surface_dof_offset:surface_dof_offset+surface_dof_size] += H_is
+                H[surface_dof_offset:surface_dof_offset+surface_dof_size, idx_i_start:idx_i_end] += H_is.T  # Symmetry
+        
+        # Add accumulated surface-surface contributions to global Hessian (once after all curves)
+        # Only add if not all curves are fixed (if all curves are fixed, we compute H_ss separately below)
+        if surface_dof_size > 0 and H_ss is not None and not all_curves_fixed:
+            H[surface_dof_offset:surface_dof_offset+surface_dof_size, 
+              surface_dof_offset:surface_dof_offset+surface_dof_size] += H_ss
+        
+        # If all curves are fixed, we still need to compute surface-surface terms
+        # Accumulate contributions from all candidates (even though curves are fixed)
+        if all_curves_fixed and surface_dof_size > 0:
+            # Initialize surface-surface Hessian
+            H_ss = np.zeros((surface_dof_size, surface_dof_size))
+            free_dof_indices = np.where(self.surface._dofs.free_status)[0]
+            
+            # Accumulate contributions from all candidates
+            for i, _ in self.candidates:
+                gammac = self.curves[i].gamma()
+                lc = self.curves[i].gammadash()
+                
+                # Get first-order derivatives w.r.t. surface
+                # Note: dJ_dgammas and dJ_dns expect flattened gammas and ns
+                dJ_dgammas = np.asarray(self.dJ_dgammas(gammac, lc, gammas, ns))
+                dJ_dns = np.asarray(self.dJ_dns(gammac, lc, gammas, ns))
+                
+                # First term: dJ/dgammas * d²gammas/ds²
+                # Use pre-computed d2gammas_ds2 if available (e.g., for JaxSurfaceRZFourier)
+                # This term is accumulated over all candidates since dJ/dgammas depends on the curve
+                if d2gammas_ds2 is not None:
+                    # Reshape dJ_dgammas to match surface shape
+                    dJ_dgammas_reshaped = dJ_dgammas.reshape((n_phi, n_theta, 3))
+                    # Compute dJ/dgammas * d²gammas/ds² for each dof pair
+                    # dJ_dgammas_reshaped has shape (n_phi, n_theta, 3)
+                    # d2gammas_ds2 has shape (n_phi, n_theta, 3, n_dofs, n_dofs)
+                    # We want to compute sum over (n_phi, n_theta, 3) of dJ_dgammas * d2gammas_ds2
+                    # Result should be (n_dofs, n_dofs)
+                    term1 = np.einsum('ijk,ijkmn->mn', dJ_dgammas_reshaped, d2gammas_ds2)
+                    # Extract only free dofs and accumulate
+                    H_ss += term1[np.ix_(free_dof_indices, free_dof_indices)]
+                
+                # Second term: (dgammas/ds)^T @ (d²J/dgammas²) @ (dgammas/ds)
+                # Compute column by column using VJPs
+                for j_idx, j in enumerate(free_dof_indices):
+                    # Get j-th column of dgammas/ds (j is the actual dof index)
+                    dgammas_ds_j = dgammas_ds_flat[:, :, j]  # Shape: (n_surf, 3)
+                    # Compute (d²J/dgammas²)^T @ dgammas_ds_j using VJP
+                    d2J_dgammas2_T_v = np.asarray(self.d2J_dgammas2_vjp(gammac, lc, gammas, ns, dgammas_ds_j))
+                    # Reshape to match surface shape and use surface VJP
+                    d2J_dgammas2_T_v_reshaped = d2J_dgammas2_T_v.reshape((n_phi, n_theta, 3))
+                    vjp_result = self.surface.dgamma_by_dcoeff_vjp(d2J_dgammas2_T_v_reshaped)
+                    vjp_result_array = np.asarray(vjp_result)
+                    # VJP returns derivatives w.r.t. all dofs, extract only free dofs
+                    H_ss[:, j_idx] += vjp_result_array[free_dof_indices]
+                
+                # Third term: dJ/dns * d²ns/ds²
+                # Use d2normal_by_dcoeffdcoeff if available
+                # NOTE: This term only requires first derivatives of gammadash1 and gammadash2,
+                # which are available in both SurfaceRZFourier and JaxSurfaceRZFourier.
+                # The normal is computed as n = gammadash1 × gammadash2,
+                # so d²n/ds² = 2 * (dgammadash1/ds) × (dgammadash2/ds), which only requires first derivatives.
+                if hasattr(self.surface, 'd2normal_by_dcoeffdcoeff'):
+                    try:
+                        d2ns_ds2 = np.asarray(self.surface.d2normal_by_dcoeffdcoeff())  # Shape: (n_phi, n_theta, 3, n_dofs, n_dofs)
+                        # Reshape dJ_dns to match surface shape
+                        dJ_dns_reshaped = dJ_dns.reshape((n_phi, n_theta, 3))
+                        # Compute dJ/dns * d²ns/ds² for each dof pair
+                        term3 = np.einsum('ijk,ijkmn->mn', dJ_dns_reshaped, d2ns_ds2)
+                        # Extract only free dofs and accumulate
+                        H_ss += term3[np.ix_(free_dof_indices, free_dof_indices)]
+                    except (AttributeError, TypeError):
+                        # Method doesn't exist or failed, skip this term
+                        pass
+                
+                # Fourth term: (dns/ds)^T @ (d²J/dns²) @ (dns/ds)
+                # Compute column by column using VJPs
+                for j_idx, j in enumerate(free_dof_indices):
+                    # Get j-th column of dns/ds (j is the actual dof index)
+                    dns_ds_j = dns_ds_flat[:, :, j]  # Shape: (n_surf, 3)
+                    # Compute (d²J/dns²)^T @ dns_ds_j using VJP
+                    d2J_dns2_T_v = np.asarray(self.d2J_dns2_vjp(gammac, lc, gammas, ns, dns_ds_j))
+                    # Reshape to match surface shape and use surface VJP
+                    d2J_dns2_T_v_reshaped = d2J_dns2_T_v.reshape((n_phi, n_theta, 3))
+                    vjp_result = self.surface.dnormal_by_dcoeff_vjp(d2J_dns2_T_v_reshaped)
+                    vjp_result_array = np.asarray(vjp_result)
+                    # VJP returns derivatives w.r.t. all dofs, extract only free dofs
+                    H_ss[:, j_idx] += vjp_result_array[free_dof_indices]
+                
+                # Fifth term: (dgammas/ds)^T @ (d²J/(dgammas dns)) @ (dns/ds)
+                term5_surf = np.zeros((surface_dof_size, surface_dof_size))
+                for j_idx, j in enumerate(free_dof_indices):
+                    # Get j-th column of dns/ds (j is the actual dof index)
+                    dns_ds_j = dns_ds_flat[:, :, j]  # Shape: (n_surf, 3)
+                    # Compute (d²J/(dgammas dns))^T @ dns_ds_j using VJP
+                    d2J_dgammas_dns_T_v = np.asarray(self.d2J_dgammas_dns_vjp(gammac, lc, gammas, ns, dns_ds_j))
+                    # Reshape to match surface shape and use surface VJP
+                    d2J_dgammas_dns_T_v_reshaped = d2J_dgammas_dns_T_v.reshape((n_phi, n_theta, 3))
+                    vjp_result = self.surface.dgamma_by_dcoeff_vjp(d2J_dgammas_dns_T_v_reshaped)
+                    vjp_result_array = np.asarray(vjp_result)
+                    # VJP returns derivatives w.r.t. all dofs, extract only free dofs
+                    term5_surf[:, j_idx] = vjp_result_array[free_dof_indices]
+                H_ss += term5_surf + term5_surf.T
+            
+            # Add surface-surface contributions to global Hessian
+            H[surface_dof_offset:surface_dof_offset+surface_dof_size, 
+              surface_dof_offset:surface_dof_offset+surface_dof_size] += H_ss
         
         return H
 
@@ -1315,7 +1781,7 @@ class LinkingNumber(Optimizable):
     @derivative_dec
     def dJ(self):
         return Derivative({})
-    
+
     def d2J(self):
         """
         Hessian for linking number. Since the linking number is a topological invariant,

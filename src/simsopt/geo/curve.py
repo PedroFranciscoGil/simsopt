@@ -1,7 +1,7 @@
 from math import sin, cos
 
 import numpy as np
-from jax import vjp, jacfwd, jvp
+from jax import vjp, jacfwd, jvp, hessian
 import jax.numpy as jnp
 
 import simsoptpp as sopp
@@ -229,6 +229,78 @@ class Curve(Optimizable):
 
     def dgammadashdashdash_by_dcoeff_vjp(self, v):
         return Derivative({self: self.dgammadashdashdash_by_dcoeff_vjp_impl(v)})
+
+    def d2gamma_by_d2coeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product of the second derivative of the curve with respect to the curve dofs.
+        
+        Args:
+            v: Vector with shape (n_quad, 3) or flattened to (n_quad * 3,)
+            
+        Returns:
+            Array with shape (n_dofs,) or (n_dofs, n_dofs), or Derivative object
+        """
+        if hasattr(self, 'd2gamma_by_d2coeff_vjp_impl'):
+            # Ensure v has the correct shape (n_quad, 3)
+            v = np.asarray(v)
+            if v.ndim == 1:
+                # Flattened, reshape to (n_quad, 3)
+                n_quad = len(self.quadpoints)
+                if v.shape[0] == n_quad * 3:
+                    v = v.reshape((n_quad, 3))
+                else:
+                    raise ValueError(f"Expected v to have shape ({n_quad * 3},) or ({n_quad}, 3), got {v.shape}")
+            elif v.ndim == 2:
+                # Already (n_quad, 3) or similar
+                if v.shape[1] != 3:
+                    raise ValueError(f"Expected v to have shape (n_quad, 3), got {v.shape}")
+            else:
+                raise ValueError(f"Expected v to be 1D or 2D, got {v.ndim}D with shape {v.shape}")
+            
+            result = self.d2gamma_by_d2coeff_vjp_impl(v)
+            # Check if result is already a Derivative (for some curve types)
+            if isinstance(result, Derivative):
+                return result
+            # Otherwise wrap in Derivative for consistency with other VJP methods
+            return Derivative({self: result})
+        else:
+            raise AttributeError(f"{type(self).__name__} does not implement d2gamma_by_d2coeff_vjp_impl")
+
+    def d2gammadash_by_d2coeff_vjp(self, v):
+        r"""
+        This function returns the vector Jacobian product of the second derivative of gammadash with respect to the curve dofs.
+        
+        Args:
+            v: Vector with shape (n_quad, 3) or flattened to (n_quad * 3,)
+            
+        Returns:
+            Array with shape (n_dofs,) or (n_dofs, n_dofs), or Derivative object
+        """
+        if hasattr(self, 'd2gammadash_by_d2coeff_vjp_impl'):
+            # Ensure v has the correct shape (n_quad, 3)
+            v = np.asarray(v)
+            if v.ndim == 1:
+                # Flattened, reshape to (n_quad, 3)
+                n_quad = len(self.quadpoints)
+                if v.shape[0] == n_quad * 3:
+                    v = v.reshape((n_quad, 3))
+                else:
+                    raise ValueError(f"Expected v to have shape ({n_quad * 3},) or ({n_quad}, 3), got {v.shape}")
+            elif v.ndim == 2:
+                # Already (n_quad, 3) or similar
+                if v.shape[1] != 3:
+                    raise ValueError(f"Expected v to have shape (n_quad, 3), got {v.shape}")
+            else:
+                raise ValueError(f"Expected v to be 1D or 2D, got {v.ndim}D with shape {v.shape}")
+            
+            result = self.d2gammadash_by_d2coeff_vjp_impl(v)
+            # Check if result is already a Derivative (for some curve types)
+            if isinstance(result, Derivative):
+                return result
+            # Otherwise wrap in Derivative for consistency with other VJP methods
+            return Derivative({self: result})
+        else:
+            raise AttributeError(f"{type(self).__name__} does not implement d2gammadash_by_d2coeff_vjp_impl")
 
     def dincremental_arclength_by_dcoeff_vjp(self, v):
         r"""
@@ -491,7 +563,7 @@ class JaxCurve(sopp.Curve, Curve):
         self.gamma_impl_jax = jit(lambda dofs, p: self.gamma_pure(dofs, p))
         self.dgamma_by_dcoeff_jax = jit(jacfwd(self.gamma_jax))
         self.dgamma_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(self.gamma_jax, x)[1](v)[0])
-        self.d2gamma_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: self.dgamma_by_dcoeff_jax(d, p), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2gamma_by_d2coeff_vjp_jax = jit(lambda x, v: hessian(lambda d: jnp.vdot(v, self.gamma_jax(d)))(x))
         self.d2gamma_by_d2coeff_jax = jit(jacfwd(self.dgamma_by_dcoeff_jax))
         
         self.gammadash_pure = lambda x, q: jvp(lambda p: self.gamma_pure(x, p), (q,), (ones,))[1]
@@ -499,7 +571,7 @@ class JaxCurve(sopp.Curve, Curve):
         self.gammadash_impl_jax = jit(lambda x, p: self.gammadash_pure(x, p))
         self.dgammadash_by_dcoeff_jax = jit(jacfwd(self.gammadash_jax))
         self.dgammadash_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(self.gammadash_jax, x)[1](v)[0])
-        self.d2gammadash_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: self.dgammadash_by_dcoeff_jax(d, p), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2gammadash_by_d2coeff_vjp_jax = jit(lambda x, v: hessian(lambda d: jnp.vdot(v, self.gammadash_jax(d)))(x))
         self.d2gammadash_by_d2coeff_jax = jit(jacfwd(self.dgammadash_by_dcoeff_jax))
         
         self.gammadashdash_pure = lambda x, q: jvp(lambda p: self.gammadash_pure(x, p), (q,), (ones,))[1]
@@ -516,15 +588,15 @@ class JaxCurve(sopp.Curve, Curve):
         self.incremental_arclength_jax = jit(lambda x: incremental_arclength_pure(self.gammadash_jax(x)))
         self.dincremental_arclength_by_dcoeff_jax = jit(jacfwd(self.incremental_arclength_jax))
         self.dincremental_arclength_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(lambda d: incremental_arclength_pure(self.gammadash_jax(d)), x)[1](v)[0])
-        self.d2incremental_arclength_by_d2coeff_vjp = jit(lambda x, v: vjp(lambda d: jvp(lambda p: incremental_arclength_pure(self.gammadash_jax(d, p)), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2incremental_arclength_by_d2coeff_vjp_jax = jit(lambda x, v: hessian(lambda d: jnp.dot(v, self.incremental_arclength_jax(d)))(x))
         self.d2incremental_arclength_by_d2coeff_jax = jit(jacfwd(self.dincremental_arclength_by_dcoeff_jax))
         self.dkappa_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(lambda d: kappa_pure(self.gammadash_jax(d), self.gammadashdash_jax(d)), x)[1](v)[0])
         self.dkappa_by_dcoeff_jax = jit(jacfwd(lambda x: kappa_pure(self.gammadash_jax(x), self.gammadashdash_jax(x))))
-        self.d2kappa_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: kappa_pure(self.gammadash_jax(d, p), self.gammadashdash_jax(d, p)), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2kappa_by_d2coeff_vjp_jax = jit(lambda x, v: hessian(lambda d: jnp.dot(v, kappa_pure(self.gammadash_jax(d), self.gammadashdash_jax(d))))(x))
         self.d2kappa_by_d2coeff_jax = jit(jacfwd(self.dkappa_by_dcoeff_jax))
         self.dtorsion_by_dcoeff_vjp_jax = jit(lambda x, v: vjp(lambda d: torsion_pure(self.gammadash_jax(d), self.gammadashdash_jax(d), self.gammadashdashdash_jax(d)), x)[1](v)[0])
         self.dtorsion_by_dcoeff_jax = jit(jacfwd(lambda x: torsion_pure(self.gammadash_jax(x), self.gammadashdash_jax(x), self.gammadashdashdash_jax(x))))
-        self.d2torsion_by_d2coeff_vjp_jax = jit(lambda x, v: vjp(lambda d: jvp(lambda p: torsion_pure(self.gammadash_jax(d, p), self.gammadashdash_jax(d, p), self.gammadashdashdash_jax(d, p)), (x,), (ones,))[1], x)[1](v)[0])
+        self.d2torsion_by_d2coeff_vjp_jax = jit(lambda x, v: hessian(lambda d: jnp.dot(v, torsion_pure(self.gammadash_jax(d), self.gammadashdash_jax(d), self.gammadashdashdash_jax(d))))(x))
         self.d2torsion_by_d2coeff_jax = jit(jacfwd(self.dtorsion_by_dcoeff_jax))
 
     def set_dofs(self, dofs):
@@ -568,7 +640,7 @@ class JaxCurve(sopp.Curve, Curve):
         """
         This function returns the vector Jacobian product of the second derivative of the incremental arclength with respect to the curve dofs.
         """
-        return self.d2incremental_arclength_by_d2coeff_vjp(self.get_dofs(), v)
+        return self.d2incremental_arclength_by_d2coeff_vjp_jax(self.get_dofs(), v)
 
     def dgamma_by_dcoeff_impl(self, dgamma_by_dcoeff):
         r"""
@@ -897,6 +969,25 @@ class RotatedCurve(sopp.Curve, Curve):
 
         dgamma_by_dcoeff[:] = self.rotmatT @ self.curve.dgamma_by_dcoeff()
 
+    def d2gamma_by_d2coeff_impl(self, d2gamma_by_d2coeff):
+        r"""
+        This function returns 
+
+        .. math::
+            \frac{\partial \Gamma}{\partial \mathbf c \partial \mathbf c}
+
+        where :math:`\mathbf{c}` are the curve dofs, and :math:`\Gamma` are the x, y, z
+        coordinates of the curve.
+        """
+        d2gamma_by_d2coeff[:, :, :] = self.rotmatT @ self.curve.d2gamma_by_d2coeff()
+
+    def d2gamma_by_d2coeff_vjp_impl(self, v):
+        r"""
+        This function returns the vector Jacobian product of the second derivative of the curve with respect to the curve dofs.
+        """
+        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
+        return self.curve.d2gamma_by_d2coeff_vjp(v)
+
     def dgammadash_by_dcoeff_impl(self, dgammadash_by_dcoeff):
         r"""
         This function returns 
@@ -909,6 +1000,26 @@ class RotatedCurve(sopp.Curve, Curve):
         """
 
         dgammadash_by_dcoeff[:] = self.rotmatT @ self.curve.dgammadash_by_dcoeff()
+
+    def d2gammadash_by_d2coeff_impl(self, d2gammadash_by_d2coeff):
+        r"""
+        This function returns 
+
+        .. math::
+            \frac{\partial \Gamma'}{\partial \mathbf c \partial \mathbf c}
+        """
+
+        d2gammadash_by_d2coeff[:, :, :] = self.rotmatT @ self.curve.d2gammadash_by_d2coeff()
+
+    def d2gammadash_by_d2coeff_vjp_impl(self, v):
+        r"""
+        This function returns 
+
+        .. math::
+            \frac{\partial \Gamma''}{\partial \mathbf c \partial \mathbf c}
+        """
+        v = sopp.matmult(v, self.rotmatT)  # v = v @ self.rotmatT
+        return self.curve.d2gammadash_by_d2coeff_vjp(v)
 
     def dgammadashdash_by_dcoeff_impl(self, dgammadashdash_by_dcoeff):
         r"""

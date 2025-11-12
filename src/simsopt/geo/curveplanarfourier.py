@@ -164,9 +164,12 @@ class JaxCurvePlanarFourier(JaxCurve):
 
         def pure(dofs, points): return jaxplanarcurve_pure(dofs, points, order)
         self.order = order
-        self.dof_list = np.zeros(2 * order + 1 + 4 + 3)
+        # Initialize with identity quaternion [1, 0, 0, 0] to avoid normalization issues
+        initial_dofs = np.zeros(2 * order + 1 + 4 + 3)
         if dofs is None:
-            super().__init__(quadpoints, pure, x0=self.dof_list,
+            # Set quaternion to identity [1, 0, 0, 0] for proper initialization
+            initial_dofs[2 * order + 1] = 1.0  # q0 = 1.0 (identity quaternion)
+            super().__init__(quadpoints, pure, x0=initial_dofs,
                              names=self._make_names(order),
                              external_dof_setter=JaxCurvePlanarFourier.set_dofs_impl)
         else:

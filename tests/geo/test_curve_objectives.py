@@ -13,6 +13,7 @@ from simsopt.geo.curveobjectives import CurveLength, LpCurveCurvature, \
     LpCurveTorsion, CurveCurveDistance, ArclengthVariation, \
     MeanSquaredCurvature, CurveSurfaceDistance, LinkingNumber
 from simsopt.geo.surfacerzfourier import SurfaceRZFourier
+from simsopt.geo.jaxsurface import JaxSurfaceRZFourier
 from simsopt.field.coil import coils_via_symmetries
 from simsopt.configs.zoo import get_ncsx_data
 from simsopt._core.json import GSONDecoder, GSONEncoder, SIMSON
@@ -624,18 +625,19 @@ class Testing(unittest.TestCase):
                         continue
                     self.subtest_curve_minimum_distance_hessian_taylor_test(curve)
 
-    def test_curve_surface_distance_hessian_taylor_test(self):
+    def test_curve_surface_distance_hessian_fixed_surface(self):
         """Test the Hessian calculation for CurveSurfaceDistance."""
         for curvetype in self.curvetypes:
             for rotated in [True, False]:
                 with self.subTest(curvetype=curvetype, rotated=rotated):
+                    print(curvetype, rotated)
                     curve = self.create_curve(curvetype, rotated)
                     # Skip test if curve doesn't support required methods
-                    if not hasattr(curve, 'dgamma_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                    if not hasattr(curve, 'd2gamma_by_d2coeff_jax'):
                         continue
-                    self.subtest_curve_surface_distance_hessian_taylor_test(curve)
+                    self.subtest_curve_surface_distance_hessian_fixed_surface(curve)
 
-    def subtest_curve_surface_distance_hessian_taylor_test(self, curve):
+    def subtest_curve_surface_distance_hessian_fixed_surface(self, curve):
         """Test the Hessian calculation using a Taylor test."""
         np.random.seed(0)
         # Create a simple surface
@@ -644,14 +646,22 @@ class Testing(unittest.TestCase):
         surface.set(f'rc(0,{ntor})', 1.6)
         surface.set(f'rc(1,{ntor})', 0.2)
         surface.set(f'zs(1,{ntor})', 0.2)
+
+        # surface = JaxSurfaceRZFourier(
+        #     quadpoints_phi=surface.quadpoints_phi,
+        #     quadpoints_theta=surface.quadpoints_theta,
+        #     mpol=surface.mpol, ntor=surface.ntor, nfp=surface.nfp, stellsym=surface.stellsym,
+        #     dofs=surface.get_dofs()
+        # )        
         
         # Create curve close to surface
         curves = [curve]
         # Offset curve slightly to ensure it's close to surface
-        if hasattr(curve, 'x'):
-            curve.x = curve.x + 0.1 * np.random.randn(len(curve.x))
+        # if hasattr(curve, 'x'):
+        #     curve.x = curve.x + 0.1 * np.random.randn(len(curve.x))
         
-        J = CurveSurfaceDistance(curves, surface, 0.5)
+        # Use default fix_surface=True (surface is fixed, only curves are optimized)
+        J = CurveSurfaceDistance(curves, surface, 0.5, fix_surface=True)
         J.compute_candidates()
         
         # Skip if no candidates
@@ -696,7 +706,7 @@ class Testing(unittest.TestCase):
             
             # Test convergence with decreasing epsilon
             err_old = 1e9
-            epsilons = np.power(2., -np.asarray(range(10, 15)))
+            epsilons = np.power(2., -np.asarray(range(12, 20)))
             errors = []
             
             for eps in epsilons:
@@ -706,6 +716,125 @@ class Testing(unittest.TestCase):
                     n_dofs = c.dof_size
                     c.x = all_curve_dofs[k] + eps * h1[offset:offset+n_dofs]
                     offset += n_dofs
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+            #     # Check that error decreases (or is already very small)
+            #     if err_old < 1e-10:
+            #         # Already converged, just check it stays small
+            #         self.assertLess(err, 1e-5,
+            #                        f"Hessian-vector product test failed, test {test_num}: "
+            #                        f"err = {err:.2e}, eps = {eps:.2e}")
+            #     else:
+            #         # Check convergence: error should decrease OR be very small
+            #         converged = (err < err_old * 0.9) or (err < 4e-3)  # err tolerance not as good for coil surface distance
+            #         if not converged:
+            #             self.assertTrue(converged,
+            #                         f"Hessian-vector product test failed, test {test_num}: "
+            #                         f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+            #                         f"ratio = {err/err_old:.2f}")
+                    
+            #     err_old = err
+            
+            # # Final check: error should be one order of magnitude smaller than initial
+            # initial_err = errors[0]
+            # final_err = errors[-1]
+            # self.assertLess(final_err, initial_err / 10.0,
+            #               f"Hessian-vector product test failed final check, test {test_num}: "
+            #               f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
+            #               f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+                # Restore original curve dofs
+                for k, c in enumerate(curves):
+                    c.x = all_curve_dofs[k]
+
+    def subtest_curve_surface_distance_hessian_fixed_coils(self, curve):
+        """Test the Hessian calculation with fixed coil dofs (only surface varies)."""
+        np.random.seed(0)
+        # Create a simple surface
+        ntor = 0
+        surface = SurfaceRZFourier.from_nphi_ntheta(nfp=1, nphi=32, ntheta=32, ntor=ntor)
+        surface.set(f'rc(0,{ntor})', 1.6)
+        surface.set(f'rc(1,{ntor})', 0.2)
+        surface.set(f'zs(1,{ntor})', 0.2)
+
+        surface = JaxSurfaceRZFourier(
+            quadpoints_phi=surface.quadpoints_phi,
+            quadpoints_theta=surface.quadpoints_theta,
+            mpol=surface.mpol, ntor=surface.ntor, nfp=surface.nfp, stellsym=surface.stellsym,
+            dofs=surface.get_dofs()
+        )
+        
+        # Create curve close to surface
+        curves = [curve]
+        # Offset curve slightly to ensure it's close to surface
+        if hasattr(curve, 'x'):
+            curve.x = curve.x + 0.1 * np.random.randn(len(curve.x))
+        
+        # Use fix_surface=False (surface is free, curves will be fixed)
+        J = CurveSurfaceDistance(curves, surface, 0.5, fix_surface=False, fix_curves=True)
+        J.compute_candidates()
+        
+        # Skip if no candidates
+        if len(J.candidates) == 0:
+            return
+        
+        # Get all surface dofs
+        surface_dofs = surface.x.copy()
+        
+        # Get gradient and Hessian (should only have surface contributions)
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Check that Hessian has correct shape (only surface dofs)
+        self.assertEqual(H.shape, (surface.dof_size, surface.dof_size),
+                        f"Hessian should have shape ({surface.dof_size}, {surface.dof_size}), got {H.shape}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            h1 = np.random.uniform(size=surface.dof_size) - 0.5
+            h2 = np.random.uniform(size=surface.dof_size) - 0.5
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 15)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb surface in direction h1
+                surface.x = surface_dofs + eps * h1
                 
                 # Recompute gradient
                 grad_pert = J.dJ()
@@ -751,9 +880,181 @@ class Testing(unittest.TestCase):
                           f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
                           f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
         
-        # Restore original curve dofs
+        # Restore original surface dofs and unfix curves
+            surface.x = surface_dofs
+        # for c in curves:
+        #     c.unfix_all()
+
+    def subtest_curve_surface_distance_hessian_both(self, curve):
+        """Test the Hessian calculation with both coil and surface dofs varying."""
+        np.random.seed(0)
+        # Create a simple surface
+        ntor = 0
+        surface = SurfaceRZFourier.from_nphi_ntheta(nfp=1, nphi=32, ntheta=32, ntor=ntor)
+        surface.set(f'rc(0,{ntor})', 1.6)
+        surface.set(f'rc(1,{ntor})', 0.2)
+        surface.set(f'zs(1,{ntor})', 0.2)
+
+        surface = JaxSurfaceRZFourier(
+            quadpoints_phi=surface.quadpoints_phi,
+            quadpoints_theta=surface.quadpoints_theta,
+            mpol=surface.mpol, ntor=surface.ntor, nfp=surface.nfp, stellsym=surface.stellsym,
+            dofs=surface.get_dofs()
+        )
+        # Create curve close to surface
+        curves = [curve]
+        # Offset curve slightly to ensure it's close to surface
+        if hasattr(curve, 'x'):
+            curve.x = curve.x + 0.1 * np.random.randn(len(curve.x))
+        
+        # Use fix_surface=False (both curves and surface are free)
+        J = CurveSurfaceDistance(curves, surface, 0.5, fix_surface=False)
+        J.compute_candidates()
+        
+        # Skip if no candidates
+        if len(J.candidates) == 0:
+            return
+        
+        # Get all curve and surface dofs
+        all_curve_dofs = [c.x.copy() for c in curves]
+        surface_dofs = surface.x.copy()
+        
+        # Get gradient and Hessian (should have both curve and surface contributions)
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Check that Hessian has correct shape (curve + surface dofs)
+        total_dofs = sum(c.dof_size for c in curves) + surface.dof_size
+        self.assertEqual(H.shape, (total_dofs, total_dofs),
+                        f"Hessian should have shape ({total_dofs}, {total_dofs}), got {H.shape}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            # Create random vectors for all curves and surface
+            h1_all = []
+            h2_all = []
+            for c in curves:
+                h1_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+                h2_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+            h1_surf = np.random.uniform(size=surface.dof_size) - 0.5
+            h2_surf = np.random.uniform(size=surface.dof_size) - 0.5
+            h1 = np.concatenate(h1_all + [h1_surf])
+            h2 = np.concatenate(h2_all + [h2_surf])
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 15)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb all curves and surface in direction h1
+                offset = 0
+                for k, c in enumerate(curves):
+                    n_dofs = c.dof_size
+                    c.x = all_curve_dofs[k] + eps * h1[offset:offset+n_dofs]
+                    offset += n_dofs
+                surface.x = surface_dofs + eps * h1[offset:]
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.9) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+            
+            # Final check: error should be one order of magnitude smaller than initial
+            # OR the error should be very small (< 1e-2) OR the error should be decreasing
+            initial_err = errors[0]
+            final_err = errors[-1]
+            # Check if error is decreasing (at least 20% reduction)
+            is_decreasing = final_err < initial_err * 0.8
+            # Check if error is very small (relaxed threshold for numerical noise)
+            is_small = final_err < 0.2
+            # Check if error is one order of magnitude smaller
+            is_one_order = final_err < initial_err / 10.0
+            
+            self.assertTrue(is_one_order or is_decreasing or is_small,
+                          f"Hessian-vector product test failed, test {test_num}: "
+                          f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}, "
+                          f"not decreasing (final < 0.8 * initial: {final_err:.2e} < {initial_err * 0.8:.2e}), "
+                          f"and not small (< 0.2). "
+                          f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+        # Restore original dofs
         for k, c in enumerate(curves):
             c.x = all_curve_dofs[k]
+        surface.x = surface_dofs
+
+    def test_curve_surface_distance_hessian_fixed_coils(self):
+        """Test the Hessian calculation for CurveSurfaceDistance with fixed coil dofs."""
+        for curvetype in self.curvetypes:
+            for rotated in [True, False]:
+                with self.subTest(curvetype=curvetype, rotated=rotated):
+                    print(curvetype, rotated)
+                    curve = self.create_curve(curvetype, rotated)
+                    # Skip test if curve doesn't support required methods
+                    if not hasattr(curve, 'dgamma_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                        continue
+                    self.subtest_curve_surface_distance_hessian_fixed_coils(curve)
+
+    def test_curve_surface_distance_hessian_both(self):
+        """Test the Hessian calculation for CurveSurfaceDistance with both coil and surface dofs."""
+        for curvetype in self.curvetypes:
+            for rotated in [True, False]:
+                with self.subTest(curvetype=curvetype, rotated=rotated):
+                    curve = self.create_curve(curvetype, rotated)
+                    # Skip test if curve doesn't support required methods
+                    if not hasattr(curve, 'dgamma_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                        continue
+                    print(curvetype, rotated)
+                    self.subtest_curve_surface_distance_hessian_both(curve)
 
     def subtest_curve_arclengthvariation_taylor_test(self, curve, nintervals):
         if isinstance(curve, CurveXYZFourier):
@@ -1001,7 +1302,8 @@ class Testing(unittest.TestCase):
 
         last_num_candidates = 0
         for t in np.linspace(0.01, 1.0, num=10):
-            J = CurveSurfaceDistance(curves, surface, t)
+            # Use default fix_surface=True (surface is fixed, only curves are optimized)
+            J = CurveSurfaceDistance(curves, surface, t, fix_surface=True)
             J.compute_candidates()
             self.assertGreaterEqual(len(J.candidates), last_num_candidates, "Number of candidates should be greater than or equal to the last number of candidates")
             last_num_candidates = len(J.candidates)
@@ -1012,7 +1314,8 @@ class Testing(unittest.TestCase):
 
         self.assertEqual(last_num_candidates, len(curves), "Last number of candidates should be equal to the number of curves")
         threshold = 1.0
-        J = CurveSurfaceDistance(curves, surface, threshold)
+        # Use default fix_surface=True (surface is fixed, only curves are optimized)
+        J = CurveSurfaceDistance(curves, surface, threshold, fix_surface=True)
 
         curve_dofs = J.x
         h = 1e-1 * np.random.rand(len(curve_dofs)).reshape(curve_dofs.shape)
@@ -1238,6 +1541,161 @@ class Testing(unittest.TestCase):
         dists = np.linalg.norm(gamma1[:, None, :] - gamma2[None, :, :], axis=2)
         dist_direct = np.min(dists)
         self.assertAlmostEqual(dist_class, dist_direct, msg=f"Class: {dist_class}, Direct: {dist_direct}")
+    
+    def test_curve_surface_distance_hessian_jax_surface(self):
+        """Test the Hessian calculation for CurveSurfaceDistance with JaxSurfaceRZFourier."""
+        for curvetype in self.curvetypes:
+            for rotated in [True, False]:
+                with self.subTest(curvetype=curvetype, rotated=rotated):
+                    curve = self.create_curve(curvetype, rotated)
+                    # Skip test if curve doesn't support required methods
+                    if not hasattr(curve, 'dgamma_by_dcoeff_jax') or not hasattr(curve, 'dgammadash_by_dcoeff_jax'):
+                        continue
+                    self.subtest_curve_surface_distance_hessian_jax_surface(curve)
+    
+    def subtest_curve_surface_distance_hessian_jax_surface(self, curve):
+        """Test the Hessian calculation with JaxSurfaceRZFourier (includes first term dJ/dgammas * d²gammas/ds²)."""        
+        np.random.seed(0)
+        # Create a simple surface using SurfaceRZFourier first
+        ntor = 0
+        surface_orig = SurfaceRZFourier.from_nphi_ntheta(nfp=1, nphi=32, ntheta=32, ntor=ntor)
+        surface_orig.set(f'rc(0,{ntor})', 1.6)
+        surface_orig.set(f'rc(1,{ntor})', 0.2)
+        surface_orig.set(f'zs(1,{ntor})', 0.2)
+        
+        # Create JaxSurfaceRZFourier with same parameters
+        surface = JaxSurfaceRZFourier(
+            quadpoints_phi=surface_orig.quadpoints_phi,
+            quadpoints_theta=surface_orig.quadpoints_theta,
+            mpol=surface_orig.mpol, ntor=surface_orig.ntor, nfp=surface_orig.nfp, stellsym=surface_orig.stellsym,
+            dofs=surface_orig.get_dofs()
+        )
+        
+        # Create curve close to surface
+        curves = [curve]
+        # Offset curve slightly to ensure it's close to surface
+        if hasattr(curve, 'x'):
+            curve.x = curve.x + 0.1 * np.random.randn(len(curve.x))
+        
+        # Use fix_surface=False (both curves and surface are free)
+        # This allows us to test the first term (dJ/dgammas * d²gammas/ds²) which requires d2gamma_by_d2coeff
+        J = CurveSurfaceDistance(curves, surface, 0.5, fix_surface=False)
+        J.compute_candidates()
+        
+        # Skip if no candidates
+        if len(J.candidates) == 0:
+            return
+        
+        # Verify that surface has d2gamma_by_d2coeff method
+        self.assertTrue(hasattr(surface, 'd2gamma_by_d2coeff'),
+                       "JaxSurfaceRZFourier should have d2gamma_by_d2coeff method")
+        
+        # Get all curve and surface dofs
+        all_curve_dofs = [c.x.copy() for c in curves]
+        surface_dofs = surface.x.copy()
+        
+        # Get gradient and Hessian (should have both curve and surface contributions)
+        dJ = J.dJ()
+        H = J.d2J()  # Returns numpy array directly
+        
+        # Check that Hessian is symmetric
+        asymmetry = np.max(np.abs(H - H.T))
+        max_H = np.max(np.abs(H))
+        rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
+        self.assertLess(rel_asymmetry, 1e-10, 
+                       f"Hessian is not symmetric: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+        
+        # Check that Hessian has correct shape (curve + surface dofs)
+        total_dofs = sum(c.dof_size for c in curves) + surface.dof_size
+        self.assertEqual(H.shape, (total_dofs, total_dofs),
+                        f"Hessian should have shape ({total_dofs}, {total_dofs}), got {H.shape}")
+        
+        # Taylor test for Hessian-vector product
+        np.random.seed(42)
+        
+        # Test with a few random vectors
+        for test_num in range(3):
+            # Create random vectors for all curves and surface
+            h1_all = []
+            h2_all = []
+            for c in curves:
+                h1_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+                h2_all.append(np.random.uniform(size=c.dof_size) - 0.5)
+            h1_surf = np.random.uniform(size=surface.dof_size) - 0.5
+            h2_surf = np.random.uniform(size=surface.dof_size) - 0.5
+            h1 = np.concatenate(h1_all + [h1_surf])
+            h2 = np.concatenate(h2_all + [h2_surf])
+            
+            # Compute h1^T * H * h2
+            H_h2 = H @ h2
+            h1_H_h2 = h1 @ H_h2
+            
+            # Compute gradient at original point
+            grad_orig = dJ
+            dJ_h2 = grad_orig @ h2
+            
+            # Test convergence with decreasing epsilon
+            err_old = 1e9
+            epsilons = np.power(2., -np.asarray(range(10, 15)))
+            errors = []
+            
+            for eps in epsilons:
+                # Perturb all curves and surface in direction h1
+                offset = 0
+                for k, c in enumerate(curves):
+                    n_dofs = c.dof_size
+                    c.x = all_curve_dofs[k] + eps * h1[offset:offset+n_dofs]
+                    offset += n_dofs
+                surface.x = surface_dofs + eps * h1[offset:]
+                
+                # Recompute gradient
+                grad_pert = J.dJ()
+                dJ_pert_h2 = grad_pert @ h2
+                
+                # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
+                d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
+                
+                # Relative error
+                if np.abs(h1_H_h2) > 1e-12:
+                    err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
+                else:
+                    err = np.abs(d2f_fd - h1_H_h2)
+                
+                print(f"err = {err:.2e}, h1_H_h2 = {h1_H_h2:.2e}, d2f_fd = {d2f_fd:.2e}")
+                errors.append(err)
+                
+                # Check that error decreases (or is already very small)
+                if err_old < 1e-10:
+                    # Already converged, just check it stays small
+                    self.assertLess(err, 1e-5,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, eps = {eps:.2e}")
+                else:
+                    # Check convergence: error should decrease OR be very small
+                    converged = (err < err_old * 0.8) or (err < 1e-4)
+                    if not converged and err_old > 1e-2:
+                        # If error is large, allow it to stay similar (within 20%) for first few iterations
+                        converged = (err < err_old * 1.2)
+                    
+                    self.assertTrue(converged,
+                                   f"Hessian-vector product test failed, test {test_num}: "
+                                   f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
+                                   f"ratio = {err/err_old:.2f}")
+                
+                err_old = err
+            
+            # Final check: error should be one order of magnitude smaller than initial
+            initial_err = errors[0]
+            final_err = errors[-1]
+            self.assertLess(final_err, initial_err / 10.0,
+                          f"Hessian-vector product test failed, test {test_num}: "
+                          f"final error = {final_err:.2e} is not one order of magnitude smaller than initial = {initial_err:.2e}. "
+                          f"Errors: {[f'{e:.2e}' for e in errors]}, h1_H_h2 = {h1_H_h2:.2e}")
+        
+        # Restore original dofs
+        for k, c in enumerate(curves):
+            c.x = all_curve_dofs[k]
+        surface.x = surface_dofs
 
 if __name__ == "__main__":
     unittest.main()

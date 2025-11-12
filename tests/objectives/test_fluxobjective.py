@@ -1,310 +1,333 @@
 import unittest
-import json
-
 import numpy as np
 
+from simsopt.geo.curvexyzfourier import JaxCurveXYZFourier
+from simsopt.geo.jaxsurface import JaxSurfaceRZFourier
 from simsopt.geo.surfacerzfourier import SurfaceRZFourier
-from simsopt.field.coil import coils_via_symmetries, Current
 from simsopt.geo.curve import create_equally_spaced_curves
-from simsopt.geo.curveobjectives import CurveLength
 from simsopt.field.biotsavart import BiotSavart
-from simsopt.objectives.fluxobjective import SquaredFlux, SquaredFluxJax
-from simsopt._core.json import GSONDecoder, GSONEncoder, SIMSON
+from simsopt.field.coil import Current, coils_via_symmetries, Coil
+from simsopt.objectives.fluxobjective import SquaredFluxJax, SquaredFlux
 
-
-from pathlib import Path
-TEST_DIR = (Path(__file__).parent / ".." / "test_files").resolve()
-filename = TEST_DIR / 'input.LandremanPaul2021_QA'
-
-
-class FluxObjectiveTests(unittest.TestCase):
-
-    def test_definitions(self):
-        """Verify the available definitions."""
-        surf = SurfaceRZFourier.from_vmec_input(filename)
-        ntheta = len(surf.quadpoints_theta)
-        nphi = len(surf.quadpoints_phi)
-        ncoils = 3
-
-        base_curves = create_equally_spaced_curves(
-            ncoils, surf.nfp, stellsym=surf.stellsym, R0=1.0, R1=0.5, order=6
-        )
-        base_currents = [Current(1e5) for i in range(ncoils)]
-        coils = coils_via_symmetries(base_curves, base_currents, surf.nfp, surf.stellsym)
-        bs = BiotSavart(coils)
-
-        # Test definition = "quadratic flux":
-        target = np.ones(surf.gamma().shape[0:2])
-        J = SquaredFlux(surf, bs, target, definition="quadratic flux").J()
-        bs.set_points(surf.gamma().reshape((-1, 3)))
-        B = bs.B()
-        normal = surf.normal().reshape((-1, 3))
-        norm_normal = np.sqrt(normal[:, 0]**2 + normal[:, 1]**2 + normal[:, 2]**2)
-        B_dot_n = np.sum(B * surf.unitnormal().reshape((-1, 3)), axis=1)
-        should_be = 0.5 * sum((B_dot_n - target.reshape((-1,)))**2 * norm_normal) / (ntheta * nphi)
-        np.testing.assert_allclose(J, should_be)
-
-        # Test definition = "normalized":
-        J2 = SquaredFlux(surf, bs, target, definition="normalized").J()
-        mod_B_squared = np.sum(B * B, axis=1)
-        numerator = 0.5 * sum(
-            (B_dot_n - target.reshape((-1,)))**2 * norm_normal
-        ) / (ntheta * nphi)
-        denominator = sum(mod_B_squared * norm_normal) / (ntheta * nphi)
-        np.testing.assert_allclose(J2, numerator / denominator)
-
-        # Test definition = "local":
-        J3 = SquaredFlux(surf, bs, target, definition="local").J()
-        should_be3 = 0.5 * sum(
-            (B_dot_n - target.reshape((-1,)))**2 / mod_B_squared * norm_normal
-        ) / (ntheta * nphi)
-        np.testing.assert_allclose(J3, should_be3)
-
-        with self.assertRaises(ValueError):
-            SquaredFlux(surf, bs, target, definition="foobar")
-
-    def check_taylor_test(self, J):
-        dofs = J.x
-        np.random.seed(1)
-        h = np.random.uniform(size=dofs.shape)
-        dJ0 = J.dJ()
-        dJh = sum(dJ0 * h)
-        err_old = 1e10
-        for i in range(11, 17):
+class TestSquaredFlux(unittest.TestCase):
+    def taylor_test(self, J, dvar, h=None):
+        if h is None:
+            h = np.random.rand(len(dvar.x))
+        dvar.x = dvar.x + h * 1e-10
+        dJ0 = J.dJ(partials=True)(dvar)
+        dvar.x = dvar.x - h * 1e-10
+        J0 = J.J()
+        deriv = np.sum(dJ0 * h)
+        print(f"\nTaylor test for {type(dvar).__name__}:")
+        print(f"  J0 = {J0:.6e}")
+        print(f"  Gradient norm = {np.linalg.norm(dJ0):.6e}")
+        print(f"  Directional derivative (from gradient) = {deriv:.6e}")
+        err_old = 1e9
+        for i in range(5, 11):
             eps = 0.5 ** i
-            J.x = dofs + eps * h
+            dvar.x = dvar.x + eps * h
             J1 = J.J()
-            J.x = dofs - eps * h
+            dvar.x = dvar.x - 2 * eps * h
             J2 = J.J()
-            err = np.abs((J1 - J2) / (2 * eps) - dJh)
-            print(f"J: {J.J()}")
-            print(f"i: {i}  err: {err}  err_old: {err_old}  err/err_old: {err/err_old}")
-            assert err < 0.6 ** 2 * err_old
+            dvar.x = dvar.x + eps * h
+            deriv_est = (J1 - J2) / (2 * eps)
+            err = np.linalg.norm(deriv_est - deriv)
+            print(f"  i={i}, eps={eps:.2e}, deriv_est={deriv_est:.6e}, err={err:.6e}, err/err_old={err/err_old:.3f}")
+            self.assertTrue(err < 0.3 * err_old)
             err_old = err
 
-        J_str = json.dumps(SIMSON(J), cls=GSONEncoder)
-        J_regen = json.loads(J_str, cls=GSONDecoder)
-        self.assertAlmostEqual(J.J(), J_regen.J())
+    def test_squared_flux_gradient(self):
+        """
+        Test the gradient of the squared flux objective.
+        """
+        # Create a surface and a coil
+        ntor = 1
+        surface_orig = SurfaceRZFourier.from_nphi_ntheta(nfp=1, nphi=10, ntheta=10, ntor=ntor)
+        surface_orig.set(f'rc(0,{ntor})', 1.0)
+        surface_orig.set(f'rc(1,{ntor})', 0.1)
+        surface_orig.set(f'zs(1,{ntor})', 0.1)
+        surface = JaxSurfaceRZFourier(
+            quadpoints_phi=surface_orig.quadpoints_phi,
+            quadpoints_theta=surface_orig.quadpoints_theta,
+            mpol=surface_orig.mpol, ntor=surface_orig.ntor, nfp=surface_orig.nfp, stellsym=surface_orig.stellsym,
+            dofs=surface_orig.get_dofs()
+        )
+        surface.x = np.random.rand(len(surface.x))
+        coil = JaxCurveXYZFourier(100, 1)
+        coil.x = np.random.rand(len(coil.x))
+        
+        # Create a Biot-Savart field
+        bs = BiotSavart([Coil(coil, Current(1.0))])
 
-    def test_derivatives(self):
-        """Verify correctness of SquaredFlux.dJ()"""
-        s = SurfaceRZFourier.from_vmec_input(filename)
-        ncoils = 4
+        # Test with fixed surface
+        J = SquaredFluxJax(surface, bs, fixed_surface=True)
+        self.taylor_test(J, coil)
 
-        base_curves = create_equally_spaced_curves(ncoils, s.nfp, stellsym=s.stellsym, R0=1.0, R1=0.5, order=6)
-        base_currents = [Current(1e5) for i in range(ncoils)]
-        coils = coils_via_symmetries(base_curves, base_currents, s.nfp, s.stellsym)
-        bs = BiotSavart(coils)
+        # Test with free surface
+        J = SquaredFluxJax(surface, bs, fixed_surface=False)
+        self.taylor_test(J, coil)
+        self.taylor_test(J, surface)
 
-        for definition in ["quadratic flux", "normalized", "local"]:
-            with self.subTest(definition=definition):
-                Jf = SquaredFlux(s, bs, definition=definition)
-                self.check_taylor_test(Jf)
+    def test_squared_flux_hessian(self):
+        """
+        Test the Hessian of the squared flux objective.
+        """
+        # Create a surface and a coil
+        ntor = 1
+        surface_orig = SurfaceRZFourier.from_nphi_ntheta(nfp=1, nphi=10, ntheta=10, ntor=ntor)
+        surface_orig.set(f'rc(0,{ntor})', 1.0)
+        surface_orig.set(f'rc(1,{ntor})', 0.1)
+        surface_orig.set(f'zs(1,{ntor})', 0.1)
+        surface = JaxSurfaceRZFourier(
+            quadpoints_phi=surface_orig.quadpoints_phi,
+            quadpoints_theta=surface_orig.quadpoints_theta,
+            mpol=surface_orig.mpol, ntor=surface_orig.ntor, nfp=surface_orig.nfp, stellsym=surface_orig.stellsym,
+            dofs=surface_orig.get_dofs()
+        )
+        surface.x = np.random.rand(len(surface.x))
+        coil = JaxCurveXYZFourier(100, 1)
+        coil.x = np.random.rand(len(coil.x))
+        
+        # Create a Biot-Savart field
+        bs = BiotSavart([Coil(coil, Current(1.0))])
 
-                target = np.zeros(s.gamma().shape[0:2])
-                Jf2 = SquaredFlux(s, bs, target, definition=definition)
-                self.check_taylor_test(Jf2)
-                target = np.ones(s.gamma().shape[0:2])
-                Jf3 = SquaredFlux(s, bs, target, definition=definition)
-                self.check_taylor_test(Jf3)
+        # Test with fixed surface
+        J = SquaredFluxJax(surface, bs, fixed_surface=True)
+        H_cc, _, _, _ = J.d2J()
+        h = np.random.rand(len(coil.x))
+        dJ_h = H_cc @ h
+        dJ0 = J.dJ(partials=True)(coil)
+        print("\nHessian test (coil-coil, fixed surface):")
+        print(f"  dJ0 norm = {np.linalg.norm(dJ0):.6e}")
+        print(f"  H_cc @ h norm = {np.linalg.norm(dJ_h):.6e}")
+        err_old = 1e9
+        for i in range(5, 12):
+            eps = 0.5 ** i
+            coil.x = coil.x + eps * h
+            dJ1 = J.dJ(partials=True)(coil)
+            coil.x = coil.x - eps * h
+            deriv_est = (dJ1 - dJ0) / eps
+            err = np.linalg.norm(deriv_est - dJ_h)
+            print(f"  i={i}, eps={eps:.2e}, deriv_est norm={np.linalg.norm(deriv_est):.6e}, err={err:.6e}, err/err_old={err/err_old:.3f}")
+            self.assertTrue(err < 0.3 * err_old)
+            err_old = err
 
-                Jls = [CurveLength(c) for c in base_curves]
+        # Test with free surface
+        J = SquaredFluxJax(surface, bs, fixed_surface=False)
+        H_cc, H_cs, H_sc, H_ss = J.d2J()
 
-                ALPHA = 1e-5
-                JF_scaled_summed = Jf + ALPHA * sum(Jls)
-                self.check_taylor_test(JF_scaled_summed)
+        # Test coil-coil block
+        h_c = np.random.rand(len(coil.x))
+        dJ_h_c = H_cc @ h_c
+        dJ0_c = J.dJ(partials=True)(coil)
+        print("\nHessian test (coil-coil, free surface):")
+        print(f"  dJ0_c norm = {np.linalg.norm(dJ0_c):.6e}")
+        print(f"  H_cc @ h_c norm = {np.linalg.norm(dJ_h_c):.6e}")
+        err_old = 1e9
+        for i in range(5, 12):
+            eps = 0.5 ** i
+            coil.x = coil.x + eps * h_c
+            dJ1_c = J.dJ(partials=True)(coil)
+            coil.x = coil.x - eps * h_c
+            deriv_est = (dJ1_c - dJ0_c) / eps
+            err = np.linalg.norm(deriv_est - dJ_h_c)
+            print(f"  i={i}, eps={eps:.2e}, deriv_est norm={np.linalg.norm(deriv_est):.6e}, err={err:.6e}, err/err_old={err/err_old:.3f}")
+            self.assertTrue(err < 0.3 * err_old)
+            err_old = err
 
-    def test_squared_flux_jax_vs_cpp(self):
-        """Test that SquaredFluxJax gives the same results as SquaredFlux (C++ version)."""
-        surf = SurfaceRZFourier.from_vmec_input(filename)
+        # Test surface-surface block
+        h_s = np.random.rand(len(surface.x))
+        dJ_h_s = H_ss @ h_s
+        dJ0_s = J.dJ(partials=True)(surface)
+        print("\nHessian test (surface-surface):")
+        print(f"  dJ0_s norm = {np.linalg.norm(dJ0_s):.6e}")
+        print(f"  H_ss @ h_s norm = {np.linalg.norm(dJ_h_s):.6e}")
+        err_old = 1e9
+        for i in range(5, 12):
+            eps = 0.5 ** i
+            surface.x = surface.x + eps * h_s
+            dJ1_s = J.dJ(partials=True)(surface)
+            surface.x = surface.x - eps * h_s
+            deriv_est = (dJ1_s - dJ0_s) / eps
+            err = np.linalg.norm(deriv_est - dJ_h_s)
+            print(f"  i={i}, eps={eps:.2e}, deriv_est norm={np.linalg.norm(deriv_est):.6e}, err={err:.6e}, err/err_old={err/err_old:.3f}")
+            self.assertTrue(err < 0.3 * err_old)
+            err_old = err
+        
+        # Test coil-surface block
+        h_s = np.random.rand(len(surface.x))
+        dJ_h_s = H_cs @ h_s
+        dJ0_c = J.dJ(partials=True)(coil)
+        print("\nHessian test (coil-surface):")
+        print(f"  dJ0_c norm = {np.linalg.norm(dJ0_c):.6e}")
+        print(f"  H_cs @ h_s norm = {np.linalg.norm(dJ_h_s):.6e}")
+        err_old = 1e9
+        for i in range(5, 12):
+            eps = 0.5 ** i
+            surface.x = surface.x + eps * h_s
+            dJ1_c = J.dJ(partials=True)(coil)
+            surface.x = surface.x - eps * h_s
+            deriv_est = (dJ1_c - dJ0_c) / eps
+            err = np.linalg.norm(deriv_est - dJ_h_s)
+            print(f"  i={i}, eps={eps:.2e}, deriv_est norm={np.linalg.norm(deriv_est):.6e}, err={err:.6e}, err/err_old={err/err_old:.3f}")
+            self.assertTrue(err < 0.3 * err_old)
+            err_old = err
+
+    def test_squared_flux_jax_vs_cpp_gradient(self):
+        """
+        Test that SquaredFluxJax gradient gives the same results as SquaredFlux (C++ version)
+        using a Taylor test that compares values for different perturbation sizes.
+        """
+        # Create a surface and coils
+        surface = SurfaceRZFourier(nfp=1, mpol=1, ntor=1)
         ncoils = 3
-
         base_curves = create_equally_spaced_curves(
-            ncoils, surf.nfp, stellsym=surf.stellsym, R0=1.0, R1=0.5, order=6
+            ncoils, 1, stellsym=True, R0=1.0, R1=0.5, order=6
         )
         base_currents = [Current(1e5) for i in range(ncoils)]
-        coils = coils_via_symmetries(base_curves, base_currents, surf.nfp, surf.stellsym)
+        coils = coils_via_symmetries(base_curves, base_currents, 1, True)
         bs = BiotSavart(coils)
 
         for definition in ["quadratic flux", "normalized", "local"]:
             with self.subTest(definition=definition):
                 # Test with no target
-                objective_cpp = SquaredFlux(surf, bs, definition=definition)
-                objective_jax = SquaredFluxJax(surf, bs, definition=definition)
-                result_cpp = objective_cpp.J()
-                result_jax = objective_jax.J()
-                print(f"{definition} (no target): C++={result_cpp}, JAX={result_jax}")
-                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-3)
-
-                # Test with zero target
-                target_zero = np.zeros(surf.gamma().shape[0:2])
-                objective_cpp = SquaredFlux(surf, bs, target=target_zero, definition=definition)
-                objective_jax = SquaredFluxJax(surf, bs, target=target_zero, definition=definition)
-                result_cpp = objective_cpp.J()
-                result_jax = objective_jax.J()
-                print(f"{definition} (zero target): C++={result_cpp}, JAX={result_jax}")
-                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-3)
+                objective_cpp = SquaredFlux(surface, bs, definition=definition)
+                objective_jax = SquaredFluxJax(surface, bs, definition=definition, fixed_surface=True)
+                
+                # Get gradients
+                dJ_cpp = objective_cpp.dJ()
+                dJ_jax = objective_jax.dJ()
+                
+                # Choose a random perturbation direction
+                h = np.random.rand(len(dJ_cpp))
+                h = h / np.linalg.norm(h)  # Normalize
+                
+                # Compute directional derivative from gradients
+                deriv_cpp = np.sum(dJ_cpp * h)
+                deriv_jax = np.sum(dJ_jax * h)
+                
+                print(f"\nTaylor test JAX vs C++ (definition={definition}, no target):")
+                print(f"  Gradient norm (C++): {np.linalg.norm(dJ_cpp):.6e}")
+                print(f"  Gradient norm (JAX): {np.linalg.norm(dJ_jax):.6e}")
+                print(f"  Directional derivative (C++): {deriv_cpp:.6e}")
+                print(f"  Directional derivative (JAX): {deriv_jax:.6e}")
+                print(f"  Difference: {abs(deriv_jax - deriv_cpp):.6e}")
+                
+                # Store initial DOFs
+                bs_x0 = bs.x.copy()
+                
+                # Taylor test: compare finite difference approximations
+                err_old_cpp = 1e9
+                err_old_jax = 1e9
+                J0_cpp = objective_cpp.J()
+                J0_jax = objective_jax.J()
+                
+                for i in range(5, 12):
+                    eps = 0.5 ** i
+                    
+                    # Perturb DOFs
+                    bs.x = bs_x0 + eps * h
+                    J1_cpp = objective_cpp.J()
+                    J1_jax = objective_jax.J()
+                    
+                    # Reset DOFs
+                    bs.x = bs_x0 - eps * h
+                    J2_cpp = objective_cpp.J()
+                    J2_jax = objective_jax.J()
+                    
+                    # Reset DOFs to original
+                    bs.x = bs_x0.copy()
+                    
+                    # Finite difference estimate
+                    deriv_est_cpp = (J1_cpp - J2_cpp) / (2 * eps)
+                    deriv_est_jax = (J1_jax - J2_jax) / (2 * eps)
+                    
+                    # Errors
+                    err_cpp = abs(deriv_est_cpp - deriv_cpp)
+                    err_jax = abs(deriv_est_jax - deriv_jax)
+                    
+                    print(f"  i={i}, eps={eps:.2e}, deriv_est_cpp={deriv_est_cpp:.6e}, deriv_est_jax={deriv_est_jax:.6e}")
+                    print(f"    err_cpp={err_cpp:.6e}, err_jax={err_jax:.6e}, err_cpp/err_old_cpp={err_cpp/err_old_cpp:.3f}, err_jax/err_old_jax={err_jax/err_old_jax:.3f}")
+                    
+                    # Both should converge
+                    self.assertTrue(err_cpp < 0.3 * err_old_cpp or err_cpp < 1e-12)
+                    self.assertTrue(err_jax < 0.3 * err_old_jax or err_jax < 1e-12)
+                    
+                    err_old_cpp = err_cpp
+                    err_old_jax = err_jax
+                
+                # Compare gradients directly
+                np.testing.assert_allclose(dJ_jax, dJ_cpp, atol=1e-10, rtol=1e-8)
 
                 # Test with non-zero target
-                target_ones = np.ones(surf.gamma().shape[0:2])
-                objective_cpp = SquaredFlux(surf, bs, target=target_ones, definition=definition)
-                objective_jax = SquaredFluxJax(surf, bs, target=target_ones, definition=definition)
-                result_cpp = objective_cpp.J()
-                result_jax = objective_jax.J()
-                print(f"{definition} (ones target): C++={result_cpp}, JAX={result_jax}")
-                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-3)
-
-                # try with threshold
-                Jf = SquaredFlux(surf, bs, definition=definition, threshold=1e-3)
-                result_cpp = Jf.J()
-                self.check_taylor_test(Jf)
-                Jf_jax = SquaredFluxJax(surf, bs, definition=definition, threshold=1e-3)
-                result_jax = Jf_jax.J()
-                self.check_taylor_test(Jf_jax)
-                print(f"{definition} (threshold): C++={result_cpp}, JAX={result_jax}")
-                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-3)
-
-                target = np.zeros(surf.gamma().shape[0:2])
-                Jf2 = SquaredFlux(surf, bs, target, definition=definition, threshold=1e-3)
-                self.check_taylor_test(Jf2)
-                Jf2_jax = SquaredFluxJax(surf, bs, target, definition=definition, threshold=1e-3)
-                self.check_taylor_test(Jf2_jax)
-                target = np.ones(surf.gamma().shape[0:2])
-                Jf3 = SquaredFlux(surf, bs, target, definition=definition, threshold=1e-3)
-                self.check_taylor_test(Jf3)
-                Jf3_jax = SquaredFluxJax(surf, bs, target, definition=definition, threshold=1e-3)
-                self.check_taylor_test(Jf3_jax)
-                print(f"{definition} (threshold): C++={result_cpp}, JAX={result_jax}")
-                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-3)
-
-                Jls = [CurveLength(c) for c in base_curves]
-
-                ALPHA = 1e-5
-                JF_scaled_summed = Jf + ALPHA * sum(Jls)
-                self.check_taylor_test(JF_scaled_summed)
-                JF_scaled_summed_jax = Jf_jax + ALPHA * sum(Jls)
-                self.check_taylor_test(JF_scaled_summed_jax)
-                print(f"{definition} (scaled summed): C++={result_cpp}, JAX={result_jax}")
-                np.testing.assert_allclose(result_jax, result_cpp, atol=1e-10, rtol=1e-3)
-
-    def test_squared_flux_jax_hessian(self):
-        """Test that the Hessian computation in SquaredFluxJax is correct."""
-        surf = SurfaceRZFourier.from_vmec_input(filename)
-        ncoils = 3
-
-        base_curves = create_equally_spaced_curves(
-            ncoils, surf.nfp, stellsym=surf.stellsym, R0=1.0, R1=0.5, order=6
-        )
-        base_currents = [Current(1e5) for i in range(ncoils)]
-        coils = coils_via_symmetries(base_curves, base_currents, surf.nfp, surf.stellsym)
-        bs = BiotSavart(coils)
-
-        for definition in ["quadratic flux", "normalized", "local"]:
-            with self.subTest(definition=definition):
-                objective_jax = SquaredFluxJax(surf, bs, definition=definition)
+                target = np.random.rand(*surface.gamma().shape[0:2])
+                objective_cpp = SquaredFlux(surface, bs, target=target, definition=definition)
+                objective_jax = SquaredFluxJax(surface, bs, target=target, definition=definition, fixed_surface=True)
                 
-                # Compute Hessian w.r.t. coil dofs
-                H = objective_jax.d2J_dcoil_dofs2()
+                # Get gradients
+                dJ_cpp = objective_cpp.dJ()
+                dJ_jax = objective_jax.dJ()
                 
-                # Check that Hessian is symmetric (with more lenient tolerance)
-                asymmetry = np.max(np.abs(H - H.T))
-                max_H = np.max(np.abs(H))
-                rel_asymmetry = asymmetry / max_H if max_H > 0 else asymmetry
-                self.assertLess(rel_asymmetry, 1e-5,
-                              f"Hessian is not symmetric for {definition}: max asymmetry = {asymmetry}, rel = {rel_asymmetry}")
+                # Choose a random perturbation direction
+                h = np.random.rand(len(dJ_cpp))
+                h = h / np.linalg.norm(h)  # Normalize
                 
-                # Test Hessian using Taylor test with random vectors
-                # This is more robust than testing individual columns
-                np.random.seed(42)
-                n_coil_dofs = len(bs.x)
-                coil_dofs_orig = bs.x.copy()
+                # Compute directional derivative from gradients
+                deriv_cpp = np.sum(dJ_cpp * h)
+                deriv_jax = np.sum(dJ_jax * h)
                 
-                # Test with a few random vectors
-                for test_num in range(3):
-                    h1 = np.random.uniform(size=n_coil_dofs) - 0.5
-                    h2 = np.random.uniform(size=n_coil_dofs) - 0.5
-                    
-                    # Compute h1^T * H * h2
-                    H_h2 = H @ h2
-                    h1_H_h2 = h1 @ H_h2
-                    
-                    # Compute gradient at original point
-                    grad_orig = objective_jax.dJ()
-                    dJ_h2 = grad_orig @ h2
-                    
-                    # Test convergence with decreasing epsilon
-                    # Use smaller epsilon range for better accuracy
-                    err_old = 1e9
-                    epsilons = np.power(2., -np.asarray(range(10, 17)))
-                    errors = []
-                    
-                    for eps in epsilons:
-                        # Perturb in direction h1
-                        bs.x = coil_dofs_orig + eps * h1
-                        
-                        # Recompute gradient
-                        grad_pert = objective_jax.dJ()
-                        dJ_pert_h2 = grad_pert @ h2
-                        
-                        # Finite difference approximation: (dJ(x + eps*h1) - dJ(x))^T * h2 / eps
-                        d2f_fd = (dJ_pert_h2 - dJ_h2) / eps
-                        
-                        # Relative error
-                        if np.abs(h1_H_h2) > 1e-12:
-                            err = np.abs(d2f_fd - h1_H_h2) / np.abs(h1_H_h2)
-                        else:
-                            err = np.abs(d2f_fd - h1_H_h2)
-                        
-                        print(eps, err, d2f_fd, h1_H_h2)
-                        errors.append(err)
-                        
-                        # Check that error decreases (or is already very small)
-                        if err_old < 1e-10:
-                            # Already converged, just check it stays small
-                            self.assertLess(err, 1e-5,
-                                          f"Hessian-vector product test failed for {definition}, test {test_num}: "
-                                          f"err = {err:.2e}, eps = {eps:.2e}")
-                        else:
-                            # Check convergence: error should decrease OR be very small
-                            # More lenient: allow error to decrease by at least 20% OR be very small
-                            converged = (err < err_old * 0.8) or (err < 1e-4)
-                            if not converged and err_old > 1e-2:
-                                # If error is large, allow it to stay similar (within 20%) for first few iterations
-                                converged = (err < err_old * 1.2)
-                            
-                            self.assertTrue(converged,
-                                          f"Hessian-vector product test failed for {definition}, test {test_num}: "
-                                          f"err = {err:.2e}, err_old = {err_old:.2e}, eps = {eps:.2e}, "
-                                          f"ratio = {err/err_old:.2f}")
-                        
-                        err_old = err
-                    
-                    # Final check: error should converge to a small value
-                    # The Hessian computation should be accurate, so we expect good convergence
-                    final_err = errors[-1]
-                    
-                    # Check that error decreases significantly (at least by 50% over the iterations)
-                    if len(errors) >= 3:
-                        initial_err = errors[0]
-                        reduction = initial_err / final_err if final_err > 0 else float('inf')
-                        # Error should decrease by at least a factor of 2, or be very small
-                        self.assertTrue(reduction >= 2.0 or final_err < 1e-4,
-                                      f"Hessian-vector product test failed for {definition}, test {test_num}: "
-                                      f"error did not decrease sufficiently. Initial: {initial_err:.2e}, "
-                                      f"Final: {final_err:.2e}, Reduction: {reduction:.2f}")
-                    
-                    # Final error should be small
-                    self.assertLess(final_err, 1e-3,
-                                  f"Hessian-vector product test failed for {definition}, test {test_num}: "
-                                  f"final error = {final_err:.2e} is too large. Errors: {[f'{e:.2e}' for e in errors]}, "
-                                  f"h1_H_h2 = {h1_H_h2:.2e}")
-                    
-                    # Restore original coil dofs
-                    bs.x = coil_dofs_orig
+                print(f"\nTaylor test JAX vs C++ (definition={definition}, with target):")
+                print(f"  Gradient norm (C++): {np.linalg.norm(dJ_cpp):.6e}")
+                print(f"  Gradient norm (JAX): {np.linalg.norm(dJ_jax):.6e}")
+                print(f"  Directional derivative (C++): {deriv_cpp:.6e}")
+                print(f"  Directional derivative (JAX): {deriv_jax:.6e}")
+                print(f"  Difference: {abs(deriv_jax - deriv_cpp):.6e}")
                 
-                print(f"{definition}: Hessian shape={H.shape}, symmetric check passed (rel asymmetry = {rel_asymmetry:.2e}), "
-                      f"Taylor test passed")
-
+                # Store initial DOFs
+                bs_x0 = bs.x.copy()
+                
+                # Taylor test: compare finite difference approximations
+                err_old_cpp = 1e9
+                err_old_jax = 1e9
+                J0_cpp = objective_cpp.J()
+                J0_jax = objective_jax.J()
+                
+                for i in range(5, 12):
+                    eps = 0.5 ** i
+                    
+                    # Perturb DOFs
+                    bs.x = bs_x0 + eps * h
+                    J1_cpp = objective_cpp.J()
+                    J1_jax = objective_jax.J()
+                    
+                    # Reset DOFs
+                    bs.x = bs_x0 - eps * h
+                    J2_cpp = objective_cpp.J()
+                    J2_jax = objective_jax.J()
+                    
+                    # Reset DOFs to original
+                    bs.x = bs_x0.copy()
+                    
+                    # Finite difference estimate
+                    deriv_est_cpp = (J1_cpp - J2_cpp) / (2 * eps)
+                    deriv_est_jax = (J1_jax - J2_jax) / (2 * eps)
+                    
+                    # Errors
+                    err_cpp = abs(deriv_est_cpp - deriv_cpp)
+                    err_jax = abs(deriv_est_jax - deriv_jax)
+                    
+                    print(f"  i={i}, eps={eps:.2e}, deriv_est_cpp={deriv_est_cpp:.6e}, deriv_est_jax={deriv_est_jax:.6e}")
+                    print(f"    err_cpp={err_cpp:.6e}, err_jax={err_jax:.6e}, err_cpp/err_old_cpp={err_cpp/err_old_cpp:.3f}, err_jax/err_old_jax={err_jax/err_old_jax:.3f}")
+                    
+                    # Both should converge
+                    self.assertTrue(err_cpp < 0.3 * err_old_cpp or err_cpp < 1e-12)
+                    self.assertTrue(err_jax < 0.3 * err_old_jax or err_jax < 1e-12)
+                    
+                    err_old_cpp = err_cpp
+                    err_old_jax = err_jax
+                
+                # Compare gradients directly
+                np.testing.assert_allclose(dJ_jax, dJ_cpp, atol=1e-10, rtol=1e-8)
 
 if __name__ == "__main__":
     unittest.main()
