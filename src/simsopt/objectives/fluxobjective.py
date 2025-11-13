@@ -207,7 +207,10 @@ class SquaredFluxJax(Optimizable):
     """
 
     def __init__(self, surface, field, target=None, definition="quadratic flux", threshold=0.0, fixed_surface=True, fixed_coils=False):
-        from simsopt.geo import JaxSurfaceRZFourier
+        from simsopt.geo.jaxsurface import JaxSurfaceRZFourier
+        from simsopt.field.jaxbiotsavart import JaxBiotSavart
+        if not isinstance(field, JaxBiotSavart):
+            raise ValueError("Field must be a JaxBiotSavart object")
         self.surface = surface
         self.fixed_surface = fixed_surface
         self.fixed_coils = fixed_coils
@@ -367,7 +370,7 @@ class SquaredFluxJax(Optimizable):
         # dgamma_by_dcoeff has shape (nphi, ntheta, 3, n_dofs)
         # dJdB has shape (nphi, ntheta, 3)
         # Ensure field has computed dB_by_dX
-        self.field.compute(1)  # Compute first derivatives including dB_by_dX
+        # self.field.compute(1)  # Compute first derivatives including dB_by_dX
         dB_by_dX = self.field.dB_by_dX()  # Shape: (npoints, 3, 3)
         dgamma_by_dcoeff = self.surface.dgamma_by_dcoeff()  # Shape: (nphi, ntheta, 3, n_dofs)
         nphi, ntheta = dgamma_by_dcoeff.shape[0], dgamma_by_dcoeff.shape[1]
@@ -482,6 +485,9 @@ class SquaredFluxJax(Optimizable):
         H_Bn = self.d2J_dBcoil_dnormals(Bcoil_jax, target_jax, normals_jax)
         H_Bn_flat = np.asarray(H_Bn.reshape((n_B, n_B)))
         
+        # Compute dJ/dB for the second derivative term
+        dJdB = self.dJ_dBcoil(Bcoil_jax, target_jax, normals_jax)  # Shape: (nphi, ntheta, 3)
+        
         # Get number of dofs
         n_coil_dofs = self.field.dof_size
         # Check if surface is fixed - use dof_size == 0 as indicator
@@ -508,8 +514,17 @@ class SquaredFluxJax(Optimizable):
         
         # Compute Hessian blocks using chain rule:
         # Since target is fixed (dT/dc = 0, dT/ds = 0), we only need:
-        # H_cc = (dB/dc)^T @ H_B @ (dB/dc)
+        # H_cc = (dB/dc)^T @ H_B @ (dB/dc) + (dJ/dB) @ (d²B/dc²)
         H_cc = dB_dc_flat.T @ H_B_flat @ dB_dc_flat
+        
+        # Add second term: (dJ/dB) @ (d²B/dc²)
+        # This term accounts for the second derivative of B w.r.t. coil DOFs
+        # d²B/dc² = d²B/dgamma² @ (dgamma/dc)² + dB/dgamma @ d²gamma/d²c + 
+        #            d²B/dgammadash² @ (dgammadash/dc)² + dB/dgammadash @ d²gammadash/d²c +
+        #            cross terms
+        dJdB_flat = np.asarray(dJdB).reshape((-1,))  # Flatten to (n_B,)
+        H_cc_d2B_term = self._compute_d2B_dc2_term(dJdB_flat)
+        H_cc += H_cc_d2B_term
         
         if n_surf_dofs > 0:
             # H_ss = (dn/ds)^T @ H_n @ (dn/ds)
@@ -571,5 +586,114 @@ class SquaredFluxJax(Optimizable):
                         raise ValueError(f"Gradient shape mismatch: expected {n_coil_dofs}, got {grad_array.shape[0]}")
         
         return dB_dc
-
+    
+    def _compute_d2B_dc2_term(self, dJdB_flat):
+        """
+        Compute the term (dJ/dB) @ (d²B/dc²) for the Hessian.
+        
+        This uses the chain rule:
+        d²B/dc² = d²B/dgamma² @ (dgamma/dc)² + dB/dgamma @ d²gamma/d²c + 
+                   d²B/dgammadash² @ (dgammadash/dc)² + dB/dgammadash @ d²gammadash/d²c +
+                   d²B/dgamma dgammadash @ (dgamma/dc) @ (dgammadash/dc)
+        
+        Args:
+            dJdB_flat: Flattened dJ/dB, shape (n_B,) where n_B = n_points * 3
+            
+        Returns:
+            Contribution to H_cc from d²B/dc² term, shape (n_coil_dofs, n_coil_dofs)
+        """
+        from .._core.derivative import Derivative
+        import jax.numpy as jnp
+        
+        points = self.field.get_points_cart_ref()
+        npoints = len(points)
+        n_coil_dofs = self.field.dof_size
+        
+        # Initialize output
+        H_cc_d2B = np.zeros((n_coil_dofs, n_coil_dofs))
+        
+        # Get coil geometries
+        gammas = [jnp.asarray(coil.curve.gamma()) for coil in self.field._coils]
+        gammadashs = [jnp.asarray(coil.curve.gammadash()) for coil in self.field._coils]
+        currents = jnp.asarray([coil.current.get_value() for coil in self.field._coils])
+        
+        # Reshape dJdB_flat to (npoints, 3) for easier manipulation
+        dJdB_reshaped = dJdB_flat.reshape((npoints, 3))
+        
+        # Track DOF offset for each coil
+        dof_offset = 0
+        
+        for coil_idx, coil in enumerate(self.field._coils):
+            curve = coil.curve
+            
+            n_curve_dofs = curve.dof_size
+            n_current_dofs = coil.current.dof_size
+            n_coil_dofs_local = n_curve_dofs + n_current_dofs
+            
+            # Get first derivatives: dgamma/dc, dgammadash/dc
+            dgamma_dc = curve.dgamma_by_dcoeff()  # Shape: (n_quad, 3, n_curve_dofs)
+            dgammadash_dc = curve.dgammadash_by_dcoeff()  # Shape: (n_quad, 3, n_curve_dofs)
+            
+            # Get first derivatives of B w.r.t. gamma and gammadash for this coil
+            dB_dgammas_coil = self.field.dB_dgammas_jax(jnp.asarray(points), gammas, gammadashs, currents)
+            dB_dgammadashs_coil = self.field.dB_dgammadashs_jax(jnp.asarray(points), gammas, gammadashs, currents)
+            
+            dB_dgamma = np.asarray(dB_dgammas_coil[coil_idx])  # Shape: (npoints, 3, n_quad, 3)
+            dB_dgammadash = np.asarray(dB_dgammadashs_coil[coil_idx])  # Shape: (npoints, 3, n_quad, 3)
+            
+            # Term 1: dB/dgamma @ d²gamma/d²c
+            dJdB_dgamma = np.einsum('ijqk,ij->qk', dB_dgamma, dJdB_reshaped)  # Shape: (n_quad, 3)
+            d2gamma_vjp_result = curve.d2gamma_by_d2coeff_vjp(dJdB_dgamma)
+            d2gamma_vjp_array = d2gamma_vjp_result(curve) if isinstance(d2gamma_vjp_result, Derivative) else np.asarray(d2gamma_vjp_result)
+            if d2gamma_vjp_array.ndim == 1:
+                H_cc_d2B[dof_offset:dof_offset+n_curve_dofs, dof_offset:dof_offset+n_curve_dofs] += np.diag(d2gamma_vjp_array)
+            else:
+                H_cc_d2B[dof_offset:dof_offset+n_curve_dofs, dof_offset:dof_offset+n_curve_dofs] += d2gamma_vjp_array
+            
+            # Term 2: dB/dgammadash @ d²gammadash/d²c
+            dJdB_dgammadash = np.einsum('ijqk,ij->qk', dB_dgammadash, dJdB_reshaped)  # Shape: (n_quad, 3)
+            d2gammadash_vjp_result = curve.d2gammadash_by_d2coeff_vjp(dJdB_dgammadash)
+            d2gammadash_vjp_array = d2gammadash_vjp_result(curve) if isinstance(d2gammadash_vjp_result, Derivative) else np.asarray(d2gammadash_vjp_result)
+            if d2gammadash_vjp_array.ndim == 1:
+                H_cc_d2B[dof_offset:dof_offset+n_curve_dofs, dof_offset:dof_offset+n_curve_dofs] += np.diag(d2gammadash_vjp_array)
+            else:
+                H_cc_d2B[dof_offset:dof_offset+n_curve_dofs, dof_offset:dof_offset+n_curve_dofs] += d2gammadash_vjp_array
+            
+            # Term 3: d²B/dgamma² @ (dgamma/dc)²
+            d2B_dgamma2 = self.field.d2B_dgammas_dgammas_jax(jnp.asarray(points), gammas, gammadashs, currents)
+            d2B_dgamma2_coil = np.asarray(d2B_dgamma2[coil_idx][coil_idx])  # Shape: (npoints, 3, n_quad1, 3, n_quad2, 3)
+            
+            for j in range(n_curve_dofs):
+                dgamma_dc_j = dgamma_dc[:, :, j]  # Shape: (n_quad, 3)
+                temp = np.einsum('pbqkrl,rl->pbqk', d2B_dgamma2_coil, dgamma_dc_j, optimize=True)
+                for l in range(n_curve_dofs):
+                    H_cc_d2B[dof_offset+j, dof_offset+l] += np.einsum('pbqk,pb,qk->', temp, dJdB_reshaped, dgamma_dc[:, :, l], optimize=True)
+            
+            # Term 4: d²B/dgammadash² @ (dgammadash/dc)²
+            d2B_dgammadash2 = self.field.d2B_dgammadashs_dgammadashs_jax(jnp.asarray(points), gammas, gammadashs, currents)
+            d2B_dgammadash2_coil = np.asarray(d2B_dgammadash2[coil_idx][coil_idx])  # Shape: (npoints, 3, n_quad1, 3, n_quad2, 3)
+            
+            for j in range(n_curve_dofs):
+                dgammadash_dc_j = dgammadash_dc[:, :, j]
+                temp = np.einsum('pbqkrl,rl->pbqk', d2B_dgammadash2_coil, dgammadash_dc_j, optimize=True)
+                for l in range(n_curve_dofs):
+                    H_cc_d2B[dof_offset+j, dof_offset+l] += np.einsum('pbqk,pb,qk->', temp, dJdB_reshaped, dgammadash_dc[:, :, l], optimize=True)
+            
+            # Term 5: d²B/dgamma dgammadash @ (dgamma/dc) @ (dgammadash/dc)
+            d2B_dgamma_dgammadash = self.field.d2B_dgammas_dgammadashs_jax(jnp.asarray(points), gammas, gammadashs, currents)
+            d2B_dgamma_dgammadash_coil = np.asarray(d2B_dgamma_dgammadash[coil_idx][coil_idx])  # Shape: (npoints, 3, n_quad1, 3, n_quad2, 3)
+            
+            for j in range(n_curve_dofs):
+                dgamma_dc_j = dgamma_dc[:, :, j]
+                for l in range(n_curve_dofs):
+                    dgammadash_dc_l = dgammadash_dc[:, :, l]
+                    val = np.einsum('pbqkrl,pb,qk,rl->', d2B_dgamma_dgammadash_coil, dJdB_reshaped, dgamma_dc_j, dgammadash_dc_l, optimize=True)
+                    H_cc_d2B[dof_offset+j, dof_offset+l] += val
+                    H_cc_d2B[dof_offset+l, dof_offset+j] += val  # Symmetric term
+            
+            # Update DOF offset
+            dof_offset += n_coil_dofs_local
+        
+        return H_cc_d2B
+    
     return_fn_map = {'J': J, 'dJ': dJ, 'd2J': d2J}

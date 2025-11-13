@@ -1,4 +1,5 @@
 from .biotsavart import *
+from .jaxbiotsavart import *
 from .boozermagneticfield import *
 from .coil import *
 from .coilset import *
@@ -14,6 +15,7 @@ from .force import *
 
 __all__ = (
     biotsavart.__all__
+    + jaxbiotsavart.__all__
     + boozermagneticfield.__all__
     + coil.__all__
     + coilset.__all__
