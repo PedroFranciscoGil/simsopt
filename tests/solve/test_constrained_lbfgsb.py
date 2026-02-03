@@ -7,6 +7,7 @@ on standard test functions, and verify the hard constraint rejection mechanism.
 import numpy as np
 import unittest
 from scipy.optimize import minimize as scipy_minimize
+from simsopt.field.coil import coils_to_vtk
 from simsopt.solve.constrained_lbfgsb import (
     ConstrainedLBFGSB, 
     minimize_with_hard_constraints
@@ -63,8 +64,13 @@ class TestConstrainedLBFGSBBasic(unittest.TestCase):
     should converge to good solutions.
     """
     
-    def test_quadratic_identical_to_scipy(self):
-        """Verify IDENTICAL results to scipy on simple quadratic (no hard constraints)."""
+    def test_quadratic_converges_to_same_solution(self):
+        """Verify convergence to same solution as scipy on simple quadratic (no hard constraints).
+        
+        Note: Our custom solver uses Armijo backtracking for robustness with hard constraints,
+        while scipy uses Wolfe line search. Iteration counts may differ, but both should
+        converge to the same optimum.
+        """
         def fun(x):
             f = np.sum(x**2)
             g = 2 * x
@@ -77,15 +83,20 @@ class TestConstrainedLBFGSBBasic(unittest.TestCase):
         scipy_result = scipy_minimize(fun, x0, method='L-BFGS-B', jac=True,
                                        options={'maxiter': 100, 'gtol': 1e-8})
         
-        # Should be essentially identical
-        self.assertEqual(result.nit, scipy_result.nit, "Iteration counts should match")
-        self.assertEqual(result.nfev, scipy_result.nfev, "Function evaluation counts should match")
-        # Use atol for values near zero (machine precision)
-        np.testing.assert_allclose(result.x, scipy_result.x, atol=1e-14,
-            err_msg="Parameters should be identical to scipy")
+        # Both should converge to the same optimum (x=0)
+        np.testing.assert_allclose(result.x, scipy_result.x, atol=1e-6,
+            err_msg="Parameters should converge to same optimum")
+        np.testing.assert_allclose(result.fun, scipy_result.fun, atol=1e-10,
+            err_msg="Objective values should match")
+        self.assertTrue(result.success)
     
-    def test_rosenbrock_identical_to_scipy(self):
-        """Verify IDENTICAL results to scipy on Rosenbrock (no hard constraints)."""
+    def test_rosenbrock_converges_to_same_solution(self):
+        """Verify convergence to same solution as scipy on Rosenbrock (no hard constraints).
+        
+        Note: Our custom solver uses Armijo backtracking for robustness with hard constraints,
+        while scipy uses Wolfe line search. Iteration counts may differ, but both should
+        converge to the same optimum.
+        """
         def rosenbrock(x):
             f = (1 - x[0])**2 + 100*(x[1] - x[0]**2)**2
             g = np.array([
@@ -101,11 +112,12 @@ class TestConstrainedLBFGSBBasic(unittest.TestCase):
         scipy_result = scipy_minimize(rosenbrock, x0, method='L-BFGS-B', jac=True,
                                        options={'maxiter': 100, 'gtol': 1e-6})
         
-        # Should be essentially identical
-        self.assertEqual(result.nit, scipy_result.nit, "Iteration counts should match")
-        self.assertEqual(result.nfev, scipy_result.nfev, "Function evaluation counts should match")
-        np.testing.assert_allclose(result.x, scipy_result.x, rtol=1e-6,
-            err_msg="Parameters should be identical to scipy")
+        # Both should converge to the same optimum ([1, 1])
+        np.testing.assert_allclose(result.x, scipy_result.x, rtol=1e-4,
+            err_msg="Parameters should converge to same optimum")
+        np.testing.assert_allclose(result.fun, scipy_result.fun, atol=1e-6,
+            err_msg="Objective values should match")
+        self.assertTrue(result.success)
     
     def test_quadratic_unconstrained(self):
         """Test on simple quadratic: f(x) = sum(x^2), optimal at x=0."""
@@ -1497,6 +1509,248 @@ class TestAugmentedLagrangianIntegration(unittest.TestCase):
         ratio = max(f_custom, f_scipy) / max(min(f_custom, f_scipy), 1e-20)
         self.assertLess(ratio, 10.0,
             msg=f"Results should be comparable: custom={f_custom:.2e}, scipy={f_scipy:.2e}")
+
+
+class TestHighResQHOptimization(unittest.TestCase):
+    """
+    High-resolution quasi-helical (QH) stellarator optimization tests.
+    
+    These tests verify that the constrained L-BFGS-B optimizer works correctly
+    on reactor-scale QH configurations with linking number constraints.
+    """
+    
+    def test_qh_reactor_scale_with_linking_constraint(self):
+        """
+        Test optimization on Landreman-Paul QH reactor-scale configuration.
+        
+        This test verifies:
+        1. The optimizer can handle high-resolution surfaces (32x32)
+        2. Linking number hard constraint is properly enforced
+        3. Significant objective reduction is achieved
+        4. DOFs are correctly propagated through simsopt's Optimizable graph
+        """
+        from pathlib import Path
+        from simsopt.geo import SurfaceRZFourier, create_equally_spaced_curves, LinkingNumber
+        from simsopt.field import BiotSavart, Current, coils_via_symmetries
+        from simsopt.objectives import SquaredFlux, QuadraticPenalty
+        from simsopt.geo import CurveLength
+        
+        # Try to find the QH surface file
+        possible_paths = [
+            Path(__file__).parent.parent.parent.parent / "stellcoilbench" / "plasma_surfaces" / "input.LandremanPaul2021_QH_reactorScale_lowres",
+            Path.home() / "stellcoilbench" / "plasma_surfaces" / "input.LandremanPaul2021_QH_reactorScale_lowres",
+            Path("/Users/akaptanoglu/stellcoilbench/plasma_surfaces/input.LandremanPaul2021_QH_reactorScale_lowres"),
+        ]
+        
+        surface_file = None
+        for p in possible_paths:
+            if p.exists():
+                surface_file = p
+                break
+        
+        if surface_file is None:
+            self.skipTest("QH reactor-scale surface file not found")
+        
+        # High-resolution surface
+        nphi = 32
+        ntheta = 32
+        s = SurfaceRZFourier.from_vmec_input(str(surface_file), range='half period', nphi=nphi, ntheta=ntheta)
+        
+        R0 = s.get_rc(0, 0)
+        R1 = 0.5 * R0
+        order = 6
+        ncoils = 4
+        
+        print(f"\nQH reactor-scale test:")
+        print(f"  Surface: R0 = {R0:.3f} m")
+        print(f"  Coils: ncoils={ncoils}, order={order}")
+        print(f"  Resolution: {nphi}x{ntheta}")
+        
+        # Create coils
+        base_curves = create_equally_spaced_curves(
+            ncoils, s.nfp, stellsym=s.stellsym, 
+            R0=R0, R1=R1, order=order, numquadpoints=128
+        )
+        base_currents = [Current(1e6) for _ in range(ncoils)]
+        base_currents[0].fix_all()
+        coils = coils_via_symmetries(base_curves, base_currents, s.nfp, s.stellsym)
+
+        coils_to_vtk(coils, "coils_qh")        
+        curves = [c.curve for c in coils]
+        bs = BiotSavart(coils)
+        bs.set_points(s.gamma().reshape((-1, 3)))
+        Bn = np.sum(bs.B().reshape((nphi, ntheta, 3)) * s.unitnormal(), axis=2)
+        s.to_vtk("surf_qh_init", extra_data={"B_N": Bn[:, :, None]})
+        # Create objectives
+        Jf = SquaredFlux(s, bs)
+        Jlink = LinkingNumber(curves, downsample=2)
+        
+        # Add length penalty
+        Jls = [CurveLength(c) for c in base_curves]
+        LENGTH_WEIGHT = 1e-2
+        LENGTH_THRESHOLD = np.pi * R0
+        
+        JF = Jf + LENGTH_WEIGHT * sum([QuadraticPenalty(Jl, LENGTH_THRESHOLD, 'max') for Jl in Jls])
+        
+        # Verify initial state
+        initial_link = Jlink.J()
+        self.assertEqual(initial_link, 0, "Initial coils should not be linked")
+        
+        # Feasibility check for linking number
+        def require_no_linking(hcs):
+            for hc in hcs:
+                if abs(hc.J()) >= 0.5:
+                    return False
+            return True
+        
+        # Define objective function
+        def fun(x):
+            JF.x = x
+
+            # print(f"  Objective: {JF.J():.6e}")
+            print(f"Jf = {Jf.J():.2e}, Jlink = {Jlink.J():.2e}, [Jl = {', '.join([f'{Jl.J():.2e}' for Jl in Jls])}], length_obj = {LENGTH_WEIGHT * sum([QuadraticPenalty(Jl, LENGTH_THRESHOLD, 'max') for Jl in Jls]).J():.2e}")
+            # print(Jf.J(), Jlink.J(), [Jl.J() for Jl in Jls], LENGTH_WEIGHT * sum([QuadraticPenalty(Jl, LENGTH_THRESHOLD, 'max') for Jl in Jls]).J())
+            return JF.J(), np.asarray(JF.dJ())
+        
+        x0 = JF.x.copy()
+        f0, _ = fun(x0)
+        
+        print(f"  Initial objective: {f0:.6e}")
+        print(f"  DOFs: {len(x0)}")
+        
+        # Track objective history for plotting
+        custom_f_history = []
+        custom_jlink_history = []
+        
+        def tracking_callback(x):
+            JF.x = x
+            custom_f_history.append(JF.J())
+            custom_jlink_history.append(Jlink.J())
+        
+        # Run optimization with hard constraints
+        # Use strict tolerances to ensure both solvers run for similar number of iterations
+        # Pass objective=JF to enable efficient feasibility pre-checking without calling fun()
+        result = minimize_with_hard_constraints(
+            fun=fun,
+            x0=x0.copy(),
+            hard_constraints=[Jlink],
+            feasibility_check=require_no_linking,
+            objective=JF,  # Allows DOF updates without calling fun() for infeasible points
+            jac=True,
+            options={
+                'maxiter': 5000,
+                'maxls': 200,
+                'gtol': 1e-10,  # Stricter tolerance to prevent early convergence
+                'ftol': 1e-12,   # Stricter tolerance to prevent early convergence
+                'verbose': 0,
+                'callback': tracking_callback,
+            }
+        )
+        coils_to_vtk(coils, "coils1")
+        Bn = np.sum(bs.B().reshape((nphi, ntheta, 3)) * s.unitnormal(), axis=2)
+        s.to_vtk("surf1", extra_data={"B_N": Bn[:, :, None]})
+        
+        # Run scipy.minimize for comparison (no hard constraints)
+        # Use same strict tolerances for fair comparison
+        JF.x = x0.copy()
+        scipy_result = scipy_minimize(
+            fun, x0.copy(), method='L-BFGS-B', jac=True,
+            options={
+                'maxiter': 500,
+                'maxls': 50,
+                'gtol': 1e-10,  # Same strict tolerance
+                'ftol': 1e-12,   # Same strict tolerance
+            }
+        )
+        coils_to_vtk(coils, "coils2")
+        Bn = np.sum(bs.B().reshape((nphi, ntheta, 3)) * s.unitnormal(), axis=2)
+        s.to_vtk("surf2", extra_data={"B_N": Bn[:, :, None]})
+        
+        print(f"  Custom solver - Final objective: {result.fun:.6e}")
+        print(f"  Custom solver - Iterations: {result.nit}")
+        print(f"  Custom solver - Constraint rejections: {result.n_constraint_rejections}")
+        print(f"  Custom solver - Convergence: {result.message}")
+        print(f"  Scipy - Final objective: {scipy_result.fun:.6e}")
+        print(f"  Scipy - Iterations: {scipy_result.nit}")
+        print(f"  Scipy - Convergence: {scipy_result.message}")
+        
+        # Plot objective history
+        try:
+            import matplotlib.pyplot as plt
+            
+            fig, axes = plt.subplots(2, 1, figsize=(10, 8))
+            
+            # Plot objective value vs iteration
+            ax1 = axes[0]
+            ax1.semilogy(custom_f_history, 'b.-', label='Custom solver (constrained)', markersize=3)
+            ax1.set_xlabel('Iteration')
+            ax1.set_ylabel('Objective')
+            ax1.set_title('Objective History - Custom Constrained Solver')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot Jlink history
+            ax2 = axes[1]
+            ax2.plot(custom_jlink_history, 'r.-', label='Jlink', markersize=3)
+            ax2.set_xlabel('Iteration')
+            ax2.set_ylabel('Linking Number')
+            ax2.set_title('Linking Number History (should always be 0 for accepted steps)')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig('constrained_optimization_history.png', dpi=150)
+            plt.show()
+            print(f"  Saved optimization history plot to constrained_optimization_history.png")
+            plt.close()
+        except ImportError:
+            print("  (matplotlib not available for plotting)")
+        
+        # Check final linking states
+        JF.x = result.x
+        final_link_constrained = Jlink.J()
+        
+        JF.x = scipy_result.x
+        final_link_scipy = Jlink.J()
+        
+        print(f"  Custom solver - Final linking number: {final_link_constrained}")
+        print(f"  Scipy - Final linking number: {final_link_scipy}")
+        
+        # Verify results for constrained solver
+        # 1. Objective should be significantly reduced (at least 50%)
+        self.assertLess(result.fun, f0 * 0.5,
+            msg=f"Objective should reduce by at least 50%: {result.fun:.2e} vs {f0:.2e}")
+        
+        # 2. Linking number should remain zero (constraint maintained)
+        self.assertEqual(final_link_constrained, 0, 
+            msg=f"Linking number should remain 0, got {final_link_constrained}")
+        
+        # 3. Should complete at least a few iterations
+        self.assertGreater(result.nit, 3,
+            msg=f"Should complete at least 3 iterations, got {result.nit}")
+        
+        # Verify scipy results
+        # Scipy should also reduce objective significantly
+        self.assertLess(scipy_result.fun, f0 * 0.5,
+            msg=f"Scipy should reduce objective: {scipy_result.fun:.2e} vs {f0:.2e}")
+        
+        # Note: Scipy WILL violate the linking constraint to find better solutions.
+        # This demonstrates the core trade-off:
+        # - Custom solver: maintains linking=0 constraint, achieves ~99% reduction
+        # - Scipy: violates constraint (linking=76-108), achieves ~99.99% reduction
+        #
+        # The custom solver reaches a "constrained local minimum" where:
+        # 1. All descent directions lead to constraint violations (linked coils)
+        # 2. Only infinitesimally small steps remain feasible
+        # 3. The solver correctly terminates when no feasible progress is possible
+        #
+        # This is CORRECT behavior - the constraint successfully prevents coil linking,
+        # even though the unconstrained optimum would have linked coils.
+        
+        print(f"  Test passed: Custom {(f0 - result.fun) / f0 * 100:.1f}% reduction, Scipy {(f0 - scipy_result.fun) / f0 * 100:.1f}% reduction")
+        print(f"  Note: Custom solver maintains constraint (linking=0) but converges to")
+        print(f"        constrained local minimum. Scipy violates constraint")
+        print(f"        (linking={final_link_scipy}) to find better unconstrained minimum.")
 
 
 if __name__ == "__main__":

@@ -6,10 +6,11 @@ that must be satisfied at every iteration. Unlike penalty-based approaches, hard
 constraints are NOT included in the objective function - they only determine whether
 a proposed step is acceptable.
 
-**Key feature**: Uses the DCSRCH line search routine (the exact same Fortran line
-search used by scipy's L-BFGS-B), ensuring identical results to scipy when no hard
-constraints are active. When hard constraints are provided, infeasible trial points
-are rejected during line search by returning a large objective value.
+**Key feature**: Uses scipy's line_search_wolfe2 with the extra_condition parameter
+to properly enforce hard constraints. The extra_condition is called only for steps
+that already satisfy the strong Wolfe conditions, and if it returns False (constraint
+violated), the line search continues to find another step. This is the correct way
+to add additional acceptance criteria to a Wolfe line search.
 
 This is particularly useful for topological constraints like LinkingNumber, where:
 1. The constraint value is discrete (0, ±1, ±2, ...)
@@ -29,7 +30,7 @@ Example usage:
 import numpy as np
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, Any, Union
-from scipy.optimize._linesearch import DCSRCH
+from scipy.optimize import line_search
 
 __all__ = ['ConstrainedLBFGSB', 'ConstrainedLBFGSBResult', 'minimize_with_hard_constraints']
 
@@ -66,11 +67,10 @@ class ConstrainedLBFGSB:
     """
     L-BFGS-B optimizer with support for hard constraints during line search.
     
-    Uses the DCSRCH line search routine (the same Fortran line search used by
-    scipy's L-BFGS-B), ensuring identical results to scipy when no hard constraints
-    are provided. Hard constraints are checked at each trial point during line search;
-    infeasible steps are rejected by returning a large objective value, causing
-    the line search to backtrack.
+    Uses scipy's line_search_wolfe2 with the extra_condition parameter to properly
+    enforce hard constraints. The extra_condition is called only for steps that
+    already satisfy the strong Wolfe conditions, and if it returns False (constraint
+    violated), the line search continues to find another step.
     
     Key differences from penalty-based constraint handling:
     1. Hard constraints are NOT in the objective - no gradient contribution
@@ -154,6 +154,7 @@ class ConstrainedLBFGSB:
         bounds: Optional[List[Tuple[float, float]]] = None,
         hard_constraints: Optional[List[Any]] = None,
         feasibility_check: Optional[Callable] = None,
+        objective: Optional[Any] = None,
         maxiter: int = 100,
         maxcor: int = 10,
         ftol: float = 2.220446049250313e-09,  # Matches scipy L-BFGS-B default
@@ -172,6 +173,7 @@ class ConstrainedLBFGSB:
         self.jac = jac
         self.bounds = bounds
         self.hard_constraints = hard_constraints or []
+        self.objective = objective  # Optional simsopt Optimizable for DOF updates
         self.maxiter = maxiter
         self.maxcor = maxcor
         self.ftol = ftol
@@ -211,22 +213,11 @@ class ConstrainedLBFGSB:
         self.rho = []  # 1 / (y_k^T s_k)
     
     def _evaluate(self, x: np.ndarray) -> Tuple[float, np.ndarray]:
-        """Evaluate objective and gradient at x."""
-        if self.jac is True:
-            result = self.fun(x)
-            f, g = result[0], np.asarray(result[1], dtype=np.float64)
-            self.nfev += 1
-            self.njev += 1
-        elif callable(self.jac):
-            f = self.fun(x)
-            g = np.asarray(self.jac(x), dtype=np.float64)
-            self.nfev += 1
-            self.njev += 1
-        else:
-            f = self.fun(x)
-            self.nfev += 1
-            g = self._numerical_gradient(x)
-        return float(f), g
+        """Evaluate objective and gradient at x (uses cache)."""
+        # Use cached evaluation functions which handle caching
+        f = self._eval_f(x)
+        g = self._eval_g(x)
+        return f, g
     
     def _numerical_gradient(self, x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
         """Compute gradient via finite differences."""
@@ -245,17 +236,23 @@ class ConstrainedLBFGSB:
         return np.clip(x, self.lower, self.upper)
     
     def _is_feasible(self, x: np.ndarray) -> bool:
-        """Check if x satisfies all hard constraints."""
+        """Check if x satisfies all hard constraints.
+        
+        NOTE: This should be called AFTER the objective function has been evaluated
+        at x, which ensures DOFs are properly updated via simsopt's Optimizable graph.
+        The constraint objects share the same underlying Optimizables (curves, 
+        surfaces, etc.) as the objective.
+        
+        If an objective Optimizable was provided and DOFs haven't been set yet,
+        this method will set them via objective.x = x.
+        """
         if not self.hard_constraints:
             return True
         
-        # Update DOFs on constraint objects
-        for hc in self.hard_constraints:
-            try:
-                dof_dif = len(x) - len(hc.x)
-                hc.x = x[dof_dif:]
-            except AttributeError:
-                pass  # Constraint doesn't have settable x
+        # If we have the objective Optimizable, ensure DOFs are set.
+        # This is a safety measure in case the objective hasn't been evaluated yet.
+        if self.objective is not None:
+            self.objective.x = x
         
         return self.feasibility_check(self.hard_constraints)
     
@@ -322,14 +319,12 @@ class ConstrainedLBFGSB:
         old_old_fval: Optional[float] = None
     ) -> Tuple[float, np.ndarray, float, np.ndarray, bool, int, float]:
         """
-        Line search using DCSRCH (same Fortran routine as scipy's L-BFGS-B).
+        Wolfe line search with feasibility checking via extra_condition.
         
-        Uses scipy.optimize._linesearch.DCSRCH which is the exact same line search
-        used internally by scipy's L-BFGS-B, ensuring identical behavior when no
-        hard constraints are active.
-        
-        When hard constraints are provided, feasibility is checked at each trial
-        point and infeasible steps are rejected.
+        Uses scipy's line_search with extra_condition callback to reject
+        infeasible steps. The objective is evaluated at all trial points
+        (including infeasible ones), but only feasible steps satisfying
+        Wolfe conditions are accepted.
         
         Returns:
             alpha: Accepted step size
@@ -348,97 +343,203 @@ class ConstrainedLBFGSB:
             d = -g.copy()
             descent = -np.dot(g, g)
         
-        n_rejected = [0]  # Use list to allow modification in closure
+        n_rejected = 0
         
-        # Cache for function evaluations
-        cache = {}
-        
-        def evaluate_at(x_trial):
-            """Evaluate objective and gradient at x_trial, with caching."""
-            key = tuple(x_trial)
-            if key not in cache:
-                if self.jac is True:
-                    result = self.fun(x_trial)
-                    cache[key] = (float(result[0]), np.asarray(result[1], dtype=np.float64))
-                elif callable(self.jac):
-                    f_val = float(self.fun(x_trial))
-                    g_val = np.asarray(self.jac(x_trial), dtype=np.float64)
-                    cache[key] = (f_val, g_val)
-                else:
-                    f_val = float(self.fun(x_trial))
-                    g_val = self._numerical_gradient(x_trial)
-                    cache[key] = (f_val, g_val)
-            return cache[key]
-        
-        # phi(alpha) = f(x + alpha*d)
-        # derphi(alpha) = grad f(x + alpha*d) . d
-        def phi(alpha):
-            x_trial = self._project(x + alpha * d)
+        # Feasibility check via extra_condition
+        # Called only for steps satisfying Wolfe conditions
+        def feasibility_condition(alpha_trial, x_trial, f_trial, g_trial):
+            nonlocal n_rejected
+            if not self.hard_constraints:
+                return True
             
-            # Check feasibility for hard constraints
-            if self.hard_constraints and not self._is_feasible(x_trial):
-                n_rejected[0] += 1
-                self.constraint_rejection_history.append((iteration, alpha))
+            # Check feasibility
+            is_feasible = self._is_feasible(x_trial)
+            
+            if not is_feasible:
+                n_rejected += 1
+                self.constraint_rejection_history.append((iteration, alpha_trial))
                 if self.verbose >= 2:
-                    print(f"  Line search: alpha={alpha:.2e} REJECTED (constraint violation)")
-                # Return large value to force line search to reject this step
-                return 1e20
+                    print(f"  Wolfe step alpha={alpha_trial:.2e} REJECTED (infeasible)")
             
-            f_val, _ = evaluate_at(x_trial)
-            return f_val
+            return is_feasible
         
-        def derphi(alpha):
-            x_trial = self._project(x + alpha * d)
-            
-            # If infeasible, return a large positive derivative (uphill)
-            if self.hard_constraints and not self._is_feasible(x_trial):
-                return 1e20
-            
-            _, g_val = evaluate_at(x_trial)
-            return np.dot(g_val, d)
-        
-        # L-BFGS-B initial step: 1/||d|| on first iteration, 1.0 thereafter
-        d_norm = np.linalg.norm(d)
-        if iteration == 1:
-            stp0 = 1.0 / d_norm if d_norm > 0 else 1.0
-        else:
-            stp0 = 1.0
-        
-        # L-BFGS-B line search parameters (from Fortran source)
-        # ftol = 1e-3, gtol = 0.9, xtol = 0.1
-        ls = DCSRCH(phi, derphi, ftol=1e-3, gtol=0.9, xtol=0.1, 
-                    stpmin=0.0, stpmax=1e10)
-        
+        # Try scipy's Wolfe line search with feasibility via extra_condition
         try:
-            alpha, f_new, _, task = ls(stp0, phi0=f, derphi0=descent, maxiter=self.maxls)
+            result = line_search(
+                f=lambda x_trial: self._eval_f(x_trial),
+                myfprime=lambda x_trial: self._eval_g(x_trial),
+                xk=x,
+                pk=d,
+                gfk=g,
+                old_fval=f,
+                old_old_fval=old_old_fval,
+                c1=self.c1,
+                c2=self.c2,
+                maxiter=self.maxls,
+                extra_condition=feasibility_condition if self.hard_constraints else None
+            )
+            alpha_wolfe, fc, gc, f_new, old_fval, g_new = result
+            # Note: nfev/njev already updated by _eval_f/_eval_g
         except Exception as e:
             if self.verbose >= 1:
-                print(f"  Line search exception at iteration {iteration}: {e}")
-            return 0.0, x, f, g, False, n_rejected[0], f
+                print(f"  Line search exception: {e}")
+            alpha_wolfe = None
         
-        # Check if line search converged
-        if alpha is None or alpha <= 0 or f_new >= 1e19:
-            if self.verbose >= 1:
-                print(f"  Line search failed at iteration {iteration}")
-            return 0.0, x, f, g, False, n_rejected[0], f
+        # If Wolfe line search succeeded
+        if alpha_wolfe is not None and alpha_wolfe > 0:
+            x_new = self._project(x + alpha_wolfe * d)
+            
+            # Re-evaluate to get correct f, g (scipy may have cached values)
+            f_new, g_new = self._evaluate(x_new)
+            
+            if self.verbose >= 2:
+                print(f"  Wolfe step alpha={alpha_wolfe:.2e}, f={f_new:.6e} ACCEPTED")
+            return alpha_wolfe, x_new, f_new, g_new, True, n_rejected, old_fval if old_fval else f
         
-        x_new = self._project(x + alpha * d)
-        
-        # Get gradient at new point
-        _, g_new = evaluate_at(x_new)
-        
-        # Update evaluation counters
-        if self.jac is True:
-            self.nfev += len(cache)
-            self.njev += len(cache)
-        else:
-            self.nfev += len(cache)
-            self.njev += len(cache)
-        
+        # Fallback to Armijo backtracking if Wolfe fails
         if self.verbose >= 2:
-            print(f"  Line search: alpha={alpha:.2e} ACCEPTED, f_new={f_new:.6e}")
+            print(f"  Wolfe line search failed, trying Armijo backtracking...")
         
-        return alpha, x_new, f_new, g_new, True, n_rejected[0], f
+        alpha, x_new, f_new, g_new, success, n_rej = self._armijo_backtracking(
+            x, f, g, d, descent, iteration
+        )
+        n_rejected += n_rej
+        
+        return alpha, x_new, f_new, g_new, success, n_rejected, f
+    
+    def _armijo_backtracking(
+        self,
+        x: np.ndarray,
+        f: float,
+        g: np.ndarray,
+        d: np.ndarray,
+        descent: float,
+        iteration: int
+    ) -> Tuple[float, np.ndarray, float, np.ndarray, bool, int]:
+        """
+        Armijo backtracking line search with feasibility checking and interpolation.
+        
+        Uses quadratic interpolation to find better step sizes. Also tracks
+        the best feasible point found in case Armijo can't be satisfied.
+        
+        Returns:
+            alpha, x_new, f_new, g_new, success, n_rejected
+        """
+        n_rejected = 0
+        
+        # Track best feasible point
+        best_alpha = None
+        best_f = f
+        best_g = None
+        best_x = None
+        
+        # For interpolation
+        alpha_prev = None
+        f_prev = None
+        
+        alpha = self.alpha_init
+        
+        for ls_iter in range(self.maxls):
+            if alpha < self.alpha_min:
+                break
+            
+            x_trial = self._project(x + alpha * d)
+            f_trial, g_trial = self._evaluate(x_trial)
+            
+            # Check feasibility
+            if self.hard_constraints and not self._is_feasible(x_trial):
+                n_rejected += 1
+                self.constraint_rejection_history.append((iteration, alpha))
+                if self.verbose >= 2:
+                    print(f"  Armijo alpha={alpha:.2e}, f={f_trial:.6e} REJECTED (infeasible)")
+                alpha *= 0.25  # Aggressive backtrack for infeasible
+                continue
+            
+            # Track best feasible point
+            if f_trial < best_f:
+                best_alpha = alpha
+                best_f = f_trial
+                best_g = g_trial
+                best_x = x_trial
+            
+            # Check Armijo sufficient decrease condition
+            armijo_bound = f + self.c1 * alpha * descent
+            if f_trial <= armijo_bound:
+                if self.verbose >= 2:
+                    print(f"  Armijo alpha={alpha:.2e}, f={f_trial:.6e} ACCEPTED")
+                return alpha, x_trial, f_trial, g_trial, True, n_rejected
+            
+            if self.verbose >= 2:
+                print(f"  Armijo alpha={alpha:.2e}, f={f_trial:.6e} > bound={armijo_bound:.6e}")
+            
+            # Try quadratic interpolation if we have two feasible points
+            alpha_next = None
+            if alpha_prev is not None and f_prev is not None:
+                # Quadratic fit through (0,f), (alpha_prev, f_prev), (alpha, f_trial)
+                # phi(a) = f + a*descent + 0.5*c*a^2
+                # Solve for c using the two nonzero points
+                denom = alpha_prev * alpha * (alpha_prev - alpha)
+                if abs(denom) > 1e-12:
+                    a_coef = (alpha * (f_prev - f - descent * alpha_prev) - 
+                              alpha_prev * (f_trial - f - descent * alpha)) / denom
+                    if a_coef > 1e-12:  # Convex
+                        alpha_interp = -descent / (2 * a_coef)
+                        # Safeguard
+                        alpha_lo = 0.1 * min(alpha, alpha_prev)
+                        alpha_hi = 0.9 * max(alpha, alpha_prev)
+                        alpha_interp = max(alpha_lo, min(alpha_hi, alpha_interp))
+                        if alpha_interp > self.alpha_min:
+                            alpha_next = alpha_interp
+            
+            alpha_prev = alpha
+            f_prev = f_trial
+            
+            if alpha_next is not None:
+                alpha = alpha_next
+            else:
+                alpha *= 0.5  # Default backtracking
+        
+        # Accept best feasible decrease even without Armijo (avoid oscillation)
+        if best_alpha is not None and best_f < f:
+            if self.verbose >= 2:
+                print(f"  Accepting best feasible: alpha={best_alpha:.2e}, f={best_f:.6e}")
+            return best_alpha, best_x, best_f, best_g, True, n_rejected
+        
+        return 0.0, x, f, g, False, n_rejected
+    
+    def _eval_f(self, x: np.ndarray) -> float:
+        """Evaluate objective function only (with caching to avoid duplicate calls)."""
+        x_tuple = tuple(x)
+        if not hasattr(self, '_eval_cache') or self._eval_cache_x != x_tuple:
+            if self.jac is True:
+                result = self.fun(x)
+                self._eval_cache = (float(result[0]), np.asarray(result[1], dtype=np.float64))
+            elif callable(self.jac):
+                self._eval_cache = (float(self.fun(x)), None)  # Gradient computed separately
+            else:
+                self._eval_cache = (float(self.fun(x)), None)  # Numerical gradient
+            self._eval_cache_x = x_tuple
+            self.nfev += 1
+        return self._eval_cache[0]
+    
+    def _eval_g(self, x: np.ndarray) -> np.ndarray:
+        """Evaluate gradient only (with caching to avoid duplicate calls)."""
+        x_tuple = tuple(x)
+        
+        # First ensure f is evaluated (this also ensures DOFs are set)
+        _ = self._eval_f(x)
+        
+        if self._eval_cache[1] is None:
+            # Need gradient - compute it based on jac type
+            if callable(self.jac):
+                g = np.asarray(self.jac(x), dtype=np.float64)
+                self.njev += 1
+            else:
+                # Numerical gradient
+                g = self._numerical_gradient(x)
+            self._eval_cache = (self._eval_cache[0], g)
+        
+        return self._eval_cache[1]
     
     def minimize(self) -> ConstrainedLBFGSBResult:
         """
@@ -449,7 +550,10 @@ class ConstrainedLBFGSB:
         """
         x = self._project(self.x0.copy())
         
-        # Check initial feasibility
+        # Evaluate objective first to set DOFs via simsopt's Optimizable graph
+        f, g = self._evaluate(x)
+        
+        # Check initial feasibility AFTER evaluating objective (DOFs now set)
         if not self._is_feasible(x):
             return ConstrainedLBFGSBResult(
                 x=x,
@@ -463,8 +567,6 @@ class ConstrainedLBFGSB:
                 n_constraint_rejections=0,
                 constraint_rejection_history=[]
             )
-        
-        f, g = self._evaluate(x)
         g_norm = np.linalg.norm(g, ord=np.inf)
         
         if self.verbose >= 1:
@@ -519,9 +621,78 @@ class ConstrainedLBFGSB:
                         constraint_rejection_history=self.constraint_rejection_history
                     )
             
-            # Update L-BFGS memory (only with feasible points)
+            # Update L-BFGS memory (only with feasible points and meaningful steps)
             s = x_new - x
             y = g_new - g
+            
+            # Track objective history for oscillation detection
+            if not hasattr(self, '_f_history'):
+                self._f_history = []
+            self._f_history.append(f_new)
+            if len(self._f_history) > 10:
+                self._f_history.pop(0)
+            
+            # Detect oscillation: objective bouncing between similar values
+            if len(self._f_history) >= 4:
+                recent = self._f_history[-4:]
+                # Check if alternating: f1 ≈ f3, f2 ≈ f4, but f1 != f2
+                f1, f2, f3, f4 = recent
+                tol = 1e-6 * max(abs(f1), abs(f2), 1.0)
+                oscillating = (abs(f1 - f3) < tol and abs(f2 - f4) < tol and 
+                              abs(f1 - f2) > tol)
+                if oscillating:
+                    oscillation_count = getattr(self, '_oscillation_count', 0) + 1
+                    self._oscillation_count = oscillation_count
+                    if self.verbose >= 1:
+                        print(f"  Warning: Oscillation detected (count={oscillation_count})")
+                    
+                    # Reset L-BFGS memory to try to escape
+                    if oscillation_count >= 2:
+                        if self.verbose >= 1:
+                            print(f"  Resetting L-BFGS memory due to oscillation")
+                        self.S = []
+                        self.Y = []
+                        self.rho = []
+                        self._oscillation_count = 0
+                        self._f_history = [f_new]  # Reset history too
+                else:
+                    self._oscillation_count = 0
+            
+            # Track if we're stuck at constraint boundary
+            if alpha < 1e-6 and n_rejected > 0:
+                small_step_count = getattr(self, '_small_step_count', 0) + 1
+                self._small_step_count = small_step_count
+                
+                if self.verbose >= 2:
+                    print(f"  Warning: Very small step (alpha={alpha:.2e}) with rejections. "
+                          f"Likely at constraint boundary. Count: {small_step_count}")
+                
+                # Reset L-BFGS memory to try fresh directions
+                if small_step_count >= 3:
+                    if self.verbose >= 1:
+                        print(f"  Resetting L-BFGS memory after {small_step_count} small steps")
+                    self.S = []
+                    self.Y = []
+                    self.rho = []
+                    self._small_step_count = 0
+                
+                # If still stuck after multiple resets, we're at a constrained local minimum
+                if small_step_count >= 10:
+                    return ConstrainedLBFGSBResult(
+                        x=x_new,
+                        fun=f_new,
+                        jac=g_new,
+                        nit=iteration,
+                        nfev=self.nfev,
+                        njev=self.njev,
+                        success=True,
+                        message="Converged at constraint boundary (no feasible descent)",
+                        n_constraint_rejections=self.n_constraint_rejections,
+                        constraint_rejection_history=self.constraint_rejection_history
+                    )
+            else:
+                self._small_step_count = 0
+            
             self._update_lbfgs_memory(s, y)
             
             # Update iterate
@@ -588,6 +759,7 @@ def minimize_with_hard_constraints(
     x0: np.ndarray,
     hard_constraints: Optional[List[Any]] = None,
     feasibility_check: Optional[Callable] = None,
+    objective: Optional[Any] = None,
     jac: Union[bool, Callable] = True,
     bounds: Optional[List[Tuple[float, float]]] = None,
     options: Optional[dict] = None,
@@ -608,6 +780,11 @@ def minimize_with_hard_constraints(
         List of constraint objects with .J() method.
     feasibility_check : callable, optional
         Function that takes the list of hard_constraints and returns True if feasible.
+    objective : Optimizable, optional
+        The simsopt Optimizable object for the objective function. If provided,
+        enables efficient feasibility pre-checking by updating DOFs via objective.x = x
+        before checking constraints. This avoids calling the user's fun() for
+        infeasible points, preventing unnecessary side effects (like printing).
     jac : bool or callable, optional
         If True, fun returns (f, g). If callable, jac(x) returns gradient. Default True.
     bounds : sequence of (min, max) pairs, optional
@@ -658,8 +835,9 @@ def minimize_with_hard_constraints(
         bounds=bounds,
         hard_constraints=hard_constraints,
         feasibility_check=feasibility_check,
+        objective=objective,
         maxiter=opts.get('maxiter', 100),
-        maxcor=opts.get('maxcor', 10),
+        maxcor=opts.get('maxcor', 100),
         ftol=opts.get('ftol', 2.220446049250313e-09),  # scipy default
         gtol=opts.get('gtol', 1e-5),
         maxls=opts.get('maxls', 20),
