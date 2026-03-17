@@ -47,19 +47,20 @@ void BiotSavart<T, Array>::compute(int derivatives) {
         set_array_to_zero(Bi);
         Array& gamma = this->coils[i]->curve->gamma();
         Array& gammadash = this->coils[i]->curve->gammadash();
+        Array& qw = this->coils[i]->curve->quadweights;
         double current = currents[i];
         if(derivatives == 0){
-            biot_savart_kernel<Array, 0>(pointsx, pointsy, pointsz, gamma, gammadash, Bi, dummyjac, dummyhess);
+            biot_savart_kernel<Array, 0>(pointsx, pointsy, pointsz, gamma, gammadash, qw, Bi, dummyjac, dummyhess);
         } else {
             Array& dBi = field_cache.get_or_create(fmt::format("dB_{}", i), {npoints, 3, 3});
             set_array_to_zero(dBi);
             if(derivatives == 1) {
-                biot_savart_kernel<Array, 1>(pointsx, pointsy, pointsz, gamma, gammadash, Bi, dBi, dummyhess);
+                biot_savart_kernel<Array, 1>(pointsx, pointsy, pointsz, gamma, gammadash, qw, Bi, dBi, dummyhess);
             } else {
                 Array& ddBi = field_cache.get_or_create(fmt::format("ddB_{}", i), {npoints, 3, 3, 3});
                 set_array_to_zero(ddBi);
                 if (derivatives == 2) {
-                    biot_savart_kernel<Array, 2>(pointsx, pointsy, pointsz, gamma, gammadash, Bi, dBi, ddBi);
+                    biot_savart_kernel<Array, 2>(pointsx, pointsy, pointsz, gamma, gammadash, qw, Bi, dBi, ddBi);
                 } else {
                     throw logic_error("Only two derivatives of Biot Savart implemented");
                 }
@@ -130,19 +131,20 @@ void BiotSavart<T, Array>::compute_A(int derivatives) {
         set_array_to_zero(Ai);
         Array& gamma = this->coils[i]->curve->gamma();
         Array& gammadash = this->coils[i]->curve->gammadash();
+        Array& qw = this->coils[i]->curve->quadweights;
         double current = currents[i];
         if(derivatives == 0){
-            biot_savart_kernel_A<Array, 0>(pointsx, pointsy, pointsz, gamma, gammadash, Ai, dummyjac, dummyhess);
+            biot_savart_kernel_A<Array, 0>(pointsx, pointsy, pointsz, gamma, gammadash, qw, Ai, dummyjac, dummyhess);
         } else {
             Array& dAi = field_cache.get_or_create(fmt::format("dA_{}", i), {npoints, 3, 3});
             set_array_to_zero(dAi);
             if(derivatives == 1) {
-                biot_savart_kernel_A<Array, 1>(pointsx, pointsy, pointsz, gamma, gammadash, Ai, dAi, dummyhess);
+                biot_savart_kernel_A<Array, 1>(pointsx, pointsy, pointsz, gamma, gammadash, qw, Ai, dAi, dummyhess);
             } else {
                 Array& ddAi = field_cache.get_or_create(fmt::format("ddA_{}", i), {npoints, 3, 3, 3});
                 set_array_to_zero(ddAi);
                 if (derivatives == 2) {
-                    biot_savart_kernel_A<Array, 2>(pointsx, pointsy, pointsz, gamma, gammadash, Ai, dAi, ddAi);
+                    biot_savart_kernel_A<Array, 2>(pointsx, pointsy, pointsz, gamma, gammadash, qw, Ai, dAi, ddAi);
                 } else {
                     throw logic_error("Only two derivatives of Biot Savart vector potential implemented");
                 }

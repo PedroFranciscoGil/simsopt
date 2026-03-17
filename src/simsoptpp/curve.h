@@ -83,27 +83,36 @@ class Curve {
     public://protected:
         int numquadpoints;
         Array quadpoints;
+        Array quadweights;
 
     public:
 
         Curve(int _numquadpoints) {
             numquadpoints = _numquadpoints;
             quadpoints = xt::zeros<double>({_numquadpoints});
+            quadweights = xt::zeros<double>({_numquadpoints});
             for (int i = 0; i < numquadpoints; ++i) {
                 quadpoints[i] = (double(i))/numquadpoints;
+                quadweights[i] = 1.0/numquadpoints;
             }
         }
 
         Curve(vector<double> _quadpoints) {
             numquadpoints = _quadpoints.size();
             quadpoints = xt::zeros<double>({_quadpoints.size()});
+            quadweights = xt::zeros<double>({_quadpoints.size()});
             for (int i = 0; i < numquadpoints; ++i) {
                 quadpoints[i] = _quadpoints[i];
+                quadweights[i] = 1.0/numquadpoints;
             }
         }
 
         Curve(Array _quadpoints) : quadpoints(_quadpoints) {
             numquadpoints = _quadpoints.size();
+            quadweights = xt::zeros<double>({numquadpoints});
+            for (int i = 0; i < numquadpoints; ++i) {
+                quadweights[i] = 1.0/numquadpoints;
+            }
         }
 
         void invalidate_cache() {

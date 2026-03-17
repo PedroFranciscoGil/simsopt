@@ -57,8 +57,16 @@ PYBIND11_MODULE(simsoptpp, m) {
     m.def("biot_savart", &biot_savart);
     m.def("biot_savart_B", &biot_savart_B);
     m.def("biot_savart_vjp", &biot_savart_vjp);
-    m.def("biot_savart_vjp_graph", &biot_savart_vjp_graph);
-    m.def("biot_savart_vector_potential_vjp_graph", &biot_savart_vector_potential_vjp_graph);
+    m.def("biot_savart_vjp_graph", &biot_savart_vjp_graph,
+        py::arg("points"), py::arg("gammas"), py::arg("dgamma_by_dphis"),
+        py::arg("quadweights"), py::arg("currents"), py::arg("v"),
+        py::arg("res_gamma"), py::arg("res_dgamma_by_dphi"),
+        py::arg("vgrad"), py::arg("res_grad_gamma"), py::arg("res_grad_dgamma_by_dphi"));
+    m.def("biot_savart_vector_potential_vjp_graph", &biot_savart_vector_potential_vjp_graph,
+        py::arg("points"), py::arg("gammas"), py::arg("dgamma_by_dphis"),
+        py::arg("quadweights"), py::arg("currents"), py::arg("v"),
+        py::arg("res_gamma"), py::arg("res_dgamma_by_dphi"),
+        py::arg("vgrad"), py::arg("res_grad_gamma"), py::arg("res_grad_dgamma_by_dphi"));
 
     // Functions below are implemented for permanent magnet optimization
     m.def("dipole_field_B" , &dipole_field_B);

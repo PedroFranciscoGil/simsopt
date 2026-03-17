@@ -19,7 +19,7 @@ using namespace std;
 
 template<class T, int derivs>
 void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, AlignedPaddedVec& pointsz,
-            T& gamma, T& dgamma_by_dphi, T& B, T& dB_by_dX, T& d2B_by_dXdX) {
+            T& gamma, T& dgamma_by_dphi, T& quadweights, T& B, T& dB_by_dX, T& d2B_by_dXdX) {
     if(gamma.layout() != xt::layout_type::row_major)
           throw std::runtime_error("gamma needs to be in row-major storage order");
     if(dgamma_by_dphi.layout() != xt::layout_type::row_major)
@@ -41,9 +41,10 @@ void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, Al
             Vec3dSimd(), Vec3dSimd(), Vec3dSimd()
         };
     }
-    double fak = (1e-7/num_quad_points);
+    double fak = 1e-7;
     double* gamma_j_ptr = &(gamma(0, 0));
     double* dgamma_j_by_dphi_ptr = &(dgamma_by_dphi(0, 0));
+    double* quadweights_ptr = &(quadweights(0));
     // out vectors pointsx, pointsy, and pointsz are added and aligned, so we
     // don't have to worry about going out of bounds here
     for(int i = 0; i < num_points; i += simd_size) {
@@ -65,7 +66,8 @@ void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, Al
             auto norm_diff_inv   = rsqrt(norm_diff_2);
             auto norm_diff_3_inv = norm_diff_inv*norm_diff_inv*norm_diff_inv;
 
-            auto dgamma_by_dphi_j_simd = Vec3dSimd(dgamma_j_by_dphi_ptr[3*j+0], dgamma_j_by_dphi_ptr[3*j+1], dgamma_j_by_dphi_ptr[3*j+2]);
+            double wj = quadweights_ptr[j];
+            auto dgamma_by_dphi_j_simd = Vec3dSimd(dgamma_j_by_dphi_ptr[3*j+0]*wj, dgamma_j_by_dphi_ptr[3*j+1]*wj, dgamma_j_by_dphi_ptr[3*j+2]*wj);
             auto dgamma_by_dphi_j_cross_diff = cross(dgamma_by_dphi_j_simd, diff);
 
             B_i.x = xsimd::fma(dgamma_by_dphi_j_cross_diff.x, norm_diff_3_inv, B_i.x);
@@ -172,7 +174,7 @@ void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, Al
 
 template<class T, int derivs>
 void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, AlignedPaddedVec& pointsz,
-            T& gamma, T& dgamma_by_dphi, T& B, T& dB_by_dX, T& d2B_by_dXdX) {
+            T& gamma, T& dgamma_by_dphi, T& quadweights, T& B, T& dB_by_dX, T& d2B_by_dXdX) {
     if(gamma.layout() != xt::layout_type::row_major)
           throw std::runtime_error("gamma needs to be in row-major storage order");
     if(dgamma_by_dphi.layout() != xt::layout_type::row_major)
@@ -193,9 +195,10 @@ void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, Al
             Vec3dStd(), Vec3dStd(), Vec3dStd()
         };
     }
-    double fak = (1e-7/num_quad_points);
+    double fak = 1e-7;
     double* gamma_j_ptr = &(gamma(0, 0));
     double* dgamma_j_by_dphi_ptr = &(dgamma_by_dphi(0, 0));
+    double* quadweights_ptr = &(quadweights(0));
     // out vectors pointsx, pointsy, and pointsz are added and aligned, so we
     // don't have to worry about going out of bounds here
     for(int i = 0; i < num_points; i++) {
@@ -218,7 +221,8 @@ void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, Al
             auto norm_diff_inv   = rsqrt(norm_diff_2);
             auto norm_diff_3_inv = norm_diff_inv*norm_diff_inv*norm_diff_inv;
 
-            auto dgamma_by_dphi_j_simd = Vec3dStd(dgamma_j_by_dphi_ptr[3*j+0], dgamma_j_by_dphi_ptr[3*j+1], dgamma_j_by_dphi_ptr[3*j+2]);
+            double wj = quadweights_ptr[j];
+            auto dgamma_by_dphi_j_simd = Vec3dStd(dgamma_j_by_dphi_ptr[3*j+0]*wj, dgamma_j_by_dphi_ptr[3*j+1]*wj, dgamma_j_by_dphi_ptr[3*j+2]*wj);
             auto dgamma_by_dphi_j_cross_diff = cross(dgamma_by_dphi_j_simd, diff);
 
             B_i += (dgamma_by_dphi_j_cross_diff * norm_diff_3_inv);
@@ -293,7 +297,7 @@ void biot_savart_kernel(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, Al
 
 template<class T, int derivs>
 void biot_savart_kernel_A(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, AlignedPaddedVec& pointsz,
-            T& gamma, T& dgamma_by_dphi, T& A, T& dA_by_dX, T& d2A_by_dXdX) {
+            T& gamma, T& dgamma_by_dphi, T& quadweights, T& A, T& dA_by_dX, T& d2A_by_dXdX) {
     if(gamma.layout() != xt::layout_type::row_major)
           throw std::runtime_error("gamma needs to be in row-major storage order");
     if(dgamma_by_dphi.layout() != xt::layout_type::row_major)
@@ -315,9 +319,10 @@ void biot_savart_kernel_A(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, 
             Vec3dSimd(), Vec3dSimd(), Vec3dSimd()
         };
     }
-    double fak = (1e-7/num_quad_points);
+    double fak = 1e-7;
     double* gamma_j_ptr = &(gamma(0, 0));
     double* dgamma_j_by_dphi_ptr = &(dgamma_by_dphi(0, 0));
+    double* quadweights_ptr = &(quadweights(0));
     // out vectors pointsx, pointsy, and pointsz are added and aligned, so we
     // don't have to worry about going out of bounds here
     for(int i = 0; i < num_points; i += simd_size) {
@@ -339,7 +344,8 @@ void biot_savart_kernel_A(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, 
             auto norm_diff_inv   = rsqrt(norm_diff_2);
             auto norm_diff_3_inv = norm_diff_inv*norm_diff_inv*norm_diff_inv;
 
-            auto dgamma_by_dphi_j_simd = Vec3dSimd(dgamma_j_by_dphi_ptr[3*j+0], dgamma_j_by_dphi_ptr[3*j+1], dgamma_j_by_dphi_ptr[3*j+2]);
+            double wj = quadweights_ptr[j];
+            auto dgamma_by_dphi_j_simd = Vec3dSimd(dgamma_j_by_dphi_ptr[3*j+0]*wj, dgamma_j_by_dphi_ptr[3*j+1]*wj, dgamma_j_by_dphi_ptr[3*j+2]*wj);
             A_i.x = xsimd::fma(dgamma_by_dphi_j_simd.x , norm_diff_inv, A_i.x) ;
             A_i.y = xsimd::fma(dgamma_by_dphi_j_simd.y , norm_diff_inv, A_i.y) ;
             A_i.z = xsimd::fma(dgamma_by_dphi_j_simd.z , norm_diff_inv, A_i.z) ;
@@ -419,7 +425,7 @@ void biot_savart_kernel_A(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, 
 
 template<class T, int derivs>
 void biot_savart_kernel_A(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, AlignedPaddedVec& pointsz,
-            T& gamma, T& dgamma_by_dphi, T& A, T& dA_by_dX, T& d2A_by_dXdX) {
+            T& gamma, T& dgamma_by_dphi, T& quadweights, T& A, T& dA_by_dX, T& d2A_by_dXdX) {
     if(gamma.layout() != xt::layout_type::row_major)
           throw std::runtime_error("gamma needs to be in row-major storage order");
     if(dgamma_by_dphi.layout() != xt::layout_type::row_major)
@@ -440,9 +446,10 @@ void biot_savart_kernel_A(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, 
             Vec3dStd(), Vec3dStd(), Vec3dStd()
         };
     }
-    double fak = (1e-7/num_quad_points);
+    double fak = 1e-7;
     double* gamma_j_ptr = &(gamma(0, 0));
     double* dgamma_j_by_dphi_ptr = &(dgamma_by_dphi(0, 0));
+    double* quadweights_ptr = &(quadweights(0));
     // out vectors pointsx, pointsy, and pointsz are added and aligned, so we
     // don't have to worry about going out of bounds here
     for(int i = 0; i < num_points; i++) {
@@ -464,7 +471,8 @@ void biot_savart_kernel_A(AlignedPaddedVec& pointsx, AlignedPaddedVec& pointsy, 
             auto norm_diff_inv   = rsqrt(norm_diff_2);
             auto norm_diff_3_inv = norm_diff_inv*norm_diff_inv*norm_diff_inv;
 
-            auto dgamma_by_dphi_j_simd = Vec3dStd(dgamma_j_by_dphi_ptr[3*j+0], dgamma_j_by_dphi_ptr[3*j+1], dgamma_j_by_dphi_ptr[3*j+2]);
+            double wj = quadweights_ptr[j];
+            auto dgamma_by_dphi_j_simd = Vec3dStd(dgamma_j_by_dphi_ptr[3*j+0]*wj, dgamma_j_by_dphi_ptr[3*j+1]*wj, dgamma_j_by_dphi_ptr[3*j+2]*wj);
             A_i += dgamma_by_dphi_j_simd * norm_diff_inv;
 
             MYIF(derivs > 0) {

@@ -108,7 +108,8 @@ template <typename T, typename S> void register_common_curve_methods(S &c) {
      .def("set_dofs_impl", &T::set_dofs_impl)
      .def("get_dofs", &T::get_dofs)
      .def("num_dofs", &T::num_dofs)
-     .def_readonly("quadpoints", &T::quadpoints);
+     .def_readonly("quadpoints", &T::quadpoints)
+     .def_readwrite("quadweights", &T::quadweights);
 }
 
 void init_curves(py::module_ &m) {

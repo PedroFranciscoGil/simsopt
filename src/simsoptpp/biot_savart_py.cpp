@@ -1,7 +1,7 @@
 #include "biot_savart_impl.h"
 #include "biot_savart_py.h"
 
-void biot_savart(Array& points, vector<Array>& gammas, vector<Array>& dgamma_by_dphis, vector<Array>& B, vector<Array>& dB_by_dX, vector<Array>& d2B_by_dXdX) {
+void biot_savart(Array& points, vector<Array>& gammas, vector<Array>& dgamma_by_dphis, vector<Array>& quadweights, vector<Array>& B, vector<Array>& dB_by_dX, vector<Array>& d2B_by_dXdX) {
     auto pointsx = AlignedPaddedVec(points.shape(0), 0);
     auto pointsy = AlignedPaddedVec(points.shape(0), 0);
     auto pointsz = AlignedPaddedVec(points.shape(0), 0);
@@ -27,17 +27,17 @@ void biot_savart(Array& points, vector<Array>& gammas, vector<Array>& dgamma_by_
     #pragma omp parallel for
     for(int i=0; i<num_coils; i++) {
         if(nderivs == 2)
-            biot_savart_kernel<Array, 2>(pointsx, pointsy, pointsz, gammas[i], dgamma_by_dphis[i], B[i], dB_by_dX[i], d2B_by_dXdX[i]);
+            biot_savart_kernel<Array, 2>(pointsx, pointsy, pointsz, gammas[i], dgamma_by_dphis[i], quadweights[i], B[i], dB_by_dX[i], d2B_by_dXdX[i]);
         else {
             if(nderivs == 1)
-                biot_savart_kernel<Array, 1>(pointsx, pointsy, pointsz, gammas[i], dgamma_by_dphis[i], B[i], dB_by_dX[i], dummyhess);
+                biot_savart_kernel<Array, 1>(pointsx, pointsy, pointsz, gammas[i], dgamma_by_dphis[i], quadweights[i], B[i], dB_by_dX[i], dummyhess);
             else
-                biot_savart_kernel<Array, 0>(pointsx, pointsy, pointsz, gammas[i], dgamma_by_dphis[i], B[i], dummyjac, dummyhess);
+                biot_savart_kernel<Array, 0>(pointsx, pointsy, pointsz, gammas[i], dgamma_by_dphis[i], quadweights[i], B[i], dummyjac, dummyhess);
         }
     }
 }
 
-Array biot_savart_B(Array& points, vector<Array>& gammas, vector<Array>& dgamma_by_dphis, vector<double>& currents){
+Array biot_savart_B(Array& points, vector<Array>& gammas, vector<Array>& dgamma_by_dphis, vector<Array>& quadweights, vector<double>& currents){
     auto dB_by_dXs = vector<Array>();
     auto d2B_by_dXdXs = vector<Array>();
     int num_coils = currents.size();
@@ -45,7 +45,7 @@ Array biot_savart_B(Array& points, vector<Array>& gammas, vector<Array>& dgamma_
     for (int i = 0; i < num_coils; ++i) {
         Bs[i] = xt::zeros<double>({points.shape(0), points.shape(1)});
     }
-    biot_savart(points, gammas, dgamma_by_dphis, Bs, dB_by_dXs, d2B_by_dXdXs);
+    biot_savart(points, gammas, dgamma_by_dphis, quadweights, Bs, dB_by_dXs, d2B_by_dXdXs);
     Array B = xt::zeros<double>({points.shape(0), points.shape(1)});
     for (int i = 0; i < num_coils; ++i) {
         B += currents[i] * Bs[i];

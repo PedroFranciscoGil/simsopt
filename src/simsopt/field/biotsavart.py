@@ -69,6 +69,7 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         coils = self._coils
         gammas = [coil.curve.gamma() for coil in coils]
         gammadashs = [coil.curve.gammadash() for coil in coils]
+        quadweights = [np.asarray(coil.curve.quadweights) for coil in coils]
         currents = [coil.current.get_value() for coil in coils]
         res_gamma = [np.zeros_like(gamma) for gamma in gammas]
         res_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
@@ -76,7 +77,7 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         res_grad_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
 
         points = self.get_points_cart_ref()
-        sopp.biot_savart_vjp_graph(points, gammas, gammadashs, currents, v,
+        sopp.biot_savart_vjp_graph(points, gammas, gammadashs, quadweights, currents, v,
                                    res_gamma, res_gammadash, vgrad, res_grad_gamma, res_grad_gammadash)
 
         dB_by_dcoilcurrents = self.dB_by_dcoilcurrents()
@@ -107,12 +108,13 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         coils = self._coils
         gammas = [coil.curve.gamma() for coil in coils]
         gammadashs = [coil.curve.gammadash() for coil in coils]
+        quadweights = [np.asarray(coil.curve.quadweights) for coil in coils]
         currents = [coil.current.get_value() for coil in coils]
         res_gamma = [np.zeros_like(gamma) for gamma in gammas]
         res_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
 
         points = self.get_points_cart_ref()
-        sopp.biot_savart_vjp_graph(points, gammas, gammadashs, currents, v,
+        sopp.biot_savart_vjp_graph(points, gammas, gammadashs, quadweights, currents, v,
                                    res_gamma, res_gammadash, [], [], [])
         dB_by_dcoilcurrents = self.dB_by_dcoilcurrents()
         res_current = [np.sum(v * dB_by_dcoilcurrents[i]) for i in range(len(dB_by_dcoilcurrents))]
@@ -160,6 +162,7 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         coils = self._coils
         gammas = [coil.curve.gamma() for coil in coils]
         gammadashs = [coil.curve.gammadash() for coil in coils]
+        quadweights = [np.asarray(coil.curve.quadweights) for coil in coils]
         currents = [coil.current.get_value() for coil in coils]
         res_gamma = [np.zeros_like(gamma) for gamma in gammas]
         res_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
@@ -167,7 +170,7 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         res_grad_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
 
         points = self.get_points_cart_ref()
-        sopp.biot_savart_vector_potential_vjp_graph(points, gammas, gammadashs, currents, v,
+        sopp.biot_savart_vector_potential_vjp_graph(points, gammas, gammadashs, quadweights, currents, v,
                                                     res_gamma, res_gammadash, vgrad, res_grad_gamma, res_grad_gammadash)
 
         dA_by_dcoilcurrents = self.dA_by_dcoilcurrents()
@@ -198,12 +201,13 @@ class BiotSavart(sopp.BiotSavart, MagneticField):
         coils = self._coils
         gammas = [coil.curve.gamma() for coil in coils]
         gammadashs = [coil.curve.gammadash() for coil in coils]
+        quadweights = [np.asarray(coil.curve.quadweights) for coil in coils]
         currents = [coil.current.get_value() for coil in coils]
         res_gamma = [np.zeros_like(gamma) for gamma in gammas]
         res_gammadash = [np.zeros_like(gammadash) for gammadash in gammadashs]
 
         points = self.get_points_cart_ref()
-        sopp.biot_savart_vector_potential_vjp_graph(points, gammas, gammadashs, currents, v,
+        sopp.biot_savart_vector_potential_vjp_graph(points, gammas, gammadashs, quadweights, currents, v,
                                                     res_gamma, res_gammadash, [], [], [])
         dA_by_dcoilcurrents = self.dA_by_dcoilcurrents()
         res_current = [np.sum(v * dA_by_dcoilcurrents[i]) for i in range(len(dA_by_dcoilcurrents))]
