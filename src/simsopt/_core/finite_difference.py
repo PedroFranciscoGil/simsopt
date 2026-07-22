@@ -259,11 +259,37 @@ class MPIFiniteDifference:
                     self.jac_size = mpi.comm_leaders.bcast(self.jac_size)
                     evals = np.zeros((self.jac_size[0], nevals_jac))
 
+                # A failed evaluation (e.g. VMEC non-convergence at a perturbed
+                # point) can return a wrong-length sentinel: some failure paths
+                # size it by the number of objective *terms*, which equals the
+                # residual-vector length only when every objective is scalar —
+                # not when an objective is vector-valued (e.g.
+                # QuasisymmetryRatioResidual.residuals). jac_size[0] (set from
+                # the converged base point x0 and broadcast to every leader) is
+                # the true length, so coerce any mismatch to a large residual of
+                # that length; the optimiser then simply rejects this
+                # perturbation instead of aborting on the broadcast assignment.
+                out = np.atleast_1d(out)
+                if out.shape[0] != evals.shape[0]:
+                    out = np.full(evals.shape[0], 1.0e12)
+
                 evals[:, j] = out
                 # evals[:, j] = np.array([f() for f in dofs.funcs])
 
-        # Combine the results from all groups:
-        evals = mpi.comm_leaders.reduce(evals, op=mpi4py.MPI.SUM, root=0)
+        # Combine the results from all groups. Use the buffer-based Reduce
+        # (capital R) rather than the pickle-based reduce: pickling sends the
+        # whole array as a single message whose byte count must fit in a C int
+        # (2 GiB), so for large residual vectors (e.g. fine QI grids with
+        # centered differences) evals exceeds that and the pickle reduce fails
+        # with MPI_ERR_ARG. The buffer-based Reduce operates directly on the
+        # numpy buffer and is limited by element count instead (an 8x higher
+        # ceiling for float64). IN_PLACE on root avoids a second large buffer.
+        evals = np.ascontiguousarray(evals, dtype=np.float64)
+        if mpi.proc0_world:
+            mpi.comm_leaders.Reduce(mpi4py.MPI.IN_PLACE, evals,
+                                    op=mpi4py.MPI.SUM, root=0)
+        else:
+            mpi.comm_leaders.Reduce(evals, None, op=mpi4py.MPI.SUM, root=0)
 
         if not mpi.is_apart:
             mpi.stop_workers()

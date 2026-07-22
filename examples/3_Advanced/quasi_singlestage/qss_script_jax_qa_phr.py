@@ -378,10 +378,10 @@ def main():
     # QA equilibrium targets from qss_script_jax_qa.py, recast as ONE-SIDED
     # inequalities g <= 0 for the inequality-only PHR framework (see module
     # docstring). aspect/iota become bounds rather than exact targets.
-    ASPECT_TARGET        = 6.0     # aspect <= ASPECT_TARGET
+    ASPECT_TARGET        = 5.5     # aspect <= ASPECT_TARGET
     IOTA_TARGET          = 0.47    # mean_iota >= IOTA_TARGET
-    VACUUM_WELL_TARGET   = 0.015   # W >= VACUUM_WELL_TARGET (W > 0 is stable)
-    ELONGATION_THRESHOLD = 6       # elongation <= ELONGATION_THRESHOLD
+    VACUUM_WELL_TARGET   = 0.01   # W >= VACUUM_WELL_TARGET (W > 0 is stable)
+    ELONGATION_THRESHOLD = 5.5       # elongation <= ELONGATION_THRESHOLD
 
     # QA quasisymmetry residual (main objective — returns a vector of residuals)
     qs = QuasisymmetryRatioResidual(vmec,
@@ -449,7 +449,7 @@ def main():
     # Coil optimisation parameters (AL2 subproblem) — identical to the
     # equality-mode QA script (qss_script_jax_qa.py) for the A/B comparison.
     # ---------------------------------------------------------------------------
-    LENGTH_TARGET        = 3.5
+    LENGTH_TARGET        = 3.75
     FLUX_THRESHOLD       = 1e-16
     CC_THRESHOLD         = 0.1
     CS_THRESHOLD         = 0.1
@@ -836,6 +836,12 @@ def main():
     # fix mask, not the surface resolution) and it is safe to restore later.
     _continuation_aborted = False
     last_good_full_x = np.asarray(surf.local_full_x, dtype=np.float64).copy()
+    # The VMEC resolution (mpol/ntor) that converged with last_good_full_x.
+    # The continuation bumps these each step; on a graceful stop we must
+    # restore BOTH the surface AND its converged resolution, else the final
+    # stage re-runs the recovered surface at the (higher) failed resolution.
+    last_good_mpol = int(vmec.indata.mpol)
+    last_good_ntor = int(vmec.indata.ntor)
 
     for step in range(0 if SKIP_SURFACE_OPT else N_CONTINUATION_STEPS):
         # QA continuation: modes 1, 2, 3, ... (matching qss_script_jax.py)
@@ -1282,6 +1288,11 @@ def main():
             if vmec_failed:
                 surf.local_full_x = np.asarray(
                     last_good_full_x, dtype=np.float64).copy()
+                # Restore the VMEC resolution that converged with this surface;
+                # the current step bumped mpol/ntor past it (that bump is what
+                # failed), so the final stage must re-run at the good value.
+                vmec.indata.mpol = last_good_mpol
+                vmec.indata.ntor = last_good_ntor
                 _continuation_aborted = True
                 break
             mpi.comm_world.Bcast(g_eq, root=0)
@@ -1368,11 +1379,14 @@ def main():
                 })
 
             # The equilibrium dual update above evaluated VMEC without failure,
-            # so the current surface is converged — record it as the fallback
-            # for the graceful-stop path. surf.local_full_x is identical across
-            # ranks here (the LS solver broadcasts the accepted iterate on exit).
+            # so the current surface is converged — record it (and the VMEC
+            # resolution it converged at) as the fallback for the graceful-stop
+            # path. surf.local_full_x is identical across ranks here (the LS
+            # solver broadcasts the accepted iterate on exit).
             last_good_full_x = np.asarray(
                 surf.local_full_x, dtype=np.float64).copy()
+            last_good_mpol = int(vmec.indata.mpol)
+            last_good_ntor = int(vmec.indata.ntor)
 
             # 6. Early exit when every violation is below tolerance. Decide
             #    on proc0 and broadcast so every rank takes the same branch.
@@ -1430,12 +1444,26 @@ def main():
             json.dump(_intermediate, _isf, indent=2)
         proc0_print(f"  Saved intermediate state to {OUT_DIR}intermediate_state.json")
 
+    # Guard the final run: even after restoring the last converged surface +
+    # resolution, VMEC could fail here. Every rank runs the same surface, so
+    # the failure (if any) is identical across ranks and they all return
+    # together — no MPI_ABORT, and intermediate_state.json is already saved.
     _orig_cwd = os.getcwd()
+    _final_vmec_ok = True
     try:
         os.chdir(OUT_DIR)
         vmec.run()
+    except ObjectiveFailure as _e:
+        _final_vmec_ok = False
+        proc0_print(f"  [WARNING] VMEC failed at the final surface: {_e}")
+        proc0_print("  Intermediate state was saved above; skipping the final "
+                    "coil optimisation and metrics. Re-run with fewer "
+                    "continuation steps or a VMEC resolution that does not "
+                    "exceed the input MPOL/NTOR (see --n-continuation-steps).")
     finally:
         os.chdir(_orig_cwd)
+    if not _final_vmec_ok:
+        return
     if mpi.proc0_world and vmec.output_file and os.path.exists(vmec.output_file):
         _final_wout = os.path.join(OUT_DIR, "wout_optimized.nc")
         shutil.copy2(vmec.output_file, _final_wout)

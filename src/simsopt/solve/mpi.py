@@ -37,7 +37,7 @@ CALCULATE_JAC = 2
 CALCULATE_FD_JAC = 3
 CALCULATE_NLC = 4
 
-__all__ = ['least_squares_mpi_solve', 'constrained_mpi_solve']
+__all__ = ['least_squares_mpi_solve', 'least_squares_mpi_solve_qss', 'constrained_mpi_solve']
 
 
 def _mpi_workers_task(mpi: MpiPartition,
@@ -81,6 +81,8 @@ def least_squares_mpi_solve(prob: LeastSquaresProblem,
                             rel_step: float = 0.0,
                             diff_method: str = "forward",
                             save_residuals: bool = False,
+                            iteration_callback=None,
+                            jac_callback=None,
                             **kwargs):
     """
     Solve a nonlinear-least-squares minimization problem using
@@ -105,6 +107,10 @@ def least_squares_mpi_solve(prob: LeastSquaresProblem,
              be used. Else, error is raised.
         save_residuals: Whether to save the residuals at each iteration.
              This may be useful for debugging, although the file can become large.
+        iteration_callback: Optional callable(nevals, x, residuals, objective)
+             called on proc0 after each residual evaluation (once per iteration).
+        jac_callback: Optional callable(nevals, x, jac) called on proc0 after
+             each Jacobian evaluation (same nevals as the preceding residual eval).
         kwargs: Any arguments to pass to
                 `scipy.optimize.least_squares <https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.least_squares.html>`_.
                 For instance, you can supply ``max_nfev=100`` to set
@@ -123,6 +129,7 @@ def least_squares_mpi_solve(prob: LeastSquaresProblem,
     residuals_file = None
     datalog_started = False
     nevals = 0
+    last_f_nevals = [0]  # closure: same iteration index for the next jac call
     start_time = time()
 
     def _f_proc0(x):
@@ -197,6 +204,13 @@ def least_squares_mpi_solve(prob: LeastSquaresProblem,
             residuals_file.flush()
 
         nevals += 1
+        last_f_nevals[0] = nevals
+        if iteration_callback is not None and mpi.proc0_world:
+            try:
+                iteration_callback(nevals, x, residuals, objective_val)
+            except Exception:
+                logger.warning("iteration_callback raised an exception",
+                              exc_info=True)
         logger.debug(f"residuals are {residuals}")
         return residuals
 
@@ -205,14 +219,24 @@ def least_squares_mpi_solve(prob: LeastSquaresProblem,
     if grad:
         with MPIFiniteDifference(prob.residuals, mpi, abs_step=abs_step,
                                  rel_step=rel_step, diff_method=diff_method) as fd:
+            def jac_with_callback(x):
+                j = fd.jac(x)
+                if jac_callback is not None and mpi.proc0_world and j is not None:
+                    try:
+                        jac_callback(last_f_nevals[0], x, j)
+                    except Exception:
+                        logger.warning("jac_callback raised an exception",
+                                      exc_info=True)
+                return j
+
             if mpi.proc0_world:
                 # proc0_world does this block, running the optimization.
                 x0 = np.copy(prob.x)
                 logger.info("Using finite difference method implemented in "
                             "SIMSOPT for evaluating gradient")
                 try:
-                    result = least_squares(_f_proc0, x0, jac=fd.jac, verbose=2,
-                                           **kwargs)
+                    result = least_squares(_f_proc0, x0, jac=jac_with_callback,
+                                          verbose=2, **kwargs)
                 except:
                     print("Failure on proc0_world")
                     result = Struct()
@@ -249,6 +273,222 @@ def least_squares_mpi_solve(prob: LeastSquaresProblem,
     logger.debug(f'After Bcast, x={x}')
     # Set Parameters to their values for the optimum
     prob.x = x
+
+
+def least_squares_mpi_solve_qss(prob_equilibrium: LeastSquaresProblem,
+                                 compute_J2_and_grad,
+                                 mpi: MpiPartition,
+                                 abs_step: float = 1.0e-7,
+                                 rel_step: float = 0.0,
+                                 diff_method: str = "forward",
+                                 save_residuals: bool = False,
+                                 iteration_callback=None,
+                                 jac_callback=None,
+                                 **kwargs):
+    """
+    QSS variant: minimize J = J1 + J2 with hybrid Jacobian.
+    Residual r = [r_J1, sqrt(J2)] so sum(r^2) = J1 + J2.
+    Jacobian: equilibrium block (d(r_J1)/dx) by FD, last row (d(sqrt(J2))/dx) from
+    analytical grad_J2, so the optimizer sees gradient ∇J = ∇J1 + ∇J2.
+
+    Only proc0 runs the coil optimization (in compute_J2_and_grad). FD for the
+    equilibrium block uses equilibrium residuals only (no coil solve at perturbed x).
+
+    All MPI processes must call this function.
+
+    Args:
+        prob_equilibrium: LeastSquaresProblem for equilibrium (J1); its residuals
+            are r_J1 and its dofs are the surface/equilibrium DOFs.
+        compute_J2_and_grad: Callable with no args, returning (J2, grad_J2).
+            Called on proc0 after prob_equilibrium.x is set. J2 is a float,
+            grad_J2 is a 1-D array of length prob_equilibrium.dof_size.
+        mpi: MpiPartition.
+        abs_step, rel_step, diff_method: FD options for equilibrium block.
+        save_residuals: Whether to log residuals to a file.
+        iteration_callback: Optional callable(nevals, x, residuals, objective).
+        jac_callback: Optional callable(nevals, x, jac).
+        kwargs: Passed to scipy.optimize.least_squares.
+    """
+    if MPI is None:
+        raise RuntimeError(
+            "least_squares_mpi_solve_qss requires the mpi4py package.")
+    logger.info("Beginning QSS solve (hybrid Jacobian: FD for J1, analytical for J2).")
+
+    x = np.copy(prob_equilibrium.x)
+
+    objective_file = None
+    residuals_file = None
+    datalog_started = False
+    nevals = 0
+    last_f_nevals = [0]
+    last_J2 = [None]
+    last_grad_J2 = [None]
+    # Length of a successful equilibrium residual vector, cached so a later
+    # VMEC failure returns a sentinel of the RIGHT length. parent_return_fns_no
+    # is the number of objective *terms*, which equals the residual length only
+    # when every objective is scalar — not for a vector objective like
+    # QuasisymmetryRatioResidual.residuals. scipy evaluates x0 (which converges)
+    # first, so this is populated before any failure can occur.
+    last_r_J1_len = [None]
+    start_time = time()
+
+    def _f_proc0_qss(x):
+        """Residual at x: [r_J1(x), sqrt(J2(x))]. Only proc0 runs coil opt."""
+        logger.debug("Entering _f_proc0_qss")
+        prob_equilibrium.x = x
+        try:
+            r_J1 = np.atleast_1d(prob_equilibrium.residuals())
+            last_r_J1_len[0] = r_J1.size
+        except Exception:
+            logger.info("Exception during equilibrium residuals in QSS residual.")
+            _n = (last_r_J1_len[0] if last_r_J1_len[0] is not None
+                  else prob_equilibrium.parent_return_fns_no)
+            r_J1 = np.full(_n, 1.0e12)
+
+        if mpi.proc0_world:
+            try:
+                J2, grad_J2 = compute_J2_and_grad()
+                J2 = float(J2)
+                grad_J2 = np.asarray(grad_J2, dtype=np.float64).ravel()
+            except Exception:
+                logger.warning("compute_J2_and_grad failed; using J2=1e12, zero grad.", exc_info=True)
+                J2 = 1.0e12
+                grad_J2 = np.zeros(prob_equilibrium.dof_size)
+            last_J2[0] = J2
+            last_grad_J2[0] = grad_J2
+        else:
+            J2 = 1.0e12
+            grad_J2 = np.zeros(prob_equilibrium.dof_size)
+
+        sqrt_J2 = np.sqrt(max(J2, 1e-20))
+        residuals = np.concatenate([r_J1, [sqrt_J2]])
+        objective_val = float(np.sum(r_J1 ** 2)) + J2  # J1 + J2
+
+        nonlocal datalog_started, objective_file, residuals_file, nevals
+
+        if mpi.proc0_world and not datalog_started:
+            datalog_started = True
+            datestr = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            objective_file = open(f"objective_qss_{datestr}.dat", 'w')
+            objective_file.write(
+                f"Problem type:\nleast_squares_qss\nnparams:\n{prob_equilibrium.dof_size}\n")
+            objective_file.write("function_evaluation,seconds")
+            for j in range(prob_equilibrium.dof_size):
+                objective_file.write(f",x({j})")
+            objective_file.write(",objective_function\n")
+            if save_residuals:
+                residuals_file = open(f"residuals_qss_{datestr}.dat", 'w')
+                residuals_file.write(
+                    f"Problem type:\nleast_squares_qss\nnparams:\n{prob_equilibrium.dof_size}\n")
+                residuals_file.write("function_evaluation,seconds")
+                for j in range(prob_equilibrium.dof_size):
+                    residuals_file.write(f",x({j})")
+                residuals_file.write(",objective_function")
+                for k in range(len(residuals)):
+                    residuals_file.write(f",F({k})")
+                residuals_file.write("\n")
+
+        if mpi.proc0_world:
+            del_t = time() - start_time
+            objective_file.write(f"{nevals:6d},{del_t:12.4e}")
+            for xj in x:
+                objective_file.write(f",{xj:24.16e}")
+            objective_file.write(f",{objective_val:24.16e}\n")
+            objective_file.flush()
+            if save_residuals:
+                residuals_file.write(f"{nevals:6d},{del_t:12.4e}")
+                for xj in x:
+                    residuals_file.write(f",{xj:24.16e}")
+                residuals_file.write(f",{objective_val:24.16e}")
+                for fk in residuals:
+                    residuals_file.write(f",{fk:24.16e}")
+                residuals_file.write("\n")
+                residuals_file.flush()
+
+        nevals += 1
+        last_f_nevals[0] = nevals
+        if iteration_callback is not None and mpi.proc0_world:
+            try:
+                iteration_callback(nevals, x, residuals, objective_val)
+            except Exception:
+                logger.warning("iteration_callback raised an exception",
+                              exc_info=True)
+        return residuals
+
+    # Hybrid Jacobian: FD for equilibrium block, analytical last row for sqrt(J2)
+    #
+    # Wrap the equilibrium residuals so a VMEC non-convergence (ObjectiveFailure)
+    # during an FD perturbation returns a large sentinel instead of crashing the
+    # whole MPI job. This mirrors the failure handling in _f_proc0_qss (the
+    # function-eval path); without it a single ierr!=0 in fd.jac() aborts the
+    # run. MPIFiniteDifference needs a bound method of the Optimizable (it reads
+    # func.__self__ to perturb the DOFs), so we attach a method, not a closure.
+    import types as _types
+
+    def _safe_eq_residuals(self):
+        try:
+            return np.atleast_1d(self.residuals())
+        except Exception:
+            logger.info("Equilibrium (VMEC) failure during QSS FD Jacobian; "
+                        "returning sentinel residuals so the optimiser rejects "
+                        "this perturbation instead of aborting.")
+            return np.full(self.parent_return_fns_no, 1.0e12)
+
+    prob_equilibrium.safe_residuals_qss = _types.MethodType(
+        _safe_eq_residuals, prob_equilibrium)
+
+    with MPIFiniteDifference(
+            prob_equilibrium.safe_residuals_qss, mpi, abs_step=abs_step,
+            rel_step=rel_step, diff_method=diff_method) as fd:
+        def jac_hybrid(x):
+            J_J1 = fd.jac(x)
+            if J_J1 is None:
+                return None
+            J_J1 = np.asarray(J_J1)
+            if not mpi.proc0_world:
+                return None
+            # scipy expects (n_residuals, n_dofs); J_J1 is (n_J1, n_dofs)
+            J2 = last_J2[0]
+            grad_J2 = last_grad_J2[0]
+            if J2 is None or grad_J2 is None:
+                logger.warning("jac_hybrid: no stored J2/grad_J2; using zero last row.")
+                last_row = np.zeros(prob_equilibrium.dof_size)
+            else:
+                sqrt_J2 = max(np.sqrt(max(J2, 1e-20)), 1e-10)
+                last_row = (1.0 / (2.0 * sqrt_J2)) * np.asarray(grad_J2).ravel()
+            last_row = np.atleast_2d(last_row)
+            if J_J1.ndim == 1:
+                J_J1 = J_J1.reshape(1, -1)
+            full_jac = np.vstack([J_J1, last_row])
+
+            if jac_callback is not None and full_jac is not None:
+                try:
+                    jac_callback(last_f_nevals[0], x, full_jac)
+                except Exception:
+                    logger.warning("jac_callback raised an exception", exc_info=True)
+            return full_jac
+
+        if mpi.proc0_world:
+            x0 = np.copy(prob_equilibrium.x)
+            logger.info("Using hybrid Jacobian (FD equilibrium + analytical J2)")
+            try:
+                result = least_squares(
+                    _f_proc0_qss, x0, jac=jac_hybrid, verbose=2, **kwargs)
+            except Exception:
+                print("Failure on proc0_world in least_squares_mpi_solve_qss")
+                result = Struct()
+                result.x = x0
+
+    if mpi.proc0_world:
+        x = result.x
+        if objective_file is not None:
+            objective_file.close()
+        if save_residuals and residuals_file is not None:
+            residuals_file.close()
+
+    logger.info("Completed QSS solve.")
+    mpi.comm_world.Bcast(x)
+    prob_equilibrium.x = x
 
 
 def _constrained_mpi_workers_task(mpi: MpiPartition,

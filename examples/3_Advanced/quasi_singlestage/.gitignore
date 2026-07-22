@@ -1,0 +1,7 @@
+examples/**/jac_log_*.dat
+examples/**/objective_*.dat
+examples/**/residuals_*.dat
+examples/**/input.*_[0-9][0-9][0-9]_*
+examples/**/output/
+examples/**/wout_*.nc
+examples/**/mercier_*
