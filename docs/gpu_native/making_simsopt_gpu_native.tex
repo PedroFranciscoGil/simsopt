@@ -347,6 +347,70 @@ The target accelerator should have credible float64 throughput.  Consumer GPUs
 may still be useful for development and batched float32 experiments, but they
 must not define the primary scientific-performance conclusion.
 
+\section{First NVIDIA profile result}\label{sec:first-profile}
+
+The first external GPU run was captured on 10 September 2026 from repository
+revision \code{127e7a50c3ad} using the documented minimal problem.  The device
+was an NVIDIA Tesla T4 with 15,360 MiB of physical memory; JAX 0.11.1 selected
+the CUDA backend and enabled float64.  The problem contained four base coils,
+16 symmetry-expanded physical coils, 75 quadrature points per curve, a
+$32\times32$ target surface, and 136 differentiated variables.  Target and
+source tile sizes were 128 and 256, respectively.
+
+\begin{table}[htbp]
+  \centering
+  \caption{First GPU-native value-and-gradient measurement.  Steady-state
+  statistics contain ten synchronized evaluations after three warm-up calls.}
+  \begin{tabular}{lr}
+    \toprule
+    Quantity & Result \\
+    \midrule
+    Compilation time & $3.384\ \mathrm{s}$ \\
+    Steady-state median & $21.767\ \mathrm{ms}$ \\
+    Steady-state minimum--maximum & $21.656$--$21.908\ \mathrm{ms}$ \\
+    Timing coefficient of variation & $0.369\%$ \\
+    Peak device memory in use & $150.27\ \mathrm{MiB}$ \\
+    Peak fraction of JAX device limit & $1.34\%$ \\
+    Objective absolute error versus CPU & $6.94\times10^{-18}$ \\
+    Curve-gradient relative $\ell_2$ error & $5.57\times10^{-16}$ \\
+    Current-gradient relative $\ell_2$ error & $2.60\times10^{-16}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The numerical result is therefore consistent with the CPU oracle to
+approximately float64 rounding error, and the ten measurements are stable.
+Compilation costs as much as approximately 155 median evaluations, so it must
+remain outside optimization timing and must be amortized across iterations or
+batched starts.  The 150.24 MiB largest allocation accounts for almost the
+entire measured peak, while the peak itself occupies only 1.34\% of the JAX
+device-memory limit.  This case is not constrained by device capacity.
+
+The three-step Perfetto trace contains no host-to-device or device-to-host
+copy within the compiled objective; the explicit transfer events are all
+device-to-device.  The GPU stream spans $58.71\ \mathrm{ms}$ for the three
+profiled evaluations and records $53.91\ \mathrm{ms}$ of summed GPU activity.
+It contains 390 device-to-device copies, or 130 per evaluation, consuming
+approximately $1.57\ \mathrm{ms}$ per evaluation.  The current dimensions
+produce eight target tiles and five source tiles.  Accordingly, the two most
+expensive tiled-loop kernels each execute 40 times per evaluation.  Together,
+the inverse-distance-power kernel and its dynamic-update kernel consume
+approximately $5.59\ \mathrm{ms}$ per evaluation, 31\% of summed GPU activity.
+The host trace also records 444 command-buffer executions, or 148 per
+evaluation.  These counts identify launch granularity, loop-carried array
+updates, and reverse-pass state movement as the first performance targets.
+
+This run passes the initial objective-parity, gradient-parity, residency, and
+memory gates for the minimal case.  It does not establish a speedup: the
+archive contains no timed C++/OpenMP CPU baseline, and the minimal case is not
+the production-sized acceptance workload.  The next experiment will sweep
+larger target and source tiles, including a one-tile configuration where
+memory permits, and will compare ordinary autodiff with a fused or custom VJP.
+Every candidate will retain the same parity checks and will be judged on
+steady-state latency and peak memory.  A synchronized CPU reference and the
+larger benchmark cases are required before evaluating the $3\times$ speed
+gate.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only
