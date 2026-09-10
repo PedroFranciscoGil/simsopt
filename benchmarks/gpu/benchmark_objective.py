@@ -63,7 +63,9 @@ def measure(operation, warmup, repeats):
     }
 
 
-def build_problem(spec):
+def build_problem(spec, regularized=None):
+    if regularized is None:
+        regularized = spec.regularized
     surface = SurfaceRZFourier.from_vmec_input(
         SURFACE_FILE,
         range="half period",
@@ -89,7 +91,7 @@ def build_problem(spec):
     flux = SquaredFlux(surface, field)
     lengths = [CurveLength(curve) for curve in base_curves]
     components = {"quadratic_flux": flux, "curve_length_sum": sum(lengths)}
-    if spec.regularized:
+    if regularized:
         all_curves = [coil.curve for coil in coils]
         components.update(
             {
