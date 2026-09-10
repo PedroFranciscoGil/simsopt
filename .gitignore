@@ -70,3 +70,5 @@ tests/boundary*
 # Version file
 src/simsopt/_version.py
 
+# Local benchmark output
+benchmarks/gpu/results/
