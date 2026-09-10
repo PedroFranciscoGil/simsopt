@@ -1,0 +1,471 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=25mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=blue!55!black,
+  urlcolor=blue!65!black,
+  pdftitle={Making SIMSOPT GPU native}
+}
+
+\setlist{nosep,leftmargin=*}
+\newcommand{\simsopt}{\textsc{simsopt}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Making SIMSOPT GPU native}
+\author{Pedro Francisco Gil}
+\date{Project plan -- \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document defines a staged plan for accelerating stellarator coil
+optimization in \simsopt{} with a GPU-native objective and gradient.  The first
+target is stage-two vacuum coil optimization: Fourier-parameterized filamentary
+coils, the Biot--Savart field on a fixed target surface, quadratic or normalized
+flux, and the principal geometric regularizers.  Solver replacement is
+deliberately deferred until the objective is device-resident, numerically
+equivalent to the existing implementation, and demonstrably faster on
+representative production workloads.  The plan emphasizes an incremental
+backend, strict comparison with the current CPU implementation, double-precision
+correctness, explicit performance gates, and a route toward matrix-free
+least-squares methods and batched multistart optimization.
+\end{abstract}
+
+\tableofcontents
+
+\section{Executive decision}
+
+The project will optimize the expensive physics path before optimizing the
+optimizer.  In a typical stage-two problem, the L-BFGS update acts on only
+hundreds or thousands of degrees of freedom and costs approximately
+$O(mn)$ per iteration, where $n$ is the number of variables and $m$ is the
+history size.  The dominant work is instead proportional to interactions among
+surface targets, coils, and coil quadrature points.  The initial project goal is
+therefore a pure, JIT-compilable function
+\[
+  (J, \nabla J) = \operatorname{value\_and\_grad}
+  \bigl(\operatorname{coil\_objective}\bigr)(x;d),
+\]
+where $x$ contains optimization variables, $d$ contains static problem data,
+and all numerical work between input and output stays on the accelerator.
+
+The first solver will remain SciPy L-BFGS-B.  This isolates backend correctness
+and performance from changes in line search or stopping criteria.  Since $x$
+and $\nabla J$ are small, their host--device transfers should be insignificant
+for a sufficiently large objective.  A GPU-native solver becomes the next
+milestone after objective parity is established.
+
+\section{Repository and baseline}
+
+Development takes place on branch \code{gpu-native-objective} in the public
+fork \url{https://github.com/PedroFranciscoGil/simsopt}.  It starts from
+upstream commit
+\href{https://github.com/hiddenSymmetries/simsopt/commit/c648630cfc5625863b291709c17015bcdcba13af}{\code{c648630cfc56}}
+rather than from the fork's
+stale default branch.  The upstream repository is
+\url{https://github.com/hiddenSymmetries/simsopt}.
+
+The existing implementation remains the compatibility oracle:
+\begin{itemize}
+  \item stage-two examples assemble an \code{Optimizable} objective and pass
+        \code{J()} and \code{dJ()} to SciPy L-BFGS-B;
+  \item Biot--Savart field evaluation and its analytic vector--Jacobian product
+        use vectorized C++ kernels in \code{src/simsoptpp};
+  \item field calculation is parallelized across coils with OpenMP;
+  \item several curve quantities and regularizers already use JAX internally,
+        but the complete objective crosses Python, NumPy, JAX, and C++
+        boundaries and is not one device-resident computation.
+\end{itemize}
+
+All numerical comparisons will be made against a pinned upstream commit.  An
+upstream update is a deliberate integration event, never an implicit change to
+benchmark baselines.
+
+\section{Scope}
+
+\subsection{First supported problem}
+
+The minimum useful GPU-native objective will support:
+\begin{enumerate}
+  \item Cartesian Fourier curves compatible with \code{CurveXYZFourier};
+  \item unique base coils expanded through field-period and stellarator
+        symmetries;
+  \item scalar coil currents, including fixed and shared currents;
+  \item a fixed target surface imported from \simsopt{};
+  \item filamentary Biot--Savart evaluation on the surface;
+  \item quadratic flux and, immediately afterward, normalized flux;
+  \item curve length, curvature, mean-squared-curvature, arclength variation,
+        coil--coil distance, and coil--surface distance terms;
+  \item a scalar objective and an analytic/autodifferentiated gradient with
+        respect to all free coil variables.
+\end{enumerate}
+
+\subsection{Deferred work}
+
+The first milestone excludes VMEC/SPEC execution, finite-build coils,
+self-force and torque, field-line tracing, moving plasma surfaces, distributed
+multi-host execution, and a new optimizer.  These are important follow-on
+targets but would prevent a small, testable first vertical slice.
+
+\section{Design principles}
+
+\begin{enumerate}
+  \item \textbf{Functional numerical core.}  Kernels accept arrays and return
+        arrays.  They do not mutate the \simsopt{} dependency graph.
+  \item \textbf{Compatibility at the boundary.}  Adapter functions import an
+        existing \simsopt{} problem into the GPU representation and export final
+        variables back into the original objects.
+  \item \textbf{Static shapes during optimization.}  Quadrature sizes, coil
+        counts, and pair-list capacities remain fixed to avoid recompilation.
+  \item \textbf{Device residency.}  Geometry, field, objective, and gradient
+        execute without host callbacks or intermediate NumPy conversions.
+  \item \textbf{Double precision first.}  Float64 is the reference mode.
+        Float32 and mixed precision are optional, measured variants.
+  \item \textbf{Memory-aware differentiation.}  Tiling, recomputation, and
+        custom VJPs are preferred over materializing the full interaction
+        tensor.
+  \item \textbf{Performance follows evidence.}  A clear JAX implementation is
+        built first.  Pallas, Triton, or custom CUDA is introduced only after a
+        profiler identifies a kernel-level limitation.
+\end{enumerate}
+
+\section{Proposed package structure}
+
+The initial implementation should be isolated enough to evolve quickly while
+remaining inside the fork:
+\begin{verbatim}
+src/simsopt/gpu/
+    __init__.py
+    config.py             # precision and backend policy
+    parameters.py         # flat variables and masks
+    adapters.py           # SIMSOPT <-> array representation
+    curves.py             # Fourier geometry and symmetry expansion
+    biot_savart.py        # tiled field kernel and custom VJP
+    flux.py               # flux residuals and objectives
+    regularizers.py       # geometry and distance terms
+    objective.py          # composition and value-and-gradient API
+tests/gpu/
+    test_curves.py
+    test_biot_savart.py
+    test_flux.py
+    test_regularizers.py
+    test_objective.py
+benchmarks/gpu/
+    benchmark_objective.py
+    problems.py
+\end{verbatim}
+
+The name \code{simsopt.gpu} is provisional.  Before exposing a public API, it
+should be checked against upstream maintainers' naming and backend conventions.
+
+\section{Work plan}
+
+\subsection{Phase 0: reproducible CPU baseline}
+
+\textbf{Tasks}
+\begin{itemize}
+  \item Define three benchmark classes: the minimal documented stage-two case,
+        an engineering-regularized case, and a high-resolution stress case.
+  \item Record coil count, Fourier order, coil quadrature, surface resolution,
+        number of free variables, active objective terms, and thread count.
+  \item Time curve evaluation, $B$, the Biot--Savart VJP, each regularizer, the
+        combined $J/\nabla J$, and complete optimization.
+  \item Store initial variables and reference outputs in compact test fixtures.
+  \item Record hardware, compiler, BLAS, Python, JAX, and \simsopt{} versions.
+\end{itemize}
+
+\textbf{Exit criterion:} repeated CPU measurements are stable enough to detect
+a 10\% regression, and all fixtures can be regenerated from documented
+commands.
+
+\subsection{Phase 1: array data model and Fourier curves}
+
+Precompute Fourier basis matrices for $\gamma$, $\gamma'$, $\gamma''$, and
+$\gamma^{(3)}$.  A curve evaluation then becomes a small collection of matrix
+products.  Symmetry expansion will use fixed rotation/reflection matrices and
+array broadcasting.  Free/fixed/shared current semantics and the ordering of
+degrees of freedom must exactly match the adapter contract.
+
+\textbf{Exit criterion:} base and symmetry-generated curve positions and their
+first three derivatives agree with \simsopt{} in float64, and JVP/VJP tests pass
+for random coefficients and several Fourier orders.
+
+\subsection{Phase 2: GPU Biot--Savart forward kernel}
+
+Implement
+\[
+ \mathbf B(\mathbf x_i)=\frac{\mu_0}{4\pi}
+ \sum_k I_k\int_0^1
+ \frac{(\gamma_k-\mathbf x_i)\times\gamma'_k}
+      {\lVert\gamma_k-\mathbf x_i\rVert^3}\,d\phi
+\]
+using target and source tiling.  The first version will use JAX primitives and
+fixed chunk sizes selected by an autotuning benchmark.  It must reduce partial
+fields without constructing an array with dimensions
+\code{targets x coils x quadrature x 3} for the complete problem.
+
+\textbf{Exit criterion:} field values agree with the C++ implementation at all
+benchmark resolutions, memory scales according to the selected tile size, and
+the profiler shows no host transfer inside the compiled field call.
+
+\subsection{Phase 3: memory-bounded reverse pass}
+
+Compare two gradient implementations:
+\begin{enumerate}
+  \item ordinary reverse-mode differentiation of the tiled forward kernel;
+  \item a custom VJP reproducing the analytic contraction currently implemented
+        in \path{biot_savart_vjp_impl.h}.
+\end{enumerate}
+The selection criterion is total value-and-gradient time and peak memory, not
+forward time alone.  The VJP must cover curve positions, tangents, and currents.
+
+\textbf{Exit criterion:} directional derivatives pass centered finite-
+difference/Taylor tests and agree with the existing analytic VJP over random and
+near-converged coil sets.
+
+\subsection{Phase 4: flux and regularizers}
+
+Add quadratic and normalized flux first.  Then add regularizers one at a time,
+with independent parity tests.  Distance terms require special treatment:
+dynamic CPU candidate discovery cannot occur inside a compiled objective.
+Initial options are an all-pairs tiled penalty or a fixed-capacity neighbor list
+and mask refreshed only at controlled outer iterations.  The former is the
+correctness reference; the latter is an optimization.
+
+Thresholded penalties should be tested at and near their nondifferentiable
+activation points.  A smooth approximation may be offered later, but it must
+not silently replace existing semantics.
+
+\textbf{Exit criterion:} every supported term passes objective and gradient
+parity independently before combined-objective tests are enabled.
+
+\subsection{Phase 5: integrated objective and SciPy bridge}
+
+Expose one compiled value-and-gradient function.  The SciPy bridge transfers
+only the free-variable vector to the device and returns only a scalar and flat
+gradient.  Compilation happens before timing and before optimization logging.
+The bridge must support callbacks and checkpointing without forcing
+intermediate field arrays to the host.
+
+\textbf{Exit criterion:} SciPy L-BFGS-B reaches an equivalent stationary point
+from identical initial data and uses a comparable number of function and
+gradient evaluations.
+
+\subsection{Phase 6: profiling and kernel specialization}
+
+Use JAX traces and a GPU profiler to classify time as compilation, dispatch,
+compute, reduction, or transfer.  Optimize only dominant kernels.  Candidate
+actions include changing layouts and tile sizes, fusing flux reduction into
+Biot--Savart, rematerializing the reverse pass, or implementing a Pallas/custom
+kernel.  Each optimization requires a benchmark and a regression test.
+
+\textbf{Exit criterion:} the production-sized benchmark meets the performance
+gate in Section~\ref{sec:gates}, or the measured bottleneck and reason for a
+no-go decision are documented.
+
+\subsection{Phase 7: GPU-native solver experiments}
+
+After objective completion, compare the unchanged SciPy trajectory with:
+\begin{itemize}
+  \item maintained Optax L-BFGS with a zoom line search for unconstrained cases;
+  \item full BFGS when the variable count makes its $O(n^2)$ state affordable;
+  \item a reviewed/vendor-pinned L-BFGS-B implementation for true box bounds;
+  \item matrix-free Gauss--Newton or Levenberg--Marquardt on a residual-form
+        objective.
+\end{itemize}
+Optimizer comparisons must report wall time, number of physics evaluations,
+convergence status, constraint violations, and final engineering metrics.
+
+\section{Correctness and performance gates}\label{sec:gates}
+
+\begin{longtable}{p{0.26\textwidth}p{0.66\textwidth}}
+\toprule
+Gate & Initial acceptance condition \\
+\midrule
+\endhead
+Field parity & Float64 $B$ agrees with the CPU reference using
+  $\mathrm{rtol}\leq10^{-9}$ and a scale-appropriate absolute tolerance. \\
+Objective parity & Each objective component and the combined objective meet
+  documented absolute and relative tolerances over initial, random, and
+  converged geometries. \\
+Gradient parity & Analytic GPU and CPU gradients agree with
+  $\mathrm{rtol}\leq10^{-7}$ away from threshold kinks; discrepancies are also
+  checked by directional derivatives. \\
+Taylor behavior & Centered directional errors display the expected second-order
+  slope before floating-point saturation. \\
+Residency & No host callback or intermediate device-to-host transfer occurs
+  inside the steady-state value-and-gradient trace. \\
+Memory & Peak memory is bounded by configured tiles and fits the reference GPU
+  with at least 20\% operational headroom. \\
+Speed & After compilation, combined $J/\nabla J$ is at least $3\times$ faster
+  than the tuned CPU baseline on the production-sized benchmark.  Small cases
+  are allowed to favor the CPU. \\
+Optimization & From identical initial data, the GPU backend produces equivalent
+  or better flux and engineering metrics without increasing physics evaluations
+  by more than 10\% under the same SciPy solver configuration. \\
+\bottomrule
+\end{longtable}
+
+Tolerances are starting values, not universal constants.  They will be scaled
+for singular or nearly singular geometries, but any relaxation must be recorded
+with the affected fixture and physical reason.
+
+\section{Benchmark protocol}
+
+JAX execution is asynchronous, so all timed regions must synchronize their
+outputs.  Compilation and execution are reported separately.  Each benchmark
+will include warm-up, multiple repetitions, median and dispersion, peak device
+memory, and a saved machine-readable result.  CPU comparisons must use a fixed
+OpenMP thread count and affinity configuration.
+
+The benchmark matrix includes:
+\begin{itemize}
+  \item CPU C++/OpenMP versus JAX CPU versus JAX GPU;
+  \item float64 as the primary comparison, with optional float32 and mixed
+        precision experiments;
+  \item field only, VJP only, combined objective/gradient, and complete solve;
+  \item scaling in surface points, coil quadrature, physical coils, and free
+        variables;
+  \item cold-start time and amortized time for one, ten, and many solves.
+\end{itemize}
+
+The target accelerator should have credible float64 throughput.  Consumer GPUs
+may still be useful for development and batched float32 experiments, but they
+must not define the primary scientific-performance conclusion.
+
+\section{Opportunities to improve coil quality}
+
+GPU acceleration is valuable because it enables better algorithms, not only
+shorter repetitions.  Once the first objective is validated, the following
+experiments have high priority:
+\begin{enumerate}
+  \item \textbf{Multiresolution continuation:} increase surface resolution,
+        coil quadrature, and Fourier order as optimization progresses.
+  \item \textbf{Batched multistart:} use accelerator parallelism to explore
+        multiple initial coil sets for the nonconvex problem.
+  \item \textbf{Variable projection of currents:} exploit the linear dependence
+        of $B$ on free currents and solve the small conditional least-squares
+        problem inside each geometry evaluation where the objective permits it.
+  \item \textbf{Residual-form methods:} expose $B\cdot n$ and engineering
+        residuals for matrix-free Gauss--Newton or Levenberg--Marquardt.
+  \item \textbf{Scaling and preconditioning:} nondimensionalize currents,
+        positions, Fourier modes, and penalty families so that line searches and
+        curvature approximations operate on comparable scales.
+  \item \textbf{Constraint handling:} investigate augmented-Lagrangian or
+        constrained formulations for minimum distance and maximum curvature in
+        place of increasingly ill-conditioned penalty weights.
+\end{enumerate}
+
+\section{Risk register}
+
+\begin{longtable}{p{0.24\textwidth}p{0.32\textwidth}p{0.36\textwidth}}
+\toprule
+Risk & Consequence & Mitigation \\
+\midrule
+Insufficient GPU problem size & Launch and compilation costs erase gains & Keep
+  the SciPy/CPU backend; judge success on production-sized cases; batch solves
+  where scientifically useful. \\
+Poor float64 throughput & Fast float32 results fail scientific tolerances & Use
+  data-center/HPC GPUs for the primary benchmark; validate any mixed-precision
+  path against float64. \\
+Reverse-mode memory growth & Out-of-memory failures at high resolution & Tile
+  interactions, use a custom VJP, rematerialize, and benchmark peak memory. \\
+Dynamic neighbor lists & Recompilation or incorrect distance gradients & Use an
+  all-pairs reference and fixed-capacity masked lists with explicit refresh
+  semantics. \\
+Reduction-order differences & CPU/GPU values disagree near strict tolerances &
+  Use scale-aware tests, compensated/pairwise reductions where necessary, and
+  compare physical metrics as well as bit-level outputs. \\
+Hybrid host/device code & Hidden synchronization prevents speedup & Inspect
+  traces and forbid callbacks in the steady-state objective. \\
+Upstream divergence & Long-lived fork becomes difficult to merge & Keep changes
+  modular, rebase at planned integration points, and propose focused upstream
+  pull requests. \\
+Solver trajectory changes & Backend appears faster but converges worse & Retain
+  SciPy and identical starting points until objective parity is complete; count
+  physics evaluations in every comparison. \\
+\bottomrule
+\end{longtable}
+
+\section{Version-control workflow}
+
+The long-lived integration branch is \code{gpu-native-objective}.  Work should
+arrive through short branches such as \code{gpu/baseline-benchmarks},
+\code{gpu/fourier-curves}, and \code{gpu/biot-savart-vjp}.  Commits should keep
+code, tests, and benchmark changes reviewable.  Generated benchmark data and
+compiled PDF artifacts should not be committed unless explicitly selected as a
+release artifact.
+
+Every pull request should state:
+\begin{itemize}
+  \item the numerical contract being added or changed;
+  \item CPU/GPU hardware and precision;
+  \item correctness results and tolerances;
+  \item warm and cold timings with synchronization;
+  \item peak memory and relevant profiler evidence;
+  \item limitations and unsupported objective terms.
+\end{itemize}
+
+The integration branch will periodically rebase on or merge a pinned
+\code{upstream/master}, depending on the upstream contribution strategy.  No
+force-update of the fork's existing \code{master} branch is required for this
+project.
+
+\section{Initial issue backlog}
+
+The following sequence is suitable for the first project board or milestone:
+\begin{enumerate}
+  \item Add reproducible CPU objective/gradient benchmarks.
+  \item Define GPU configuration and supported-device reporting.
+  \item Define flat parameter schema and \simsopt{} adapters.
+  \item Implement Fourier curve evaluation and symmetry expansion.
+  \item Implement tiled Biot--Savart forward calculation.
+  \item Validate autodiff memory and implement a custom VJP if required.
+  \item Implement quadratic and normalized flux.
+  \item Port length, curvature, and arclength regularizers.
+  \item Port coil--coil and coil--surface distance penalties.
+  \item Compose and JIT the complete value-and-gradient function.
+  \item Add the SciPy L-BFGS-B bridge and trajectory comparison.
+  \item Profile production cases and specialize dominant kernels.
+  \item Evaluate native L-BFGS and matrix-free least-squares solvers.
+\end{enumerate}
+
+\section{References}
+
+\begin{thebibliography}{9}
+\bibitem{simsopt}
+SIMSOPT repository,
+\url{https://github.com/hiddenSymmetries/simsopt}.
+
+\bibitem{coils}
+SIMSOPT coil optimization documentation,
+\url{https://simsopt.readthedocs.io/latest/example_coils.html}.
+
+\bibitem{jaxprecision}
+JAX documentation, ``Default dtypes and the X64 flag,''
+\url{https://docs.jax.dev/en/latest/default_dtypes.html}.
+
+\bibitem{jaxbenchmark}
+JAX documentation, ``Benchmarking JAX code,''
+\url{https://docs.jax.dev/en/latest/benchmarking.html}.
+
+\bibitem{optax}
+Optax documentation, ``L-BFGS,''
+\url{https://optax.readthedocs.io/en/latest/_collections/examples/lbfgs.html}.
+\end{thebibliography}
+
+\end{document}
