@@ -166,6 +166,8 @@ tests/gpu/
     test_objective.py
 benchmarks/gpu/
     benchmark_objective.py
+    sweep_gpu_tiles.py
+    profile_gpu_objective.py
     problems.py
 \end{verbatim}
 
@@ -403,13 +405,21 @@ updates, and reverse-pass state movement as the first performance targets.
 This run passes the initial objective-parity, gradient-parity, residency, and
 memory gates for the minimal case.  It does not establish a speedup: the
 archive contains no timed C++/OpenMP CPU baseline, and the minimal case is not
-the production-sized acceptance workload.  The next experiment will sweep
-larger target and source tiles, including a one-tile configuration where
-memory permits, and will compare ordinary autodiff with a fused or custom VJP.
-Every candidate will retain the same parity checks and will be judged on
-steady-state latency and peak memory.  A synchronized CPU reference and the
-larger benchmark cases are required before evaluating the $3\times$ speed
-gate.
+the production-sized acceptance workload.  The next experiment uses the
+automated \code{sweep\_gpu\_tiles.py} harness.  It screens the Cartesian
+product of five target and five source tile sizes, clipping oversized values
+to the problem dimensions so the minimal case includes a one-tile candidate.
+Only configurations passing the existing objective and gradient tolerances
+are eligible.  The three fastest screening candidates and the current
+$128\times256$ default are measured again; confirmed median latency determines
+the winner, while compilation remains a separately reported cost.  The same
+run records a synchronized one-thread C++/OpenMP baseline, and the Colab
+workflow explicitly pins the reference's JAX-based geometry operations to the
+CPU, then captures a trace and memory profile for the confirmed winner.
+The resulting sweep must be reviewed before changing the library defaults.
+Ordinary autodiff will subsequently be compared with a fused or custom VJP.
+The larger benchmark cases remain necessary before evaluating the $3\times$
+speed gate.
 
 \section{Opportunities to improve coil quality}
 
