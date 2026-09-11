@@ -1,6 +1,6 @@
 \documentclass[11pt,a4paper]{article}
 
-\usepackage[margin=25mm]{geometry}
+\usepackage[margin=22mm]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
@@ -471,13 +471,42 @@ $209.9\ \mathrm{ms}$ for the exact 4320-source tile.
 
 \textbf{Decision.}  Accept the production core's correctness, scaling,
 residency, and memory results, but do not mark the performance gate complete.
-Retain per-workload autotuning.  The curve-local terms have subsequently been
-implemented, followed by exact all-pairs distance references.  A local
-full-objective smoke run reached value error $2.78\times10^{-17}$ and maximum
-gradient relative error $6.38\times10^{-16}$; this validates the harness but is
-not GPU performance evidence.  Rerun the updated production notebook on NVIDIA
-hardware before choosing specialization: fixed-capacity neighbor lists or a
-fused, tail-aware Pallas/Triton kernel remain conditional on that profile.
+Retain per-workload autotuning and judge specialization using the complete
+objective.
+
+\subsection{Complete engineering-objective T4 result}
+
+The complete objective ran on the same T4 class on 11 September 2026 from
+revision \code{0799eee2}.  It includes flux, linear length, coil--coil and
+coil--surface distances, thresholded curvature, and mean-squared-curvature;
+no benchmark term is deferred.  All 25 configurations passed parity.  Ten-call
+confirmation selected $1024\times4320$ at a $309.192\ \mathrm{ms}$ median and
+0.128\% variation.  The independent profile recorded $305.288\ \mathrm{ms}$
+and 0.250\% variation.  Against the seven-call one-thread CPU median of
+$3.17113\ \mathrm{s}$, the confirmed speedup is $10.256\times$.
+
+Compilation took $4.731\ \mathrm{s}$.  Objective error was zero; curve and
+current gradient relative errors were $6.01\times10^{-16}$ and
+$1.31\times10^{-16}$.  Peak profile memory was 336.87 MiB, 3.01\% of the JAX
+limit; the complete sweep peaked at 541.69 MiB.  Thus every production gate,
+including the $3\times$ speed gate, passed.  Adding all engineering terms raised
+GPU time only $1.442\times$ relative to the earlier core confirmation, whereas
+CPU time rose $5.375\times$; the full objective therefore exposes the GPU's
+main practical advantage.
+
+Across three traced calls, GPU activity was $914.59\ \mathrm{ms}$ over a
+$921.37\ \mathrm{ms}$ stream span, with no host--device copy.  Biot--Savart
+forward/reverse used about $153.5\ \mathrm{ms}$ per call, tiled coil--surface
+distance about $131.8\ \mathrm{ms}$, and the 123-pair coil--coil loop about
+$17\ \mathrm{ms}$.  The pair loop contributes most of the 422 command-buffer
+executions and $11.0\ \mathrm{ms}$ host command-buffer time per call, but this
+is only 3.6\% of latency.
+
+\textbf{Decision.}  Accept the all-pairs JAX implementation as the production
+reference and do not introduce Pallas/Triton or dynamic neighbor lists now.
+The measured objective has ample correctness, memory, and speed margin.  Pair
+batching remains a low-risk later optimization; the next milestone is an
+end-to-end SciPy L-BFGS-B trajectory comparison using this complete executable.
 
 \section{Opportunities to improve coil quality}
 
@@ -549,28 +578,22 @@ fork's existing \code{master} branch.
 \section{Remaining issue backlog}
 
 The completed core-objective milestones remain in version history.  The active
-sequence is now:
-\begin{enumerate}
-  \item Profile the complete production objective on NVIDIA hardware.
-  \item Exercise the SciPy bridge in an end-to-end trajectory comparison.
-  \item Specialize distance or field bottlenecks only if the trace requires it.
-  \item Evaluate native L-BFGS and matrix-free least-squares solvers.
-\end{enumerate}
+sequence is now: exercise the SciPy bridge in an end-to-end trajectory
+comparison; specialize a measured bottleneck only if needed; then evaluate
+native L-BFGS and matrix-free least-squares solvers.
 
 \section{References}
 
 {\scriptsize
-\begin{enumerate}[label={\lbrack\arabic*\rbrack}]
-  \item SIMSOPT repository, \url{https://github.com/hiddenSymmetries/simsopt}.
-  \item SIMSOPT coil optimization documentation,
-        \url{https://simsopt.readthedocs.io/latest/example_coils.html}.
-  \item JAX, ``Default dtypes and the X64 flag,''
-        \url{https://docs.jax.dev/en/latest/default_dtypes.html}.
-  \item JAX, ``Benchmarking JAX code,''
-        \url{https://docs.jax.dev/en/latest/benchmarking.html}.
-  \item Optax, ``L-BFGS,''
-        \url{https://optax.readthedocs.io/en/latest/_collections/examples/lbfgs.html}.
-\end{enumerate}
+[1] \href{https://github.com/hiddenSymmetries/simsopt}{SIMSOPT repository}.
+[2] \href{https://simsopt.readthedocs.io/latest/example_coils.html}{SIMSOPT coil
+optimization documentation}.
+[3] \href{https://docs.jax.dev/en/latest/default_dtypes.html}{JAX, ``Default
+dtypes and the X64 flag.''}
+[4] \href{https://docs.jax.dev/en/latest/benchmarking.html}{JAX,
+``Benchmarking JAX code.''}
+[5] \href{https://optax.readthedocs.io/en/latest/_collections/examples/lbfgs.html}{Optax,
+``L-BFGS.''}
 }
 
 \end{document}
