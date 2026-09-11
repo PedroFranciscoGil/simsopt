@@ -4,7 +4,14 @@ import jax
 import numpy as np
 import pytest
 from simsopt.field import BiotSavart, Current, coils_via_symmetries
-from simsopt.geo import CurveLength, SurfaceRZFourier, create_equally_spaced_curves
+from simsopt.geo import (
+    ArclengthVariation,
+    CurveLength,
+    LpCurveCurvature,
+    MeanSquaredCurvature,
+    SurfaceRZFourier,
+    create_equally_spaced_curves,
+)
 from simsopt.gpu import (
     fourier_basis_set,
     minimal_coil_objective,
@@ -53,6 +60,11 @@ def test_compiled_minimal_objective_and_gradients_match_simsopt(vjp_mode):
     stellsym = True
     length_target = 4.0
     length_weight = 0.03
+    curvature_threshold = 0.7
+    curvature_weight = 2e-4
+    msc_threshold = 1.0
+    msc_weight = 3e-4
+    arclength_weight = 5e-3
 
     surface = SurfaceRZFourier.from_vmec_input(
         TEST_FILE, range="half period", nphi=7, ntheta=8
@@ -78,6 +90,16 @@ def test_compiled_minimal_objective_and_gradients_match_simsopt(vjp_mode):
         length_target,
         "max",
     )
+    cpu_objective += curvature_weight * sum(
+        LpCurveCurvature(curve, 2.0, curvature_threshold) for curve in base_curves
+    )
+    cpu_objective += msc_weight * sum(
+        QuadraticPenalty(MeanSquaredCurvature(curve), msc_threshold, "max")
+        for curve in base_curves
+    )
+    cpu_objective += arclength_weight * sum(
+        ArclengthVariation(curve, nintervals="full") for curve in base_curves
+    )
 
     curve_dofs = np.stack([curve.get_dofs() for curve in base_curves])
     base_currents = np.asarray(
@@ -101,6 +123,11 @@ def test_compiled_minimal_objective_and_gradients_match_simsopt(vjp_mode):
             target,
             length_target=length_target,
             length_weight=length_weight,
+            curvature_threshold=curvature_threshold,
+            curvature_weight=curvature_weight,
+            mean_squared_curvature_threshold=msc_threshold,
+            mean_squared_curvature_weight=msc_weight,
+            arclength_variation_weight=arclength_weight,
             target_tile_size=9,
             source_tile_size=17,
             vjp_mode=vjp_mode,

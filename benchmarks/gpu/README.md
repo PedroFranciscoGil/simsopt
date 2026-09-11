@@ -57,13 +57,16 @@ The same harness can be run on any CUDA machine:
       --memory-profile benchmarks/gpu/results/minimal-memory.prof \
       --output benchmarks/gpu/results/minimal-gpu.json
 
-## Production-scale core-objective benchmark
+## Production-scale local-engineering benchmark
 
 The dedicated production workflow uses the `stress` dimensions: six base
 coils, order 12, 180 quadrature points per curve, and a 128-by-128 half-period
-surface. This measures the GPU-native quadratic-flux and length objective at
-production scale. Coil-distance, surface-distance, and curvature terms remain
-deferred and are identified as such in the generated summary.
+surface. This measures quadratic flux, length, curvature, mean-squared-curvature,
+and full-resolution arclength-variation terms in one differentiated GPU
+objective. Coil-distance and surface-distance terms remain deferred and are
+identified as such in the generated summary. Pass `--objective-scope core` to
+the lower-level sweep or profiler to reproduce the earlier flux-plus-length
+measurements.
 
 [Run the production-scale profiler in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_production_profile.ipynb)
 

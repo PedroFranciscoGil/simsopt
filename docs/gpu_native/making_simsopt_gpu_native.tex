@@ -250,19 +250,27 @@ near-converged coil sets.
 
 \subsection{Phase 4: flux and regularizers}
 
-Add quadratic and normalized flux first.  Then add regularizers one at a time,
-with independent parity tests.  Distance terms require special treatment:
-dynamic CPU candidate discovery cannot occur inside a compiled objective.
-Initial options are an all-pairs tiled penalty or a fixed-capacity neighbor list
-and mask refreshed only at controlled outer iterations.  The former is the
-correctness reference; the latter is an optimization.
+Quadratic and normalized flux and the length penalty are complete.  The first
+curve-local milestone adds SIMSOPT-equivalent $L_p$ thresholded curvature,
+mean-squared curvature with an outer quadratic maximum penalty, and
+full-resolution arclength variation.  They reuse precomputed first- and
+second-derivative Fourier bases and compose into the existing JIT objective.
+Independent, deliberately active fixtures test values and combined gradients;
+both reverse-pass modes also pass the integrated objective test.  Historical
+flux-plus-length benchmarks retain the explicit \code{core} scope, while the
+production runner now selects \code{local-engineering}.
+
+Coil--coil and coil--surface distances remain.  Dynamic CPU candidate discovery
+cannot occur inside a compiled objective; the initial GPU reference will use
+all-pairs tiled penalties, followed by fixed-capacity masked neighbor lists only
+if profiling requires them.
 
 Thresholded penalties should be tested at and near their nondifferentiable
 activation points.  A smooth approximation may be offered later, but it must
 not silently replace existing semantics.
 
-\textbf{Exit criterion:} every supported term passes objective and gradient
-parity independently before combined-objective tests are enabled.
+\textbf{Exit criterion:} distance terms pass objective and gradient parity
+before the complete production-objective benchmark is enabled.
 
 \subsection{Phase 5: integrated objective and SciPy bridge}
 
@@ -461,10 +469,12 @@ $209.9\ \mathrm{ms}$ for the exact 4320-source tile.
 
 \textbf{Decision.}  Accept the production core's correctness, scaling,
 residency, and memory results, but do not mark the performance gate complete.
-Retain per-workload autotuning and prioritize the deferred distance and
-curvature terms so the complete production objective can be measured.  If that
-profile remains below target, prototype a fused, tail-aware Pallas/Triton
-kernel while preserving the present JAX implementation as the reference.
+Retain per-workload autotuning.  The curve-local terms have subsequently been
+implemented, so the production notebook now measures a
+\code{local-engineering} scope and labels only the two distance penalties as
+deferred.  Implement those all-pairs references next; if the complete-objective
+profile remains below target, prototype a fused, tail-aware Pallas/Triton kernel
+while preserving the present JAX implementation as the reference.
 
 \section{Opportunities to improve coil quality}
 
@@ -538,7 +548,7 @@ fork's existing \code{master} branch.
 The completed core-objective milestones remain in version history.  The active
 sequence is now:
 \begin{enumerate}
-  \item Port curvature, arclength, coil--coil, and coil--surface terms.
+  \item Port coil--coil and coil--surface distance terms.
   \item Compose and JIT the complete value-and-gradient function.
   \item Add the SciPy L-BFGS-B bridge and trajectory comparison.
   \item Profile the complete production objective and specialize bottlenecks.

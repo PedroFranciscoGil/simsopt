@@ -18,6 +18,7 @@ from problems import PROBLEMS, get_problem
 from scipy.optimize import minimize
 from simsopt.field import BiotSavart, Current, coils_via_symmetries
 from simsopt.geo import (
+    ArclengthVariation,
     CurveCurveDistance,
     CurveLength,
     CurveSurfaceDistance,
@@ -63,9 +64,11 @@ def measure(operation, warmup, repeats):
     }
 
 
-def build_problem(spec, regularized=None):
+def build_problem(spec, regularized=None, local_engineering=False):
     if regularized is None:
         regularized = spec.regularized
+    if regularized and local_engineering:
+        raise ValueError("regularized and local_engineering are mutually exclusive")
     surface = SurfaceRZFourier.from_vmec_input(
         SURFACE_FILE,
         range="half period",
@@ -91,14 +94,9 @@ def build_problem(spec, regularized=None):
     flux = SquaredFlux(surface, field)
     lengths = [CurveLength(curve) for curve in base_curves]
     components = {"quadratic_flux": flux, "curve_length_sum": sum(lengths)}
-    if regularized:
-        all_curves = [coil.curve for coil in coils]
+    if regularized or local_engineering:
         components.update(
             {
-                "coil_coil_distance": CurveCurveDistance(
-                    all_curves, 0.1, num_basecurves=spec.ncoils
-                ),
-                "coil_surface_distance": CurveSurfaceDistance(all_curves, surface, 0.3),
                 "curvature": sum(
                     LpCurveCurvature(curve, 2, 5.0) for curve in base_curves
                 ),
@@ -108,6 +106,21 @@ def build_problem(spec, regularized=None):
                 ),
             }
         )
+        if local_engineering:
+            components["arclength_variation"] = sum(
+                ArclengthVariation(curve, nintervals="full")
+                for curve in base_curves
+            )
+    if regularized:
+        all_curves = [coil.curve for coil in coils]
+        components.update(
+            {
+                "coil_coil_distance": CurveCurveDistance(
+                    all_curves, 0.1, num_basecurves=spec.ncoils
+                ),
+                "coil_surface_distance": CurveSurfaceDistance(all_curves, surface, 0.3),
+            }
+        )
         objective = (
             flux
             + 1e-6 * components["curve_length_sum"]
@@ -115,6 +128,14 @@ def build_problem(spec, regularized=None):
             + 10.0 * components["coil_surface_distance"]
             + 1e-6 * components["curvature"]
             + 1e-6 * components["mean_squared_curvature_penalty"]
+        )
+    elif local_engineering:
+        objective = (
+            flux
+            + QuadraticPenalty(components["curve_length_sum"], 18.0, "max")
+            + 1e-6 * components["curvature"]
+            + 1e-6 * components["mean_squared_curvature_penalty"]
+            + 1e-9 * components["arclength_variation"]
         )
     else:
         objective = flux + QuadraticPenalty(components["curve_length_sum"], 18.0, "max")

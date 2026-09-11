@@ -34,6 +34,11 @@ class MinimalCoilData:
         length_target,
         length_weight,
         flux_definition="quadratic flux",
+        curvature_threshold=5.0,
+        curvature_weight=0.0,
+        mean_squared_curvature_threshold=5.0,
+        mean_squared_curvature_weight=0.0,
+        arclength_variation_weight=0.0,
         config: GpuConfig = None,
     ):
         """Evaluate the device objective using this problem's static data."""
@@ -51,6 +56,11 @@ class MinimalCoilData:
             length_target=length_target,
             length_weight=length_weight,
             flux_definition=flux_definition,
+            curvature_threshold=curvature_threshold,
+            curvature_weight=curvature_weight,
+            mean_squared_curvature_threshold=mean_squared_curvature_threshold,
+            mean_squared_curvature_weight=mean_squared_curvature_weight,
+            arclength_variation_weight=arclength_variation_weight,
             target_tile_size=config.target_tile_size,
             source_tile_size=config.source_tile_size,
             vjp_mode=config.vjp_mode,

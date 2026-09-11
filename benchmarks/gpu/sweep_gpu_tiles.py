@@ -13,7 +13,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from benchmark_objective import build_problem, environment, measure
-from problems import PROBLEMS, core_objective_metadata, get_problem
+from problems import (
+    OBJECTIVE_SCOPES,
+    PROBLEMS,
+    get_problem,
+    objective_call_kwargs,
+    objective_metadata,
+)
 from simsopt.gpu import GpuConfig, minimal_coil_data
 
 
@@ -47,6 +53,9 @@ def vjp_mode_list(value):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="minimal")
+    parser.add_argument(
+        "--objective-scope", choices=OBJECTIVE_SCOPES, default="core"
+    )
     parser.add_argument(
         "--target-tile-sizes",
         type=positive_size_list,
@@ -156,6 +165,7 @@ def measure_candidate(
     vjp_mode,
     warmup,
     repeats,
+    objective_kwargs,
 ):
     """Compile and synchronously measure one tile and reverse-pass candidate."""
     config = GpuConfig(
@@ -168,8 +178,7 @@ def measure_candidate(
         return data.objective(
             curve_dofs,
             currents,
-            length_target=18.0,
-            length_weight=1.0,
+            **objective_kwargs,
             config=config,
         )
 
@@ -243,6 +252,7 @@ def run_candidate(
     warmup,
     repeats,
     tolerances,
+    objective_kwargs,
 ):
     try:
         measurement = measure_candidate(
@@ -254,6 +264,7 @@ def run_candidate(
             vjp_mode,
             warmup,
             repeats,
+            objective_kwargs,
         )
         parity_result = parity(
             measurement,
@@ -294,8 +305,12 @@ def main():
         raise RuntimeError("JAX reports a GPU but nvidia-smi found no NVIDIA device")
 
     spec = get_problem(args.problem)
+    objective_settings = objective_metadata(spec, args.objective_scope)
+    objective_kwargs = objective_call_kwargs(objective_settings)
     surface, base_curves, field, _, cpu_objective = build_problem(
-        spec, regularized=False
+        spec,
+        regularized=False,
+        local_engineering=args.objective_scope == "local-engineering",
     )
     base_current_objects = [field.coils[index].current for index in range(spec.ncoils)]
     data = minimal_coil_data(
@@ -373,6 +388,7 @@ def main():
             args.warmup,
             args.repeats,
             tolerances,
+            objective_kwargs,
         )
         candidate = {
             "id": candidate_id(target_size, source_size, vjp_mode),
@@ -444,6 +460,7 @@ def main():
             args.confirmation_warmup,
             args.confirmation_repeats,
             tolerances,
+            objective_kwargs,
         )
 
     confirmed = sorted(
@@ -483,7 +500,7 @@ def main():
     result = {
         "schema_version": 3,
         "problem": spec.as_dict(),
-        "objective": core_objective_metadata(spec),
+        "objective": objective_settings,
         "dimensions": {
             "base_coils": len(base_curves),
             "physical_coils": len(field.coils),

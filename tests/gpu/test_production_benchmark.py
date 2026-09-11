@@ -35,13 +35,17 @@ def example_results():
         "speedup_over_cpu_baseline": 3.2,
     }
     objective = {
-        "scope": "gpu_native_flux_plus_length_core",
-        "terms": ["quadratic_flux", "curve_length_penalty"],
+        "scope": "gpu_native_local_engineering",
+        "terms": [
+            "quadratic_flux",
+            "curve_length_penalty",
+            "lp_curvature",
+            "mean_squared_curvature_penalty",
+            "arclength_variation",
+        ],
         "deferred_terms": [
             "coil_coil_distance",
             "coil_surface_distance",
-            "curvature",
-            "mean_squared_curvature_penalty",
         ],
         "length_target": 18.0,
         "length_weight": 1.0,
@@ -89,10 +93,13 @@ def test_production_summary_evaluates_gates_and_scope():
     summary = module.production_summary(sweep, profile)
 
     assert summary["all_gates_passed"]
-    assert summary["objective_scope"] == "gpu_native_flux_plus_length_core"
+    assert summary["objective_scope"] == "gpu_native_local_engineering"
     assert summary["gates"]["speedup_over_one_thread_cpu"]["passed"]
     assert summary["gates"]["device_memory_fraction"]["measured"] == 0.2
-    assert "coil_coil_distance" in summary["deferred_objective_terms"]
+    assert summary["deferred_objective_terms"] == [
+        "coil_coil_distance",
+        "coil_surface_distance",
+    ]
 
 
 def test_production_summary_rejects_mismatched_profile():

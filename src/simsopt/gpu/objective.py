@@ -10,6 +10,11 @@ from .curves import (
     expand_by_symmetry,
 )
 from .flux import normalized_flux, quadratic_flux
+from .regularizers import (
+    arclength_variation,
+    lp_curve_curvature_penalty,
+    mean_squared_curvature,
+)
 
 
 def minimal_coil_objective(
@@ -28,6 +33,11 @@ def minimal_coil_objective(
     target_tile_size: int = 128,
     source_tile_size: int = 256,
     vjp_mode: str = "custom",
+    curvature_threshold: float = 5.0,
+    curvature_weight: float = 0.0,
+    mean_squared_curvature_threshold: float = 5.0,
+    mean_squared_curvature_weight: float = 0.0,
+    arclength_variation_weight: float = 0.0,
 ):
     """Minimal stage-two objective implemented as one differentiable program.
 
@@ -36,8 +46,13 @@ def minimal_coil_objective(
     than as host-side state in this numerical function.
     """
     coefficients = dofs_to_coefficients(curve_dofs)
-    derivatives = evaluate_cartesian_fourier_derivatives(coefficients, bases[:2])
+    needs_second_derivative = curvature_weight or mean_squared_curvature_weight
+    basis_count = 3 if needs_second_derivative else 2
+    derivatives = evaluate_cartesian_fourier_derivatives(
+        coefficients, bases[:basis_count]
+    )
     base_gamma, base_gammadash = derivatives[0], derivatives[1]
+    base_gammadashdash = derivatives[2] if needs_second_derivative else None
     gamma, gammadash, currents = expand_by_symmetry(
         base_gamma, base_gammadash, base_currents, transforms, current_signs
     )
@@ -63,4 +78,24 @@ def minimal_coil_objective(
         raise ValueError("flux_definition must be 'quadratic flux' or 'normalized'")
     total_base_length = jnp.sum(curve_lengths(base_gammadash))
     length_excess = jnp.maximum(total_base_length - length_target, 0.0)
-    return flux + 0.5 * length_weight * length_excess * length_excess
+    objective = flux + 0.5 * length_weight * length_excess * length_excess
+    if curvature_weight:
+        objective = objective + curvature_weight * jnp.sum(
+            lp_curve_curvature_penalty(
+                base_gammadash,
+                base_gammadashdash,
+                p=2.0,
+                threshold=curvature_threshold,
+            )
+        )
+    if mean_squared_curvature_weight:
+        msc = mean_squared_curvature(base_gammadash, base_gammadashdash)
+        msc_excess = jnp.maximum(msc - mean_squared_curvature_threshold, 0.0)
+        objective = objective + 0.5 * mean_squared_curvature_weight * jnp.sum(
+            msc_excess * msc_excess
+        )
+    if arclength_variation_weight:
+        objective = objective + arclength_variation_weight * jnp.sum(
+            arclength_variation(base_gammadash)
+        )
+    return objective
