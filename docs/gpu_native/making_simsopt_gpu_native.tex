@@ -359,67 +359,66 @@ the CUDA backend and enabled float64.  The problem contained four base coils,
 $32\times32$ target surface, and 136 differentiated variables.  Target and
 source tile sizes were 128 and 256, respectively.
 
+Compilation took $3.384\ \mathrm{s}$ and ten synchronized calls had a
+$21.767\ \mathrm{ms}$ median, a $21.656$--$21.908\ \mathrm{ms}$ range, and
+0.369\% coefficient of variation.  The objective absolute error was
+$6.94\times10^{-18}$ and gradient relative errors were below
+$5.58\times10^{-16}$.  Peak device memory was 150.27 MiB, only 1.34\% of the
+JAX limit.  The trace contained no
+host--device copies inside the objective, but its 40 tile iterations produced
+130 device-to-device copies and 148 command-buffer executions per call.  This
+passed the minimal-case parity, residency, and memory gates and identified
+launch granularity and reverse-pass state movement as optimization targets;
+without a timed CPU baseline it did not establish a speedup.
+
+\subsection{Automated tile sweep}
+
+A second T4 run from revision \code{63a6631f3146} screened all 25 combinations
+of five target and five source tile sizes.  All candidates passed the objective
+and gradient gates.  The fastest three and the original default were then
+measured for ten synchronized evaluations after three warm-up calls.
+
 \begin{table}[htbp]
   \centering
-  \caption{First GPU-native value-and-gradient measurement.  Steady-state
-  statistics contain ten synchronized evaluations after three warm-up calls.}
-  \begin{tabular}{lr}
+  \caption{Confirmed tile candidates on the minimal T4 workload.}
+  \begin{tabular}{rrrr}
     \toprule
-    Quantity & Result \\
+    Target tile & Source tile & Tile iterations & Median (ms) \\
     \midrule
-    Compilation time & $3.384\ \mathrm{s}$ \\
-    Steady-state median & $21.767\ \mathrm{ms}$ \\
-    Steady-state minimum--maximum & $21.656$--$21.908\ \mathrm{ms}$ \\
-    Timing coefficient of variation & $0.369\%$ \\
-    Peak device memory in use & $150.27\ \mathrm{MiB}$ \\
-    Peak fraction of JAX device limit & $1.34\%$ \\
-    Objective absolute error versus CPU & $6.94\times10^{-18}$ \\
-    Curve-gradient relative $\ell_2$ error & $5.57\times10^{-16}$ \\
-    Current-gradient relative $\ell_2$ error & $2.60\times10^{-16}$ \\
+    512 & 1200 & 2  & 12.685 \\
+    256 & 1200 & 4  & 12.921 \\
+    128 & 1200 & 8  & 13.645 \\
+    128 & 256  & 40 & 21.684 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-The numerical result is therefore consistent with the CPU oracle to
-approximately float64 rounding error, and the ten measurements are stable.
-Compilation costs as much as approximately 155 median evaluations, so it must
-remain outside optimization timing and must be amortized across iterations or
-batched starts.  The 150.24 MiB largest allocation accounts for almost the
-entire measured peak, while the peak itself occupies only 1.34\% of the JAX
-device-memory limit.  This case is not constrained by device capacity.
+The confirmed $512\times1200$ winner is $1.709\times$ faster than the
+$128\times256$ default in the same sweep.  Its coefficient of variation is
+0.484\%.  A separate trace run reproduced a $12.596\ \mathrm{ms}$ median and
+the CPU-pinned, one-thread SIMSOPT reference measured $17.300\ \mathrm{ms}$
+median, giving a provisional $1.364\times$ GPU speedup.  The five CPU samples
+have 6.99\% variation and no affinity control, so this is not yet the tuned CPU
+comparison required by the speed gate.  The one-tile $1024\times1200$
+candidate took $21.236\ \mathrm{ms}$ in screening; minimizing tile count alone
+therefore does not maximize throughput.
 
-The three-step Perfetto trace contains no host-to-device or device-to-host
-copy within the compiled objective; the explicit transfer events are all
-device-to-device.  The GPU stream spans $58.71\ \mathrm{ms}$ for the three
-profiled evaluations and records $53.91\ \mathrm{ms}$ of summed GPU activity.
-It contains 390 device-to-device copies, or 130 per evaluation, consuming
-approximately $1.57\ \mathrm{ms}$ per evaluation.  The current dimensions
-produce eight target tiles and five source tiles.  Accordingly, the two most
-expensive tiled-loop kernels each execute 40 times per evaluation.  Together,
-the inverse-distance-power kernel and its dynamic-update kernel consume
-approximately $5.59\ \mathrm{ms}$ per evaluation, 31\% of summed GPU activity.
-The host trace also records 444 command-buffer executions, or 148 per
-evaluation.  These counts identify launch granularity, loop-carried array
-updates, and reverse-pass state movement as the first performance targets.
+The winning trace reduces device-to-device copies from 130 to two per
+evaluation and command-buffer executions from 148 to nine.  Across three
+profiled calls, GPU-stream span falls from $58.71$ to $28.30\ \mathrm{ms}$ and
+summed GPU activity from $53.91$ to $27.10\ \mathrm{ms}$.  Peak memory rises
+from 150.27 to 256.03 MiB, but remains only 2.29\% of the JAX device limit.
+Float64 parity remains at rounding scale: the objective absolute error is
+$6.94\times10^{-18}$ and the curve- and current-gradient relative errors are
+$5.30\times10^{-16}$ and $1.11\times10^{-16}$.
 
-This run passes the initial objective-parity, gradient-parity, residency, and
-memory gates for the minimal case.  It does not establish a speedup: the
-archive contains no timed C++/OpenMP CPU baseline, and the minimal case is not
-the production-sized acceptance workload.  The next experiment uses the
-automated \code{sweep\_gpu\_tiles.py} harness.  It screens the Cartesian
-product of five target and five source tile sizes, clipping oversized values
-to the problem dimensions so the minimal case includes a one-tile candidate.
-Only configurations passing the existing objective and gradient tolerances
-are eligible.  The three fastest screening candidates and the current
-$128\times256$ default are measured again; confirmed median latency determines
-the winner, while compilation remains a separately reported cost.  The same
-run records a synchronized one-thread C++/OpenMP baseline, and the Colab
-workflow explicitly pins the reference's JAX-based geometry operations to the
-CPU, then captures a trace and memory profile for the confirmed winner.
-The resulting sweep must be reviewed before changing the library defaults.
-Ordinary autodiff will subsequently be compared with a fused or custom VJP.
-The larger benchmark cases remain necessary before evaluating the $3\times$
-speed gate.
+\textbf{Decision.}  Use $512\times1200$ for subsequent profiling of this
+specific minimal problem on the T4.  Do not change the library-wide defaults
+until the engineering and stress workloads and a stronger float64 accelerator
+have been swept.  With transfer and launch overhead greatly reduced, the next
+implementation experiment is a fused or custom Biot--Savart VJP.  The
+production-size test and tuned CPU baseline remain necessary before evaluating
+the $3\times$ speed gate.
 
 \section{Opportunities to improve coil quality}
 
