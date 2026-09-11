@@ -14,7 +14,8 @@ import jax
 import numpy as np
 import scipy
 import simsopt
-from problems import PROBLEMS, get_problem
+from optimization_metrics import final_coil_metrics
+from problems import PROBLEMS, get_problem, objective_metadata
 from scipy.optimize import minimize
 from simsopt.field import BiotSavart, Current, coils_via_symmetries
 from simsopt.geo import (
@@ -108,8 +109,7 @@ def build_problem(spec, regularized=None, local_engineering=False):
         )
         if local_engineering:
             components["arclength_variation"] = sum(
-                ArclengthVariation(curve, nintervals="full")
-                for curve in base_curves
+                ArclengthVariation(curve, nintervals="full") for curve in base_curves
             )
     if regularized:
         all_curves = [coil.curve for coil in coils]
@@ -226,11 +226,22 @@ def main():
             "success": bool(result.success),
             "status": int(result.status),
             "final_objective": float(result.fun),
+            "final_metrics": final_coil_metrics(
+                objective,
+                components,
+                curves,
+                field,
+                surface,
+                result.x,
+                objective_metadata(
+                    spec, "full-engineering" if spec.regularized else "core"
+                ),
+            ),
         }
 
     objective.x = initial_x
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "problem": spec.as_dict(),
         "dimensions": {
             "physical_coils": len(field.coils),

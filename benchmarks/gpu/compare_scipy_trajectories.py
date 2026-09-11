@@ -11,6 +11,7 @@ from pathlib import Path
 import jax
 import numpy as np
 from benchmark_objective import build_problem, environment
+from optimization_metrics import final_coil_metrics, flatten_numeric_metrics
 from problems import PROBLEMS, get_problem, objective_call_kwargs, objective_metadata
 from scipy.optimize import minimize
 from simsopt.gpu import GpuConfig, ScipyCoilObjectiveBridge, minimal_coil_data
@@ -125,36 +126,6 @@ def optimization_summary(result, recorder, seconds):
     }
 
 
-def oracle_metrics(objective, components, base_curves, field, surface, x):
-    """Evaluate physical metrics through the existing SIMSOPT implementation."""
-    objective.x = np.asarray(x)
-    field_values = field.B().reshape(surface.gamma().shape)
-    normal_field = np.sum(field_values * surface.unitnormal(), axis=-1)
-    coil_coil = components["coil_coil_distance"]
-    coil_surface = components["coil_surface_distance"]
-    return {
-        "objective": float(objective.J()),
-        "gradient_norm": float(np.linalg.norm(objective.dJ())),
-        "quadratic_flux": float(components["quadratic_flux"].J()),
-        "curve_length_sum": float(components["curve_length_sum"].J()),
-        "coil_coil_distance_penalty": float(coil_coil.J()),
-        "coil_surface_distance_penalty": float(coil_surface.J()),
-        "curvature_penalty": float(components["curvature"].J()),
-        "mean_squared_curvature_penalty": float(
-            components["mean_squared_curvature_penalty"].J()
-        ),
-        "mean_absolute_normal_field": float(np.mean(np.abs(normal_field))),
-        "maximum_absolute_normal_field": float(np.max(np.abs(normal_field))),
-        "minimum_coil_coil_distance": float(coil_coil.shortest_distance()),
-        "minimum_coil_surface_distance": float(coil_surface.shortest_distance()),
-        "maximum_curvature": float(max(np.max(curve.kappa()) for curve in base_curves)),
-        "base_current_values_amperes": [
-            float(field.coils[index].current.get_value())
-            for index in range(len(base_curves))
-        ],
-    }
-
-
 def compare_trajectories(cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfree):
     common = min(len(cpu_recorder.iterations), len(gpu_recorder.iterations))
     objective_errors = []
@@ -198,10 +169,13 @@ def compare_trajectories(cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfr
 
 
 def metric_relative_errors(gpu_metrics, cpu_metrics):
+    gpu_values = flatten_numeric_metrics(gpu_metrics)
+    cpu_values = flatten_numeric_metrics(cpu_metrics)
+    if gpu_values.keys() != cpu_values.keys():
+        raise ValueError("CPU and GPU final metric schemas do not match")
     errors = {}
-    for name in cpu_metrics:
-        actual = np.asarray(gpu_metrics[name])
-        expected = np.asarray(cpu_metrics[name])
+    for name, expected in cpu_values.items():
+        actual = gpu_values[name]
         errors[name] = relative_error(actual, expected, floor=1e-12)
     return errors
 
@@ -304,13 +278,14 @@ def main():
         callback=cpu_recorder.callback,
     )
     cpu_seconds = time.perf_counter() - cpu_start
-    cpu_metrics = oracle_metrics(
+    cpu_metrics = final_coil_metrics(
         cpu_objective,
         components,
         base_curves,
         field,
         surface,
         gpu_bridge.to_physical_variables(cpu_result.x),
+        objective_settings,
     )
 
     gpu_recorder = TrajectoryRecorder(gpu_bridge)
@@ -325,13 +300,14 @@ def main():
         callback=gpu_recorder.callback,
     )
     gpu_seconds = time.perf_counter() - gpu_start
-    gpu_metrics = oracle_metrics(
+    gpu_metrics = final_coil_metrics(
         cpu_objective,
         components,
         base_curves,
         field,
         surface,
         gpu_bridge.to_physical_variables(gpu_result.x),
+        objective_settings,
     )
 
     comparison = compare_trajectories(
@@ -397,7 +373,7 @@ def main():
     }
 
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "problem": spec.as_dict(),
         "objective": objective_settings,
         "solver": {

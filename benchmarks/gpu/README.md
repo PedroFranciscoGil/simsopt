@@ -89,6 +89,14 @@ out of the optimization vector, and transfers only the flat vector, scalar, and
 gradient. The workflow records every evaluation and accepted iterate, then
 checks the two final designs through the CPU engineering-metric oracle.
 
+Every optimization artifact stores a complete final snapshot for each backend.
+The snapshot includes the mean, RMS, and maximum of
+`abs(B dot n) / norm(B)` over the target surface, as well as per-base-coil
+lengths, maximum curvatures, mean-squared curvatures, minimum coil--coil and
+coil--surface distances, configured limits, signed feasibility margins, and
+positive constraint violations. Both CPU and GPU designs are evaluated by the
+same SIMSOPT CPU oracle so backend comparisons do not mix metric definitions.
+
 [Run the trajectory comparison in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_scipy_trajectory.ipynb)
 
     OMP_NUM_THREADS=1 python benchmarks/gpu/compare_scipy_trajectories.py \

@@ -1,6 +1,6 @@
 \documentclass[11pt,a4paper]{article}
 
-\usepackage[margin=22mm]{geometry}
+\usepackage[margin=20mm]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
@@ -10,6 +10,10 @@
 \usepackage{longtable}
 \usepackage{enumitem}
 \usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
 \usepackage{hyperref}
 
 \hypersetup{
@@ -68,6 +72,32 @@ and performance from changes in line search or stopping criteria.  Since $x$
 and $\nabla J$ are small, their host--device transfers should be insignificant
 for a sufficiently large objective.  A GPU-native solver becomes the next
 milestone after objective parity is established.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=3mm and 5mm,
+  box/.style={draw,rounded corners,align=center,minimum height=7mm,
+              inner xsep=3mm,fill=blue!7,font=\scriptsize},
+  metric/.style={draw,rounded corners,align=center,minimum height=7mm,
+                 inner xsep=3mm,fill=green!9,font=\scriptsize},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (problem) {SIMSOPT\\problem};
+\node[box,right=of problem] (adapter) {array adapter\\and scaling};
+\node[box,right=of adapter,fill=orange!13] (gpu) {device-resident JAX\\geometry $\to B\to J,\nabla J$};
+\node[box,right=of gpu] (scipy) {SciPy\\L-BFGS-B};
+\node[metric,below=6mm of gpu] (oracle) {shared CPU oracle:
+  $|B\!\cdot\!n|/|B|$ + lengths + distances + curvature};
+\draw[flow] (problem) -- (adapter);
+\draw[flow] (adapter) -- (gpu);
+\draw[flow] (gpu) -- node[above,font=\tiny] {$J,\nabla J$} (scipy);
+\draw[flow] (scipy.south) -- node[right,font=\tiny] {final $x$} (oracle.north east);
+\end{tikzpicture}
+\caption{Implementation boundary and validation flow.  The expensive objective
+stays on the GPU; both final designs are measured with one physical oracle.}
+\label{fig:architecture}
+\end{figure}
 
 \section{Repository and baseline}
 
@@ -264,7 +294,7 @@ tiles with rematerialization, avoiding a full
 Independent fixtures compare both distance values and position/tangent
 gradients with the existing JAX definitions.  The complete composed objective,
 including linear length and all engineering penalties, matches the SIMSOPT CPU
-oracle in both reverse-pass modes.  The GPU test suite contains 51 passing
+oracle in both reverse-pass modes.  The GPU test suite contains 54 passing
 tests.  Historical scopes remain available; production now selects
 \code{full-engineering} and reports no deferred terms.
 
@@ -291,6 +321,12 @@ $I=s_I z_I$, with $\nabla_{z_I}J=s_I\nabla_IJ$.  Its default $s_I=1$ preserves
 the original coordinates; the convergence workflow uses $s_I=10^5$ amperes so
 currents and curve coefficients are numerically comparable without changing the
 physical objective.
+
+Optimization artifacts now use a versioned final-metric contract.  CPU and GPU
+designs each retain mean, RMS, and maximum $|B\cdot n|/|B|$, per-coil length,
+maximum and mean-squared curvature, minimum coil--coil and coil--surface
+distance, current values, configured limits, signed margins, and violations.
+Both snapshots are recomputed through the same CPU oracle.
 
 \textbf{Exit criterion:} equivalent metrics, equal evaluation counts, and the
 GPU speed advantage are demonstrated over a 25-iteration trajectory.  A longer
@@ -374,6 +410,11 @@ The benchmark matrix includes:
   \item cold-start time and amortized time for one, ten, and many solves.
 \end{itemize}
 
+For every optimization run, the machine-readable artifact must contain separate
+CPU and GPU final snapshots.  Timing or objective decrease alone is never
+sufficient: normalized normal-field quality and every active physical
+constraint must be retained even when a run stops at its iteration limit.
+
 The target accelerator should have credible float64 throughput.  Consumer GPUs
 may still be useful for development and batched float32 experiments, but they
 must not define the primary scientific-performance conclusion.
@@ -411,20 +452,55 @@ the same tiles with ordinary autodiff and the custom VJP.  All 50 candidates
 passed parity; the leading candidates and reference paths were confirmed with
 ten synchronized evaluations after three warm-up calls.
 
-\begin{table}[htbp]
-  \centering
-  \caption{Confirmed progression on the minimal T4 workload.}
-  \begin{tabular}{lrrr}
-    \toprule
-    Path & Target tile & Source tile & Median (ms) \\
-    \midrule
-    Original autodiff & 128  & 256  & 21.483 \\
-    Tuned autodiff    & 512  & 1200 & 12.489 \\
-    Custom VJP        & 1024 & 1200 &  7.979 \\
-    CPU reference     & --   & --   & 15.751 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.49\textwidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,height=4.2cm,ybar,bar width=8pt,
+  ylabel={median ms},
+  symbolic x coords={Original,Tuned,Custom,CPU},xtick=data,
+  xticklabel style={rotate=28,anchor=east,font=\tiny},
+  tick label style={font=\tiny},label style={font=\scriptsize},
+  ymin=0,ymax=24,enlarge x limits=0.17,
+  nodes near coords,nodes near coords style={font=\tiny},
+  grid=major,grid style={gray!18},axis lines*=left
+]
+\addplot[fill=blue!55,draw=blue!70!black]
+  coordinates {(Original,21.483) (Tuned,12.489) (Custom,7.979)};
+\addplot[fill=gray!55,draw=gray!75]
+  coordinates {(CPU,15.751)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}%
+\begin{minipage}{0.49\textwidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,height=4.2cm,ybar,bar width=10pt,
+  ylabel={speedup over CPU},
+  symbolic x coords={Minimal,Core,Full,Solve},xtick=data,
+  xticklabel style={rotate=28,anchor=east,font=\tiny},
+  tick label style={font=\tiny},label style={font=\scriptsize},
+  ymin=0,ymax=11.5,enlarge x limits=0.15,
+  nodes near coords,nodes near coords style={font=\tiny},
+  grid=major,grid style={gray!18},axis lines*=left
+]
+\addplot[fill=green!55!black,draw=green!35!black]
+ coordinates {(Minimal,1.974) (Core,2.752) (Full,10.256) (Solve,3.433)};
+\draw[densely dashed,red!75!black,thick]
+  (axis cs:Minimal,3) -- (axis cs:Solve,3)
+  node[pos=.10,above,font=\tiny] {$3\times$ gate};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\caption{Measured Tesla T4 progress.  Left: minimal-objective tuning
+(original $128\!\times\!256$, tuned $512\!\times\!1200$, custom-VJP
+$1024\!\times\!1200$).  Right: warm speedups for the minimal objective,
+production core, full engineering objective, and 25-step SciPy solve.}
+\label{fig:performance}
+\end{figure}
 
 The custom winner is $1.565\times$ faster than tuned autodiff,
 $2.692\times$ faster than the original configuration, and provisionally
@@ -575,7 +651,7 @@ experiments have high priority:
 
 \section{Risk register}
 
-{\small
+{\scriptsize
 \begin{longtable}{p{0.24\textwidth}p{0.32\textwidth}p{0.36\textwidth}}
 \toprule
 Risk & Consequence & Mitigation \\
