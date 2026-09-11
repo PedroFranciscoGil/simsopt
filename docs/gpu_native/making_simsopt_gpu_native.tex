@@ -502,8 +502,8 @@ ten synchronized evaluations after three warm-up calls.
 \end{axis}
 \end{tikzpicture}
 \end{minipage}
-\caption{Measured Tesla T4 progress.  Left: scaled CPU/GPU trajectories remain
-close initially and separate late in the nonconverged run.  Right: warm speedups
+\caption{Measured Tesla T4 progress.  Left: scaled CPU/GPU objective histories
+remain close initially and separate late in the nonconverged run.  Right: warm speedups
 for the minimal objective, production core, full engineering objective,
 25-step solve, and 100-step scaled solve.}
 \label{fig:performance}
@@ -622,9 +622,9 @@ ten evaluations.  The objective fell $56.1\times$, but neither run converged:
 the final gradient norm was 0.221 and both returned the iteration-limit status.
 
 \textbf{Scaled convergence update.}  Revision \code{9901d14b} used
-$s_I=10^5$ on the same T4.  CPU and GPU started identically and remained close
-through roughly 40 iterations, then followed different floating-point-sensitive
-paths.  Both reached the 100-iteration cap: CPU used 140 evaluations and ended
+$s_I=10^5$ on the same T4.  CPU and GPU started identically; their objective
+histories remained close through roughly 40 iterations, then followed different
+floating-point-sensitive paths.  Both reached the 100-iteration cap: CPU used 140 evaluations and ended
 at $J=1.19135\times10^{-4}$ with $\lVert\nabla J\rVert=3.22\times10^{-3}$;
 GPU used 152 and reached $1.40748\times10^{-4}$ with
 $7.28\times10^{-3}$.  Wall times were 157.637 and 45.346 seconds, a
