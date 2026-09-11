@@ -431,20 +431,40 @@ larger workloads; low-level kernel specialization will follow only if their
 profiles show the same arithmetic bottleneck.  The production-size test and a
 tuned CPU baseline remain necessary before evaluating the $3\times$ speed gate.
 
-\subsection{Production-scale benchmark implementation}
+\subsection{Production-scale T4 result}
 
-Revision following the minimal T4 study adds a dedicated production runner and
-Colab notebook for the stress dimensions: six base coils, Fourier order 12, 180
-quadrature points, and a $128\times128$ half-period surface, totaling 70,778,880
-target--source interactions.  It screens 25
-custom-VJP tile pairs, confirms the fastest three, uses seven synchronized
-one-thread CPU samples, and exports the winning trace, memory profile, raw JSON,
-and an automatically evaluated gate summary.  The $3\times$ speed criterion is
-reported but does not block artifact export.  This benchmark deliberately
-measures the currently supported quadratic-flux-plus-length core; distance and
-curvature terms are labeled as deferred, so its result will not be presented as
-complete production-objective performance.  The next decision will be based on
-the returned production archive, not extrapolation from the minimal case.
+The production workflow ran on 11 September 2026 from revision
+\code{f01331c1b613}.  Its six base coils, 24 physical coils, Fourier order 12,
+180 quadrature points, and $128\times128$ half-period surface produce 70,778,880
+target--source interactions and 456 differentiated variables.  All 25 custom-
+VJP tile candidates completed and passed parity.  Confirmation selected a
+$512\times4320$ tile---32 target blocks and one unpadded source block---at a
+$214.346\ \mathrm{ms}$ median with 0.214\% coefficient of variation.  The
+one-thread CPU median was $589.955\ \mathrm{ms}$ with 2.02\% variation, giving
+a $2.752\times$ speedup: 8.26\% short of the $3\times$ gate.
+
+An independent profile reproduced $216.475\ \mathrm{ms}$ with 0.281\%
+variation.  Compilation took $2.863\ \mathrm{s}$, or 13.4 steady evaluations.
+Objective error was zero and the worst confirmed gradient relative error was
+$1.25\times10^{-14}$.  Peak profile memory was 128.15 MiB (1.15\% of the JAX
+limit); even the complete sweep peaked at only 541.18 MiB.  Relative to the
+minimal run, interactions increased $57.6\times$ while GPU latency increased
+only $26.86\times$, improving interaction throughput by $2.144\times$.
+
+The trace contained no host--device transfer.  Its five dominant arithmetic
+and reduction kernels accounted for 99.49\% of GPU activity.  Device-to-device
+copies consumed only $0.061\ \mathrm{ms}$ per call and command-buffer host time
+only $1.50\ \mathrm{ms}$, so dispatch optimization cannot close the remaining
+gap.  At target tile 512, source-tail padding is material: a 4096-source tile
+executes two full blocks and screened at $397.4\ \mathrm{ms}$, versus
+$209.9\ \mathrm{ms}$ for the exact 4320-source tile.
+
+\textbf{Decision.}  Accept the production core's correctness, scaling,
+residency, and memory results, but do not mark the performance gate complete.
+Retain per-workload autotuning and prioritize the deferred distance and
+curvature terms so the complete production objective can be measured.  If that
+profile remains below target, prototype a fused, tail-aware Pallas/Triton
+kernel while preserving the present JAX implementation as the reference.
 
 \section{Opportunities to improve coil quality}
 
@@ -471,6 +491,7 @@ experiments have high priority:
 
 \section{Risk register}
 
+{\small
 \begin{longtable}{p{0.24\textwidth}p{0.32\textwidth}p{0.36\textwidth}}
 \toprule
 Risk & Consequence & Mitigation \\
@@ -499,37 +520,24 @@ Solver trajectory changes & Backend appears faster but converges worse & Retain
   physics evaluations in every comparison. \\
 \bottomrule
 \end{longtable}
+}
 
 \section{Version-control workflow}
 
 The long-lived integration branch is \code{gpu-native-objective}.  Work should
-arrive through short branches such as \code{gpu/baseline-benchmarks},
-\code{gpu/fourier-curves}, and \code{gpu/biot-savart-vjp}.  Commits should keep
-code, tests, and benchmark changes reviewable.  Generated benchmark data and
-compiled PDF artifacts should not be committed unless explicitly selected as a
-release artifact.
-
-Every pull request should state:
-\begin{itemize}
-  \item the numerical contract being added or changed;
-  \item CPU/GPU hardware and precision;
-  \item correctness results and tolerances;
-  \item warm and cold timings with synchronization;
-  \item peak memory and relevant profiler evidence;
-  \item limitations and unsupported objective terms.
-\end{itemize}
-
-The integration branch will periodically rebase on or merge a pinned
-\code{upstream/master}, depending on the upstream contribution strategy.  No
-force-update of the fork's existing \code{master} branch is required for this
-project.
+arrive through short, focused branches.  Commits keep code, tests, and benchmark
+changes reviewable; generated data and PDFs remain uncommitted unless selected
+as release artifacts.  Each pull request records the numerical contract,
+hardware and precision, parity tolerances, synchronized warm/cold timings, peak
+memory, profiler evidence, and unsupported terms.  Integration will periodically
+rebase on or merge a pinned \code{upstream/master} without force-updating the
+fork's existing \code{master} branch.
 
 \section{Remaining issue backlog}
 
 The completed core-objective milestones remain in version history.  The active
 sequence is now:
 \begin{enumerate}
-  \item Analyze the production archive and apply its profiling decision.
   \item Port curvature, arclength, coil--coil, and coil--surface terms.
   \item Compose and JIT the complete value-and-gradient function.
   \item Add the SciPy L-BFGS-B bridge and trajectory comparison.
