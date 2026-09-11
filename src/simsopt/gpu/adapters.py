@@ -53,6 +53,7 @@ class MinimalCoilData:
             flux_definition=flux_definition,
             target_tile_size=config.target_tile_size,
             source_tile_size=config.source_tile_size,
+            vjp_mode=config.vjp_mode,
         )
 
 

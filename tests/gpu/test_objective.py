@@ -2,6 +2,7 @@ from pathlib import Path
 
 import jax
 import numpy as np
+import pytest
 from simsopt.field import BiotSavart, Current, coils_via_symmetries
 from simsopt.geo import CurveLength, SurfaceRZFourier, create_equally_spaced_curves
 from simsopt.gpu import (
@@ -43,7 +44,8 @@ def test_quadratic_flux_matches_definition():
     )
 
 
-def test_compiled_minimal_objective_and_gradients_match_simsopt():
+@pytest.mark.parametrize("vjp_mode", ["autodiff", "custom"])
+def test_compiled_minimal_objective_and_gradients_match_simsopt(vjp_mode):
     nbase = 2
     order = 3
     nquad = 35
@@ -101,6 +103,7 @@ def test_compiled_minimal_objective_and_gradients_match_simsopt():
             length_weight=length_weight,
             target_tile_size=9,
             source_tile_size=17,
+            vjp_mode=vjp_mode,
         )
 
     value, (curve_gradient, current_gradient) = jax.jit(

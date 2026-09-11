@@ -1,4 +1,4 @@
-"""Autotune tile sizes for the compiled GPU-native coil objective."""
+"""Autotune tile sizes and reverse passes for the GPU-native coil objective."""
 
 import argparse
 import gc
@@ -35,6 +35,15 @@ def resolve_sizes(requested, dimension):
     return tuple(dict.fromkeys(min(size, dimension) for size in requested))
 
 
+def vjp_mode_list(value):
+    """Parse a comma-separated list of supported reverse-pass implementations."""
+    modes = tuple(dict.fromkeys(item.strip() for item in value.split(",")))
+    allowed = {"autodiff", "custom"}
+    if not modes or any(mode not in allowed for mode in modes):
+        raise argparse.ArgumentTypeError("vjp modes must be 'autodiff' and/or 'custom'")
+    return modes
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="minimal")
@@ -47,6 +56,11 @@ def parse_args():
         "--source-tile-sizes",
         type=positive_size_list,
         default=positive_size_list("128,256,512,1024,2048"),
+    )
+    parser.add_argument(
+        "--vjp-modes",
+        type=vjp_mode_list,
+        default=vjp_mode_list("autodiff,custom"),
     )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=5)
@@ -125,13 +139,15 @@ def measure_candidate(
     device_currents,
     target_tile_size,
     source_tile_size,
+    vjp_mode,
     warmup,
     repeats,
 ):
-    """Compile and synchronously measure one tile pair."""
+    """Compile and synchronously measure one tile and reverse-pass candidate."""
     config = GpuConfig(
         target_tile_size=target_tile_size,
         source_tile_size=source_tile_size,
+        vjp_mode=vjp_mode,
     )
 
     def objective(curve_dofs, currents):
@@ -196,8 +212,8 @@ def passes_parity(result, tolerances):
     )
 
 
-def candidate_id(target_tile_size, source_tile_size):
-    return f"target-{target_tile_size}-source-{source_tile_size}"
+def candidate_id(target_tile_size, source_tile_size, vjp_mode):
+    return f"{vjp_mode}-target-{target_tile_size}-source-{source_tile_size}"
 
 
 def run_candidate(
@@ -209,6 +225,7 @@ def run_candidate(
     cpu_current_gradient,
     target_tile_size,
     source_tile_size,
+    vjp_mode,
     warmup,
     repeats,
     tolerances,
@@ -220,6 +237,7 @@ def run_candidate(
             device_currents,
             target_tile_size,
             source_tile_size,
+            vjp_mode,
             warmup,
             repeats,
         )
@@ -306,10 +324,11 @@ def main():
     nsource = len(field.coils) * data.bases.shape[1]
     target_sizes = resolve_sizes(args.target_tile_sizes, ntarget)
     source_sizes = resolve_sizes(args.source_tile_sizes, nsource)
-    tile_pairs = [
-        (target_size, source_size)
+    candidates_to_screen = [
+        (target_size, source_size, vjp_mode)
         for target_size in target_sizes
         for source_size in source_sizes
+        for vjp_mode in args.vjp_modes
     ]
     tolerances = {
         "value_absolute_error": 1e-9,
@@ -317,10 +336,12 @@ def main():
     }
 
     candidates = []
-    for index, (target_size, source_size) in enumerate(tile_pairs, start=1):
+    for index, (target_size, source_size, vjp_mode) in enumerate(
+        candidates_to_screen, start=1
+    ):
         print(
-            f"Screening {index}/{len(tile_pairs)}: "
-            f"target={target_size}, source={source_size}",
+            f"Screening {index}/{len(candidates_to_screen)}: "
+            f"mode={vjp_mode}, target={target_size}, source={source_size}",
             flush=True,
         )
         screening = run_candidate(
@@ -332,12 +353,14 @@ def main():
             cpu_current_gradient,
             target_size,
             source_size,
+            vjp_mode,
             args.warmup,
             args.repeats,
             tolerances,
         )
         candidate = {
-            "id": candidate_id(target_size, source_size),
+            "id": candidate_id(target_size, source_size, vjp_mode),
+            "vjp_mode": vjp_mode,
             "target_tile_size": target_size,
             "source_tile_size": source_size,
             "target_blocks": math.ceil(ntarget / target_size),
@@ -359,7 +382,7 @@ def main():
         raise RuntimeError("no tile-size candidate completed and passed parity")
 
     confirmation_candidates = eligible[: args.top_k]
-    default_pair = (min(128, ntarget), min(256, nsource))
+    default_specification = (min(128, ntarget), min(256, nsource), "autodiff")
     default_candidate = next(
         (
             candidate
@@ -367,18 +390,28 @@ def main():
             if (
                 candidate["target_tile_size"],
                 candidate["source_tile_size"],
+                candidate["vjp_mode"],
             )
-            == default_pair
+            == default_specification
         ),
         None,
     )
     if default_candidate is not None and default_candidate not in confirmation_candidates:
         confirmation_candidates.append(default_candidate)
+    best_autodiff_candidate = next(
+        (candidate for candidate in eligible if candidate["vjp_mode"] == "autodiff"),
+        None,
+    )
+    if (
+        best_autodiff_candidate is not None
+        and best_autodiff_candidate not in confirmation_candidates
+    ):
+        confirmation_candidates.append(best_autodiff_candidate)
 
     for index, candidate in enumerate(confirmation_candidates, start=1):
         print(
             f"Confirming {index}/{len(confirmation_candidates)}: "
-            f"target={candidate['target_tile_size']}, "
+            f"mode={candidate['vjp_mode']}, target={candidate['target_tile_size']}, "
             f"source={candidate['source_tile_size']}",
             flush=True,
         )
@@ -391,6 +424,7 @@ def main():
             cpu_current_gradient,
             candidate["target_tile_size"],
             candidate["source_tile_size"],
+            candidate["vjp_mode"],
             args.confirmation_warmup,
             args.confirmation_repeats,
             tolerances,
@@ -420,9 +454,18 @@ def main():
         default_confirmed_median = default_candidate["confirmation"]["timing"][
             "median_seconds"
         ]
+    best_autodiff_confirmed_median = None
+    if (
+        best_autodiff_candidate is not None
+        and best_autodiff_candidate["confirmation"] is not None
+        and best_autodiff_candidate["confirmation"]["eligible"]
+    ):
+        best_autodiff_confirmed_median = best_autodiff_candidate["confirmation"][
+            "timing"
+        ]["median_seconds"]
 
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "problem": spec.as_dict(),
         "objective": {
             "terms": ["quadratic_flux", "curve_length_penalty"],
@@ -449,6 +492,7 @@ def main():
             "confirmation_repeats": args.confirmation_repeats,
             "requested_target_tile_sizes": args.target_tile_sizes,
             "requested_source_tile_sizes": args.source_tile_sizes,
+            "vjp_modes": args.vjp_modes,
             "resolved_target_tile_sizes": target_sizes,
             "resolved_source_tile_sizes": source_sizes,
             "parity_tolerances": tolerances,
@@ -458,6 +502,7 @@ def main():
         "candidates": candidates,
         "winner": {
             "id": winner["id"],
+            "vjp_mode": winner["vjp_mode"],
             "target_tile_size": winner["target_tile_size"],
             "source_tile_size": winner["source_tile_size"],
             "target_blocks": winner["target_blocks"],
@@ -467,6 +512,11 @@ def main():
             "speedup_over_default_tiles": (
                 default_confirmed_median / winner_median
                 if default_confirmed_median is not None
+                else None
+            ),
+            "speedup_over_best_autodiff": (
+                best_autodiff_confirmed_median / winner_median
+                if best_autodiff_confirmed_median is not None
                 else None
             ),
             "speedup_over_cpu_baseline": (

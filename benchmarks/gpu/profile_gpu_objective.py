@@ -22,6 +22,9 @@ def parse_args():
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--target-tile-size", type=int, default=128)
     parser.add_argument("--source-tile-size", type=int, default=256)
+    parser.add_argument(
+        "--vjp-mode", choices=("autodiff", "custom"), default="autodiff"
+    )
     parser.add_argument("--trace-dir", type=Path)
     parser.add_argument("--trace-steps", type=int, default=3)
     parser.add_argument("--memory-profile", type=Path)
@@ -92,6 +95,7 @@ def main():
     config = GpuConfig(
         target_tile_size=args.target_tile_size,
         source_tile_size=args.source_tile_size,
+        vjp_mode=args.vjp_mode,
     )
     data = minimal_coil_data(
         surface,
@@ -159,7 +163,7 @@ def main():
 
     device = jax.devices()[0]
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "problem": spec.as_dict(),
         "objective": {
             "terms": ["quadratic_flux", "curve_length_penalty"],
@@ -170,6 +174,7 @@ def main():
             "target": args.target_tile_size,
             "source": args.source_tile_size,
         },
+        "vjp_mode": args.vjp_mode,
         "dimensions": {
             "base_coils": len(base_curves),
             "physical_coils": len(field.coils),

@@ -19,6 +19,7 @@ class GpuConfig:
     dtype: str = "float64"
     target_tile_size: int = 128
     source_tile_size: int = 256
+    vjp_mode: str = "autodiff"
 
     def __post_init__(self):
         if self.dtype not in ("float32", "float64"):
@@ -27,6 +28,8 @@ class GpuConfig:
             raise ValueError("target_tile_size must be positive")
         if self.source_tile_size <= 0:
             raise ValueError("source_tile_size must be positive")
+        if self.vjp_mode not in ("autodiff", "custom"):
+            raise ValueError("vjp_mode must be 'autodiff' or 'custom'")
 
     @property
     def jax_dtype(self):

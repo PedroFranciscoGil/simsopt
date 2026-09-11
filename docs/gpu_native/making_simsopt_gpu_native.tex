@@ -226,14 +226,22 @@ the profiler shows no host transfer inside the compiled field call.
 
 \subsection{Phase 3: memory-bounded reverse pass}
 
-Compare two gradient implementations:
-\begin{enumerate}
-  \item ordinary reverse-mode differentiation of the tiled forward kernel;
-  \item a custom VJP reproducing the analytic contraction currently implemented
-        in \path{biot_savart_vjp_impl.h}.
-\end{enumerate}
-The selection criterion is total value-and-gradient time and peak memory, not
-forward time alone.  The VJP must cover curve positions, tangents, and currents.
+The ordinary reverse-mode implementation remains the reference.  An opt-in
+\code{GpuConfig(vjp\_mode="custom")} path now supplies a custom VJP that
+analytically contracts the field cotangent with each target--source pair.  It
+returns cotangents for target points, curve positions, curve tangents, and
+currents; it stores only the primal inputs and recomputes pair interactions in
+source and target tiles rather than retaining the autodiff tape or a complete
+interaction tensor.  Random padded-shape tests compare all four cotangents
+against full-tensor autodiff, and a centered directional-derivative test covers
+their joint contraction.  Because JAX custom VJPs do not provide a forward-mode
+rule, the ordinary field function remains available for JVP use.
+
+The autotuner now treats reverse-pass mode as another candidate dimension and
+always confirms both the best ordinary-autodiff result and the current default.
+The library default remains ordinary autodiff until NVIDIA timing and memory
+evidence demonstrates an advantage.  Selection uses total value-and-gradient
+time and peak memory, not forward time alone.
 
 \textbf{Exit criterion:} directional derivatives pass centered finite-
 difference/Taylor tests and agree with the existing analytic VJP over random and
@@ -415,10 +423,10 @@ $5.30\times10^{-16}$ and $1.11\times10^{-16}$.
 \textbf{Decision.}  Use $512\times1200$ for subsequent profiling of this
 specific minimal problem on the T4.  Do not change the library-wide defaults
 until the engineering and stress workloads and a stronger float64 accelerator
-have been swept.  With transfer and launch overhead greatly reduced, the next
-implementation experiment is a fused or custom Biot--Savart VJP.  The
-production-size test and tuned CPU baseline remain necessary before evaluating
-the $3\times$ speed gate.
+have been swept.  The custom Biot--Savart VJP is now implemented as an opt-in
+candidate; the next NVIDIA run will jointly sweep it against ordinary autodiff.
+The production-size test and tuned CPU baseline remain necessary before
+evaluating the $3\times$ speed gate.
 
 \section{Opportunities to improve coil quality}
 

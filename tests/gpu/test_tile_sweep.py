@@ -22,6 +22,10 @@ def test_tile_size_parsing_and_dimension_clipping():
     assert module.positive_size_list("64, 128,64,256") == (64, 128, 256)
     assert module.resolve_sizes((64, 128, 2048), 1200) == (64, 128, 1200)
     assert module.resolve_sizes((1024, 2048), 512) == (512,)
+    assert module.vjp_mode_list("autodiff,custom,autodiff") == (
+        "autodiff",
+        "custom",
+    )
 
     with pytest.raises(module.argparse.ArgumentTypeError, match="positive"):
         module.positive_size_list("32,0")
@@ -29,6 +33,8 @@ def test_tile_size_parsing_and_dimension_clipping():
         module.argparse.ArgumentTypeError, match="comma-separated integers"
     ):
         module.positive_size_list("32,invalid")
+    with pytest.raises(module.argparse.ArgumentTypeError, match="vjp modes"):
+        module.vjp_mode_list("automatic")
 
 
 def test_timing_summary_and_parity_gate():

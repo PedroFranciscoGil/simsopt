@@ -2,7 +2,7 @@
 
 import jax.numpy as jnp
 
-from .biot_savart import biot_savart_field
+from .biot_savart import biot_savart_field, biot_savart_field_custom_vjp
 from .curves import (
     curve_lengths,
     dofs_to_coefficients,
@@ -27,6 +27,7 @@ def minimal_coil_objective(
     flux_definition: str = "quadratic flux",
     target_tile_size: int = 128,
     source_tile_size: int = 256,
+    vjp_mode: str = "autodiff",
 ):
     """Minimal stage-two objective implemented as one differentiable program.
 
@@ -40,7 +41,13 @@ def minimal_coil_objective(
     gamma, gammadash, currents = expand_by_symmetry(
         base_gamma, base_gammadash, base_currents, transforms, current_signs
     )
-    field = biot_savart_field(
+    if vjp_mode == "autodiff":
+        field_function = biot_savart_field
+    elif vjp_mode == "custom":
+        field_function = biot_savart_field_custom_vjp
+    else:
+        raise ValueError("vjp_mode must be 'autodiff' or 'custom'")
+    field = field_function(
         surface_points,
         gamma,
         gammadash,

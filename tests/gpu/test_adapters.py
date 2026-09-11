@@ -50,3 +50,8 @@ def test_minimal_coil_adapter_rejects_inconsistent_inputs():
     )[0]
     with pytest.raises(ValueError, match="identical quadrature"):
         minimal_coil_data(surface, curves, currents, 2, True)
+
+
+def test_gpu_config_rejects_unknown_vjp_mode():
+    with pytest.raises(ValueError, match="vjp_mode"):
+        GpuConfig(vjp_mode="unknown")
