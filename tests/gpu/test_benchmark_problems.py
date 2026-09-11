@@ -48,3 +48,32 @@ def test_benchmark_problem_matrix():
     assert full["deferred_terms"] == []
     with pytest.raises(ValueError, match="objective scope"):
         module.objective_metadata(module.PROBLEMS["minimal"], "complete")
+
+
+def test_scaled_engineering_weights_preserves_thresholds_and_length():
+    path = (Path(__file__).parents[2] / "benchmarks" / "gpu" / "problems.py").resolve()
+    spec = spec_from_file_location("gpu_benchmark_weight_scaling", path)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    metadata = module.objective_metadata(
+        module.PROBLEMS["engineering"], "full-engineering"
+    )
+
+    scaled = module.scaled_engineering_weights(metadata, 10.0)
+
+    for name in module.ENGINEERING_WEIGHT_NAMES:
+        assert scaled[name] == pytest.approx(10.0 * metadata[name])
+    assert scaled["length_weight"] == metadata["length_weight"]
+    assert scaled["curvature_threshold"] == metadata["curvature_threshold"]
+    assert scaled["engineering_weight_multiplier"] == 10.0
+    assert "engineering_weight_multiplier" not in metadata
+
+
+@pytest.mark.parametrize("multiplier", [0.0, -1.0, float("inf")])
+def test_scaled_engineering_weights_rejects_invalid_multiplier(multiplier):
+    path = (Path(__file__).parents[2] / "benchmarks" / "gpu" / "problems.py").resolve()
+    spec = spec_from_file_location("gpu_benchmark_invalid_weight_scaling", path)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises(ValueError, match="finite and positive"):
+        module.scaled_engineering_weights({}, multiplier)

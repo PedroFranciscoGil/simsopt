@@ -12,12 +12,19 @@ import jax
 import numpy as np
 from benchmark_objective import build_problem, environment
 from optimization_metrics import (
+    absolute_feasibility,
     export_final_design_visualization,
     final_coil_metrics,
     flatten_numeric_metrics,
     upper_bound_quality,
 )
-from problems import PROBLEMS, get_problem, objective_call_kwargs, objective_metadata
+from problems import (
+    PROBLEMS,
+    get_problem,
+    objective_call_kwargs,
+    objective_metadata,
+    scaled_engineering_weights,
+)
 from scipy.optimize import minimize
 from simsopt.gpu import GpuConfig, ScipyCoilObjectiveBridge, minimal_coil_data
 
@@ -27,6 +34,9 @@ def parse_args():
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="stress")
     parser.add_argument("--maxiter", type=int, default=25)
     parser.add_argument("--maxcor", type=int, default=300)
+    parser.add_argument("--maxls", type=int, default=20)
+    parser.add_argument("--ftol", type=float)
+    parser.add_argument("--gtol", type=float)
     parser.add_argument(
         "--trajectory-parity-iterations",
         type=int,
@@ -41,6 +51,35 @@ def parse_args():
         default=1.0,
         help="Physical amperes represented by one free-current coordinate unit.",
     )
+    parser.add_argument(
+        "--constraint-weight-multiplier",
+        type=float,
+        default=1.0,
+        help="Multiply all four engineering inequality-penalty weights.",
+    )
+    parser.add_argument(
+        "--distance-feasibility-tolerance",
+        type=float,
+        default=1e-4,
+        help="Allowed final distance deficit in metres.",
+    )
+    parser.add_argument(
+        "--curvature-feasibility-tolerance",
+        type=float,
+        default=1e-3,
+        help="Allowed final maximum-curvature excess.",
+    )
+    parser.add_argument(
+        "--mean-squared-curvature-feasibility-tolerance",
+        type=float,
+        default=1e-3,
+        help="Allowed final mean-squared-curvature excess.",
+    )
+    parser.add_argument(
+        "--initial-variables",
+        type=Path,
+        help="JSON array of physical SIMSOPT variables used by both backends.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--visualization-dir",
@@ -48,13 +87,18 @@ def parse_args():
         help="Export CPU/GPU final surface VTS and coil VTU files here.",
     )
     parser.add_argument(
+        "--no-visualization",
+        action="store_true",
+        help="Do not export final VTK files, including next to JSON output.",
+    )
+    parser.add_argument(
         "--allow-non-gpu",
         action="store_true",
         help="Permit CPU execution for local harness validation only.",
     )
     args = parser.parse_args()
-    if args.maxiter < 1 or args.maxcor < 1:
-        parser.error("maxiter and maxcor must be positive")
+    if args.maxiter < 1 or args.maxcor < 1 or args.maxls < 1:
+        parser.error("maxiter, maxcor, and maxls must be positive")
     if args.trajectory_parity_iterations is None:
         args.trajectory_parity_iterations = min(25, args.maxiter)
     if args.trajectory_parity_iterations < 1:
@@ -65,6 +109,25 @@ def parse_args():
         parser.error("tile sizes must be positive")
     if not np.isfinite(args.current_scale) or args.current_scale <= 0:
         parser.error("current-scale must be finite and positive")
+    if (
+        not np.isfinite(args.constraint_weight_multiplier)
+        or args.constraint_weight_multiplier <= 0
+    ):
+        parser.error("constraint-weight-multiplier must be finite and positive")
+    for name in (
+        "distance_feasibility_tolerance",
+        "curvature_feasibility_tolerance",
+        "mean_squared_curvature_feasibility_tolerance",
+    ):
+        value = getattr(args, name)
+        if not np.isfinite(value) or value < 0:
+            parser.error(f"{name.replace('_', '-')} must be finite and nonnegative")
+    for name in ("ftol", "gtol"):
+        value = getattr(args, name)
+        if value is not None and (not np.isfinite(value) or value < 0):
+            parser.error(f"{name} must be finite and nonnegative")
+    if args.no_visualization and args.visualization_dir is not None:
+        parser.error("no-visualization and visualization-dir are mutually exclusive")
     return args
 
 
@@ -244,9 +307,12 @@ def main():
         )
 
     spec = get_problem(args.problem)
-    objective_settings = objective_metadata(spec, "full-engineering")
+    objective_settings = scaled_engineering_weights(
+        objective_metadata(spec, "full-engineering"),
+        args.constraint_weight_multiplier,
+    )
     surface, base_curves, field, components, cpu_objective = build_problem(
-        spec, regularized=True
+        spec, regularized=True, objective_settings=objective_settings
     )
     base_current_objects = [field.coils[index].current for index in range(spec.ncoils)]
     free_current_indices = np.asarray(
@@ -275,8 +341,20 @@ def main():
         current_scale=args.current_scale,
         config=config,
     )
-    physical_initial_x = cpu_objective.x.copy()
-    initial_x = gpu_bridge.initial_x.copy()
+    if args.initial_variables is None:
+        physical_initial_x = cpu_objective.x.copy()
+    else:
+        physical_initial_x = np.asarray(
+            json.loads(args.initial_variables.read_text()), dtype=float
+        )
+    if physical_initial_x.shape != gpu_bridge.physical_initial_x.shape:
+        raise ValueError(
+            "initial physical variables must have shape "
+            f"{gpu_bridge.physical_initial_x.shape}, got {physical_initial_x.shape}"
+        )
+    if not np.all(np.isfinite(physical_initial_x)):
+        raise ValueError("initial physical variables must be finite")
+    initial_x = physical_initial_x / gpu_bridge.coordinate_scales
     if physical_initial_x.shape != initial_x.shape or not np.allclose(
         physical_initial_x,
         gpu_bridge.to_physical_variables(initial_x),
@@ -304,7 +382,15 @@ def main():
         cpu_objective.x = gpu_bridge.to_physical_variables(x)
         return cpu_objective.J(), gpu_bridge.pullback_gradient(cpu_objective.dJ())
 
-    options = {"maxiter": args.maxiter, "maxcor": args.maxcor}
+    options = {
+        "maxiter": args.maxiter,
+        "maxcor": args.maxcor,
+        "maxls": args.maxls,
+    }
+    if args.ftol is not None:
+        options["ftol"] = args.ftol
+    if args.gtol is not None:
+        options["gtol"] = args.gtol
     cpu_recorder = TrajectoryRecorder(cpu_function)
     cpu_start = time.perf_counter()
     cpu_result = minimize(
@@ -348,9 +434,13 @@ def main():
         gpu_bridge.to_physical_variables(gpu_result.x),
         objective_settings,
     )
-    visualization_dir = args.visualization_dir
+    visualization_dir = None if args.no_visualization else args.visualization_dir
     visualization_stem = ""
-    if visualization_dir is None and args.output is not None:
+    if (
+        visualization_dir is None
+        and args.output is not None
+        and not args.no_visualization
+    ):
         visualization_dir = args.output.parent
         visualization_stem = args.output.stem + "-"
     visualizations = None
@@ -401,6 +491,20 @@ def main():
         gpu_metrics["coil_constraints"]["violations"],
         cpu_metrics["coil_constraints"]["violations"],
     )
+    feasibility_tolerances = {
+        "maximum_curvature": args.curvature_feasibility_tolerance,
+        "maximum_mean_squared_curvature": (
+            args.mean_squared_curvature_feasibility_tolerance
+        ),
+        "minimum_coil_coil_distance": args.distance_feasibility_tolerance,
+        "minimum_coil_surface_distance": args.distance_feasibility_tolerance,
+    }
+    cpu_feasibility = absolute_feasibility(
+        cpu_metrics["coil_constraints"]["violations"], feasibility_tolerances
+    )
+    gpu_feasibility = absolute_feasibility(
+        gpu_metrics["coil_constraints"]["violations"], feasibility_tolerances
+    )
 
     gates = {
         "gpu_backend": gate(backend, "gpu", backend == "gpu"),
@@ -434,6 +538,14 @@ def main():
             "each GPU violation <= max(1.05 * CPU violation, CPU violation + 1e-8)",
             constraint_quality["passed"],
         ),
+        "absolute_engineering_feasibility": gate(
+            {
+                "cpu": cpu_feasibility["comparisons"],
+                "gpu": gpu_feasibility["comparisons"],
+            },
+            "both backends satisfy every named absolute violation tolerance",
+            cpu_feasibility["passed"] and gpu_feasibility["passed"],
+        ),
         "physics_evaluation_budget": gate(
             int(gpu_result.nfev),
             f"<= 1.1 * {int(cpu_result.nfev)}",
@@ -458,13 +570,16 @@ def main():
     }
 
     result = {
-        "schema_version": 3,
+        "schema_version": 4,
         "problem": spec.as_dict(),
         "objective": objective_settings,
         "solver": {
             "method": "L-BFGS-B",
             "maxiter": args.maxiter,
             "maxcor": args.maxcor,
+            "maxls": args.maxls,
+            "ftol": args.ftol,
+            "gtol": args.gtol,
             "tol": 1e-15,
             "trajectory_parity_iterations": args.trajectory_parity_iterations,
         },
@@ -486,14 +601,28 @@ def main():
             "curve_scale": 1.0,
             "convention": "physical_variables = optimizer_variables * scales",
         },
+        "initial_state": {
+            "source": (
+                "canonical_problem"
+                if args.initial_variables is None
+                else str(args.initial_variables)
+            ),
+            "physical_variables": physical_initial_x.tolist(),
+        },
         "initial_parity": initial_parity,
         "cpu": {
             "optimization": optimization_summary(cpu_result, cpu_recorder, cpu_seconds),
             "final_metrics": cpu_metrics,
+            "final_physical_variables": gpu_bridge.to_physical_variables(
+                cpu_result.x
+            ).tolist(),
         },
         "gpu": {
             "optimization": optimization_summary(gpu_result, gpu_recorder, gpu_seconds),
             "final_metrics_from_cpu_oracle": gpu_metrics,
+            "final_physical_variables": gpu_bridge.to_physical_variables(
+                gpu_result.x
+            ).tolist(),
         },
         "comparison": {
             **comparison,

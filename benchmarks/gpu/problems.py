@@ -1,8 +1,15 @@
 """Canonical problem sizes for GPU-native coil benchmarks."""
 
+import math
 from dataclasses import asdict, dataclass
 
 OBJECTIVE_SCOPES = ("core", "local-engineering", "full-engineering")
+ENGINEERING_WEIGHT_NAMES = (
+    "coil_coil_distance_weight",
+    "coil_surface_distance_weight",
+    "curvature_weight",
+    "mean_squared_curvature_weight",
+)
 
 
 @dataclass(frozen=True)
@@ -155,6 +162,18 @@ def objective_call_kwargs(metadata):
         "coil_surface_distance_weight",
     )
     return {name: metadata[name] for name in names if name in metadata}
+
+
+def scaled_engineering_weights(metadata, multiplier):
+    """Return metadata with every inequality-penalty weight scaled equally."""
+    if not math.isfinite(multiplier) or multiplier <= 0:
+        raise ValueError("engineering weight multiplier must be finite and positive")
+    scaled = dict(metadata)
+    for name in ENGINEERING_WEIGHT_NAMES:
+        if name in scaled:
+            scaled[name] = float(scaled[name]) * multiplier
+    scaled["engineering_weight_multiplier"] = float(multiplier)
+    return scaled
 
 
 def core_objective_metadata(spec: BenchmarkSpec):

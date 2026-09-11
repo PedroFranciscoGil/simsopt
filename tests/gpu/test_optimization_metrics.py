@@ -109,6 +109,24 @@ def test_upper_bound_quality_rejects_material_regression():
     assert not result["comparisons"]["metric"]["passed"]
 
 
+def test_absolute_feasibility_reports_each_constraint():
+    metrics = load_metrics_module()
+    result = metrics.absolute_feasibility(
+        {"distance": 5e-5, "curvature": 2e-3},
+        {"distance": 1e-4, "curvature": 1e-3},
+    )
+
+    assert not result["passed"]
+    assert result["comparisons"]["distance"]["passed"]
+    assert not result["comparisons"]["curvature"]["passed"]
+
+
+def test_absolute_feasibility_rejects_incompatible_schema():
+    metrics = load_metrics_module()
+    with pytest.raises(ValueError, match="schemas do not match"):
+        metrics.absolute_feasibility({"distance": 0.0}, {"curvature": 0.0})
+
+
 class ExampleObjective:
     x = None
 

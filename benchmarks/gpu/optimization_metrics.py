@@ -210,6 +210,29 @@ def upper_bound_quality(candidate, reference, relative_slack=0.05, absolute_slac
     return {"comparisons": comparisons, "passed": passed}
 
 
+def absolute_feasibility(violations, tolerances):
+    """Check named nonnegative constraint violations against physical tolerances."""
+    if violations.keys() != tolerances.keys():
+        raise ValueError("violation and tolerance schemas do not match")
+    comparisons = {}
+    passed = True
+    for name, violation in violations.items():
+        violation = float(violation)
+        tolerance = float(tolerances[name])
+        if violation < 0 or not np.isfinite(violation):
+            raise ValueError("constraint violations must be finite and nonnegative")
+        if tolerance < 0 or not np.isfinite(tolerance):
+            raise ValueError("feasibility tolerances must be finite and nonnegative")
+        item_passed = violation <= tolerance
+        comparisons[name] = {
+            "violation": violation,
+            "tolerance": tolerance,
+            "passed": item_passed,
+        }
+        passed = passed and item_passed
+    return {"comparisons": comparisons, "passed": passed}
+
+
 def export_final_design_visualization(objective, field, surface, x, output_prefix):
     """Export a final surface and all physical coils for ParaView inspection."""
     from simsopt.field.coil import coils_to_vtk

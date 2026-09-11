@@ -161,3 +161,50 @@ python benchmarks/gpu/analyze_extended_convergence.py \
 The analyzer validates the schema and required members, reads the raw-appended
 VTK surface arrays without modifying the archive, and writes
 `extended_convergence.png` and `extended_surface_field.png`.
+
+## Absolute feasibility and penalty continuation
+
+The next workflow separates physical acceptability from CPU/GPU relative
+agreement. Comparison schema 4 adds an absolute gate for the positive deficits
+of both final designs. The default allowances are 0.1 mm for either minimum-
+distance constraint and `1e-3` for the maximum-curvature and maximum-mean-
+squared-curvature excesses. These are explicit command-line policy values, not
+hidden changes to the physical objective.
+
+First, a short Cartesian sweep compares L-BFGS-B history sizes (`maxcor`) and
+line-search step limits (`maxls`). Only candidates passing initial and early-
+trajectory backend parity are eligible. The deterministic ranking minimizes,
+in order, the number of failed absolute constraints, worst and total normalized
+violation, final gradient norm, normalized-normal-field RMS, and evaluation
+count. Each candidate JSON and the sweep summary retain the CPU and GPU final
+metrics.
+
+Then the continuation runner multiplies all four engineering inequality
+penalties together while leaving flux, length, thresholds, coordinates, and
+problem resolution unchanged. The default stages use multipliers 1, 10, and
+100 for 100, 100, and 200 iterations. After each nonfinal stage, the better
+CPU/GPU endpoint under the same feasibility-first ranking becomes one common
+physical starting vector for both backends. This avoids giving either backend
+a different continuation path. Only the final stage writes VTS/VTU files.
+
+[Run the feasibility study in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_feasibility_continuation.ipynb)
+
+```sh
+OMP_NUM_THREADS=1 python benchmarks/gpu/sweep_solver_feasibility.py \
+  --problem stress --maxiter 25 \
+  --maxcor-values 10,100,300 --maxls-values 20,50 \
+  --current-scale 100000 \
+  --output-dir benchmarks/gpu/results/solver-sweep
+
+OMP_NUM_THREADS=1 python benchmarks/gpu/run_penalty_continuation.py \
+  --problem stress --penalty-multipliers 1,10,100 \
+  --stage-maxiters 100,100,200 --maxcor 100 --maxls 50 \
+  --current-scale 100000 \
+  --output-dir benchmarks/gpu/results/penalty-continuation
+```
+
+Use the actual sweep winner in the second command; `100/50` above only
+illustrates argument placement. The aggregate result is
+`penalty-continuation-summary.json`. A false feasibility or stationarity gate
+is retained as evidence and should not be converted into a passing result by
+loosening tolerances after inspection.

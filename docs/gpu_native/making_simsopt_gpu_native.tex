@@ -295,7 +295,7 @@ tiles with rematerialization, avoiding a full
 Independent fixtures compare both distance values and position/tangent
 gradients with the existing JAX definitions.  The complete composed objective,
 including linear length and all engineering penalties, matches the SIMSOPT CPU
-oracle in both reverse-pass modes.  The GPU test suite contains 60 passing
+oracle in both reverse-pass modes.  The GPU test suite contains 69 passing
 tests.  Historical scopes remain available; production now selects
 \code{full-engineering} and reports no deferred terms.
 
@@ -762,6 +762,85 @@ L-BFGS memory/line-search settings while retaining the first-25-iterate backend
 check.  A device-native L-BFGS implementation remains deferred until a common
 solver configuration reaches stationarity and feasibility; otherwise it would
 confound a solver redesign with an unresolved objective-conditioning problem.
+
+\subsection{Absolute-feasibility workflow implementation}
+
+That next experiment is now implemented, but no new NVIDIA measurements are
+claimed until its Colab archive is returned.  Comparison schema~4 adds explicit
+absolute violation tolerances: $10^{-4}$~m for both minimum-distance deficits
+and $10^{-3}$ for maximum-curvature and maximum-mean-squared-curvature excesses.
+It also records \code{maxls}, optional \code{ftol}/\code{gtol}, the common
+engineering-weight multiplier, and both final physical variable vectors.  The
+complete CPU-oracle metric snapshots and visualization contract remain
+mandatory.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw,rounded corners,align=center,minimum height=8mm,
+              inner xsep=4mm,fill=blue!7,font=\scriptsize},
+  decision/.style={draw,rounded corners,align=center,minimum height=8mm,
+              inner xsep=4mm,fill=orange!14,font=\scriptsize},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box,text width=43mm] (sweep) at (0,0) {six short CPU/GPU runs\\
+  $m\in\{10,100,300\}$, $\ell\in\{20,50\}$};
+\node[decision,text width=33mm] (rank) at (5.2,0)
+  {parity filter\\feasibility-first rank};
+\node[box,text width=27mm] (p1) at (9.5,0)
+  {$1\times$ penalties\\100 iterations};
+\node[box,text width=27mm] (p10) at (9.5,-1.7)
+  {$10\times$ penalties\\100 iterations};
+\node[box,text width=27mm] (p100) at (5.2,-1.7)
+  {$100\times$ penalties\\200 iterations};
+\node[decision,text width=36mm] (gate) at (0,-1.7)
+  {absolute feasibility\\stationarity + quality};
+\draw[flow] (sweep) -- (rank);
+\draw[flow] (rank) -- (p1);
+\draw[flow] (p1) -- (p10);
+\draw[flow] (p10) -- (p100);
+\draw[flow] (p100) -- (gate);
+\end{tikzpicture}
+\caption{Implemented solver-setting sweep and synchronized penalty
+continuation.  CPU and GPU always start a stage from the same physical vector;
+only the final stage exports the two VTS/VTU design pairs.}
+\label{fig:feasibility-workflow}
+\end{figure}
+
+The solver sweep evaluates the Cartesian product of L-BFGS memory
+\code{maxcor} and line-search budget \code{maxls}.  A candidate is eligible only
+after initial and first-25-iterate parity checks.  Its lexicographic rank is the
+number of failed absolute constraints, maximum and sum of tolerance-normalized
+violations, maximum final gradient norm, worst CPU/GPU normalized-normal-field
+RMS, and combined function-evaluation count.  This explicitly prevents a fast
+but physically unacceptable candidate from winning.
+
+Penalty continuation uses default multipliers $1,10,100$ with iteration budgets
+$100,100,200$.  All four inequality weights---coil--coil distance,
+coil--surface distance, curvature, and mean-squared curvature---change together;
+thresholds, flux, length weight, resolution, and current scaling do not.  At a
+stage boundary, the endpoint with the better feasibility-first rank supplies
+one physical restart vector to \emph{both} backends.  Every stage stores both
+final objective/field/constraint snapshots and its selected restart provenance.
+The aggregate acceptance requires an actual GPU, initial and early parity at
+every stage, final absolute feasibility, stationary convergence, and final
+normal-field quality.
+
+The checked-in Colab notebook executes 69 GPU tests, performs the six-candidate
+sweep, feeds its winner into the three-stage continuation, validates all four
+final VTK files, and downloads one self-contained archive even when a scientific
+gate fails.  A two-stage, one-iteration CPU-fallback smoke test has exercised
+restart serialization, schema~4, absolute-gate reporting, aggregate summaries,
+and VTS/VTU export; its timing and feasibility outcome are deliberately not
+treated as production evidence.
+
+\textbf{Decision.}  Run the new Colab workflow unchanged and analyze the
+returned archive before changing tolerances or implementing a native solver.
+If continuation attains feasibility and stationarity, the next controlled
+experiment is a device-resident L-BFGS implementation against this SciPy
+baseline.  If it does not, the next implementation should be explicit
+constraint handling (most likely an augmented Lagrangian), not still larger
+penalty weights.
 \endgroup
 
 \section{Opportunities to improve coil quality}

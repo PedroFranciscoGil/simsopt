@@ -65,11 +65,22 @@ def measure(operation, warmup, repeats):
     }
 
 
-def build_problem(spec, regularized=None, local_engineering=False):
+def build_problem(
+    spec, regularized=None, local_engineering=False, objective_settings=None
+):
     if regularized is None:
         regularized = spec.regularized
     if regularized and local_engineering:
         raise ValueError("regularized and local_engineering are mutually exclusive")
+    if objective_settings is None:
+        scope = (
+            "full-engineering"
+            if regularized
+            else "local-engineering"
+            if local_engineering
+            else "core"
+        )
+        objective_settings = objective_metadata(spec, scope)
     surface = SurfaceRZFourier.from_vmec_input(
         SURFACE_FILE,
         range="half period",
@@ -99,10 +110,19 @@ def build_problem(spec, regularized=None, local_engineering=False):
         components.update(
             {
                 "curvature": sum(
-                    LpCurveCurvature(curve, 2, 5.0) for curve in base_curves
+                    LpCurveCurvature(
+                        curve,
+                        2,
+                        objective_settings["curvature_threshold"],
+                    )
+                    for curve in base_curves
                 ),
                 "mean_squared_curvature_penalty": sum(
-                    QuadraticPenalty(MeanSquaredCurvature(curve), 5.0, "max")
+                    QuadraticPenalty(
+                        MeanSquaredCurvature(curve),
+                        objective_settings["mean_squared_curvature_threshold"],
+                        "max",
+                    )
                     for curve in base_curves
                 ),
             }
@@ -116,26 +136,37 @@ def build_problem(spec, regularized=None, local_engineering=False):
         components.update(
             {
                 "coil_coil_distance": CurveCurveDistance(
-                    all_curves, 0.1, num_basecurves=spec.ncoils
+                    all_curves,
+                    objective_settings["coil_coil_distance_threshold"],
+                    num_basecurves=spec.ncoils,
                 ),
-                "coil_surface_distance": CurveSurfaceDistance(all_curves, surface, 0.3),
+                "coil_surface_distance": CurveSurfaceDistance(
+                    all_curves,
+                    surface,
+                    objective_settings["coil_surface_distance_threshold"],
+                ),
             }
         )
         objective = (
             flux
-            + 1e-6 * components["curve_length_sum"]
-            + 1000.0 * components["coil_coil_distance"]
-            + 10.0 * components["coil_surface_distance"]
-            + 1e-6 * components["curvature"]
-            + 1e-6 * components["mean_squared_curvature_penalty"]
+            + objective_settings["length_weight"] * components["curve_length_sum"]
+            + objective_settings["coil_coil_distance_weight"]
+            * components["coil_coil_distance"]
+            + objective_settings["coil_surface_distance_weight"]
+            * components["coil_surface_distance"]
+            + objective_settings["curvature_weight"] * components["curvature"]
+            + objective_settings["mean_squared_curvature_weight"]
+            * components["mean_squared_curvature_penalty"]
         )
     elif local_engineering:
         objective = (
             flux
             + QuadraticPenalty(components["curve_length_sum"], 18.0, "max")
-            + 1e-6 * components["curvature"]
-            + 1e-6 * components["mean_squared_curvature_penalty"]
-            + 1e-9 * components["arclength_variation"]
+            + objective_settings["curvature_weight"] * components["curvature"]
+            + objective_settings["mean_squared_curvature_weight"]
+            * components["mean_squared_curvature_penalty"]
+            + objective_settings["arclength_variation_weight"]
+            * components["arclength_variation"]
         )
     else:
         objective = flux + QuadraticPenalty(components["curve_length_sum"], 18.0, "max")
