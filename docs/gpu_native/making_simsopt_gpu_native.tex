@@ -264,7 +264,7 @@ tiles with rematerialization, avoiding a full
 Independent fixtures compare both distance values and position/tangent
 gradients with the existing JAX definitions.  The complete composed objective,
 including linear length and all engineering penalties, matches the SIMSOPT CPU
-oracle in both reverse-pass modes.  The GPU test suite contains 46 passing
+oracle in both reverse-pass modes.  The GPU test suite contains 51 passing
 tests.  Historical scopes remain available; production now selects
 \code{full-engineering} and reports no deferred terms.
 
@@ -285,6 +285,12 @@ call transfers only the flat vector, scalar, and gradient.  A trajectory harness
 runs identical L-BFGS-B settings through CPU and GPU paths, records evaluations
 and accepted iterates, and rechecks both final designs with the CPU metric
 oracle.  Section~\ref{sec:trajectory} records the production result.
+
+The bridge also supports an explicit diagonal current transform
+$I=s_I z_I$, with $\nabla_{z_I}J=s_I\nabla_IJ$.  Its default $s_I=1$ preserves
+the original coordinates; the convergence workflow uses $s_I=10^5$ amperes so
+currents and curve coefficients are numerically comparable without changing the
+physical objective.
 
 \textbf{Exit criterion:} equivalent metrics, equal evaluation counts, and the
 GPU speed advantage are demonstrated over a 25-iteration trajectory.  A longer
@@ -534,11 +540,14 @@ the final gradient norm was 0.221 and both returned the iteration-limit status.
 
 \textbf{Decision.}  Accept the SciPy bridge: trajectory parity, engineering
 metrics, evaluation budget, and steady optimization speed all pass.  Do not
-interpret this capped run as a stationary solution.  Before comparing native
-solvers, extend the convergence experiment and address variable scaling,
-especially the raw $10^5$-ampere current coordinates used by the intermediate
-example.  Solver conclusions must use converged engineering metrics and report
-compile-amortized as well as warm-start time.
+interpret this capped run as a stationary solution.  Current scaling is now
+implemented with the same exact transform on CPU and GPU.  A local three-step
+smoke test at $s_I=10^5$ moved the currents, matched final objectives to
+$3.5\times10^{-18}$, and kept every oracle metric within $3.9\times10^{-15}$.
+The new Colab workflow raises the cap to 100 iterations and adds an explicit
+stationarity gate: both runs must report success with gradient norm at most
+$10^{-5}$.  Native-solver comparisons remain blocked on that NVIDIA result and
+must report compile-amortized as well as warm-start time.
 \endgroup
 
 \section{Opportunities to improve coil quality}

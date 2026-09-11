@@ -97,3 +97,21 @@ checks the two final designs through the CPU engineering-metric oracle.
       --target-tile-size 1024 \
       --source-tile-size 4320 \
       --output benchmarks/gpu/results/stress-scipy-trajectory.json
+
+## Scaled convergence experiment
+
+The follow-up keeps the physical objective unchanged while mapping one current
+coordinate unit to 100,000 amperes. Both CPU and GPU gradients receive the
+corresponding exact diagonal chain-rule factor. This addresses the scale
+separation between raw current and curve coordinates before any native solver
+comparison.
+
+[Run the scaled convergence experiment in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_scaled_convergence.ipynb)
+
+    OMP_NUM_THREADS=1 python benchmarks/gpu/compare_scipy_trajectories.py \
+      --problem stress \
+      --maxiter 100 \
+      --current-scale 100000 \
+      --target-tile-size 1024 \
+      --source-tile-size 4320 \
+      --output benchmarks/gpu/results/stress-scaled-convergence.json

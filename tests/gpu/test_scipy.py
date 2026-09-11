@@ -68,6 +68,30 @@ def test_coil_scipy_bridge_preserves_fixed_currents_and_simsopt_order():
     assert final_currents[1] == 20.0
 
 
+def test_coil_scipy_bridge_applies_current_coordinate_scale_and_chain_rule():
+    data = ExampleCoilData()
+    bridge = ScipyCoilObjectiveBridge(
+        data,
+        free_current_indices=[2],
+        objective_kwargs={"targets": np.zeros(6)},
+        current_scale=10.0,
+    )
+
+    np.testing.assert_array_equal(bridge.initial_x, [3.0, 1.0, 2.0, 3.0, 4.0])
+    np.testing.assert_array_equal(bridge.coordinate_scales, [10.0, 1, 1, 1, 1])
+    np.testing.assert_array_equal(
+        bridge.to_physical_variables(bridge.initial_x), bridge.physical_initial_x
+    )
+    _, currents = bridge.unpack(bridge.initial_x)
+    np.testing.assert_array_equal(currents, data.base_currents)
+    np.testing.assert_array_equal(
+        bridge.pullback_gradient(np.ones(5)), [10.0, 1, 1, 1, 1]
+    )
+    value, gradient = bridge(bridge.initial_x)
+    assert value == 515.0
+    np.testing.assert_array_equal(gradient, [300.0, 1.0, 2.0, 3.0, 4.0])
+
+
 @pytest.mark.parametrize("indices", [[1, 1], [-1], [3]])
 def test_coil_scipy_bridge_validates_free_current_indices(indices):
     with pytest.raises(ValueError, match="free_current_indices"):
@@ -75,4 +99,15 @@ def test_coil_scipy_bridge_validates_free_current_indices(indices):
             ExampleCoilData(),
             free_current_indices=indices,
             objective_kwargs={"targets": np.zeros(6)},
+        )
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, np.inf, np.nan])
+def test_coil_scipy_bridge_validates_current_scale(scale):
+    with pytest.raises(ValueError, match="current_scale"):
+        ScipyCoilObjectiveBridge(
+            ExampleCoilData(),
+            free_current_indices=[2],
+            objective_kwargs={"targets": np.zeros(6)},
+            current_scale=scale,
         )

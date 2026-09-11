@@ -24,6 +24,12 @@ def parse_args():
     parser.add_argument("--target-tile-size", type=int, default=1024)
     parser.add_argument("--source-tile-size", type=int, default=4320)
     parser.add_argument("--vjp-mode", choices=("autodiff", "custom"), default="custom")
+    parser.add_argument(
+        "--current-scale",
+        type=float,
+        default=1.0,
+        help="Physical amperes represented by one free-current coordinate unit.",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--allow-non-gpu",
@@ -35,6 +41,8 @@ def parse_args():
         parser.error("maxiter and maxcor must be positive")
     if args.target_tile_size < 1 or args.source_tile_size < 1:
         parser.error("tile sizes must be positive")
+    if not np.isfinite(args.current_scale) or args.current_scale <= 0:
+        parser.error("current-scale must be finite and positive")
     return args
 
 
@@ -139,9 +147,11 @@ def oracle_metrics(objective, components, base_curves, field, surface, x):
         "maximum_absolute_normal_field": float(np.max(np.abs(normal_field))),
         "minimum_coil_coil_distance": float(coil_coil.shortest_distance()),
         "minimum_coil_surface_distance": float(coil_surface.shortest_distance()),
-        "maximum_curvature": float(
-            max(np.max(curve.kappa()) for curve in base_curves)
-        ),
+        "maximum_curvature": float(max(np.max(curve.kappa()) for curve in base_curves)),
+        "base_current_values_amperes": [
+            float(field.coils[index].current.get_value())
+            for index in range(len(base_curves))
+        ],
     }
 
 
@@ -173,9 +183,7 @@ def compare_trajectories(cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfr
         "maximum_iteration_objective_absolute_error": max(
             objective_errors, default=0.0
         ),
-        "maximum_iteration_current_relative_l2_error": max(
-            current_errors, default=0.0
-        ),
+        "maximum_iteration_current_relative_l2_error": max(current_errors, default=0.0),
         "maximum_iteration_curve_relative_l2_error": max(curve_errors, default=0.0),
         "final_objective_absolute_error": abs(
             float(cpu_result.fun) - float(gpu_result.fun)
@@ -190,11 +198,12 @@ def compare_trajectories(cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfr
 
 
 def metric_relative_errors(gpu_metrics, cpu_metrics):
-    return {
-        name: abs(gpu_metrics[name] - cpu_metrics[name])
-        / max(abs(cpu_metrics[name]), 1e-12)
-        for name in cpu_metrics
-    }
+    errors = {}
+    for name in cpu_metrics:
+        actual = np.asarray(gpu_metrics[name])
+        expected = np.asarray(cpu_metrics[name])
+        errors[name] = relative_error(actual, expected, floor=1e-12)
+    return errors
 
 
 def gate(measured, threshold, passed):
@@ -228,11 +237,7 @@ def main():
     )
     base_current_objects = [field.coils[index].current for index in range(spec.ncoils)]
     free_current_indices = np.asarray(
-        [
-            index
-            for index, current in enumerate(base_current_objects)
-            if current.x.size
-        ],
+        [index for index, current in enumerate(base_current_objects) if current.x.size],
         dtype=np.int32,
     )
     ntarget = surface.gamma().size // 3
@@ -254,11 +259,16 @@ def main():
         data,
         free_current_indices=free_current_indices,
         objective_kwargs=objective_call_kwargs(objective_settings),
+        current_scale=args.current_scale,
         config=config,
     )
-    initial_x = cpu_objective.x.copy()
-    if initial_x.shape != gpu_bridge.initial_x.shape or not np.array_equal(
-        initial_x, gpu_bridge.initial_x
+    physical_initial_x = cpu_objective.x.copy()
+    initial_x = gpu_bridge.initial_x.copy()
+    if physical_initial_x.shape != initial_x.shape or not np.allclose(
+        physical_initial_x,
+        gpu_bridge.to_physical_variables(initial_x),
+        rtol=1e-14,
+        atol=0.0,
     ):
         raise RuntimeError("GPU flat variables do not match SIMSOPT's dof ordering")
 
@@ -266,9 +276,9 @@ def main():
     gpu_bridge.compile()
     compilation_seconds = time.perf_counter() - compile_start
 
-    cpu_objective.x = initial_x
+    cpu_objective.x = physical_initial_x
     initial_cpu_value = float(cpu_objective.J())
-    initial_cpu_gradient = np.asarray(cpu_objective.dJ())
+    initial_cpu_gradient = gpu_bridge.pullback_gradient(cpu_objective.dJ())
     initial_gpu_value, initial_gpu_gradient = gpu_bridge(initial_x)
     initial_parity = {
         "value_absolute_error": abs(initial_gpu_value - initial_cpu_value),
@@ -278,8 +288,8 @@ def main():
     }
 
     def cpu_function(x):
-        cpu_objective.x = x
-        return cpu_objective.J(), cpu_objective.dJ()
+        cpu_objective.x = gpu_bridge.to_physical_variables(x)
+        return cpu_objective.J(), gpu_bridge.pullback_gradient(cpu_objective.dJ())
 
     options = {"maxiter": args.maxiter, "maxcor": args.maxcor}
     cpu_recorder = TrajectoryRecorder(cpu_function)
@@ -295,7 +305,12 @@ def main():
     )
     cpu_seconds = time.perf_counter() - cpu_start
     cpu_metrics = oracle_metrics(
-        cpu_objective, components, base_curves, field, surface, cpu_result.x
+        cpu_objective,
+        components,
+        base_curves,
+        field,
+        surface,
+        gpu_bridge.to_physical_variables(cpu_result.x),
     )
 
     gpu_recorder = TrajectoryRecorder(gpu_bridge)
@@ -311,7 +326,12 @@ def main():
     )
     gpu_seconds = time.perf_counter() - gpu_start
     gpu_metrics = oracle_metrics(
-        cpu_objective, components, base_curves, field, surface, gpu_result.x
+        cpu_objective,
+        components,
+        base_curves,
+        field,
+        surface,
+        gpu_bridge.to_physical_variables(gpu_result.x),
     )
 
     comparison = compare_trajectories(
@@ -358,6 +378,19 @@ def main():
             f"<= 1.1 * {int(cpu_result.nfev)}",
             gpu_result.nfev <= math.ceil(1.1 * cpu_result.nfev),
         ),
+        "stationary_convergence": gate(
+            {
+                "cpu_success": bool(cpu_result.success),
+                "gpu_success": bool(gpu_result.success),
+                "cpu_gradient_norm": float(np.linalg.norm(cpu_result.jac)),
+                "gpu_gradient_norm": float(np.linalg.norm(gpu_result.jac)),
+            },
+            {"both_success": True, "maximum_gradient_norm": 1e-5},
+            cpu_result.success
+            and gpu_result.success
+            and np.linalg.norm(cpu_result.jac) <= 1e-5
+            and np.linalg.norm(gpu_result.jac) <= 1e-5,
+        ),
         "optimization_speedup": gate(
             optimization_speedup, 3.0, optimization_speedup >= 3.0
         ),
@@ -386,17 +419,18 @@ def main():
             "vjp_mode": config.vjp_mode,
             "compilation_seconds": compilation_seconds,
         },
+        "coordinate_scaling": {
+            "current_scale_amperes": args.current_scale,
+            "curve_scale": 1.0,
+            "convention": "physical_variables = optimizer_variables * scales",
+        },
         "initial_parity": initial_parity,
         "cpu": {
-            "optimization": optimization_summary(
-                cpu_result, cpu_recorder, cpu_seconds
-            ),
+            "optimization": optimization_summary(cpu_result, cpu_recorder, cpu_seconds),
             "final_metrics": cpu_metrics,
         },
         "gpu": {
-            "optimization": optimization_summary(
-                gpu_result, gpu_recorder, gpu_seconds
-            ),
+            "optimization": optimization_summary(gpu_result, gpu_recorder, gpu_seconds),
             "final_metrics_from_cpu_oracle": gpu_metrics,
         },
         "comparison": {
