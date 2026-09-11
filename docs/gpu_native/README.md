@@ -1,7 +1,9 @@
-# Making SIMSOPT GPU native
+# GPU-native SIMSOPT documentation
 
-The project plan is maintained in
-`making_simsopt_gpu_native.tex`.
+The living implementation report is maintained in
+`making_simsopt_gpu_native.tex`. Its length is determined by the material: new
+benchmark results, figures, and design decisions should be added rather than
+compressed to meet a fixed page count.
 
 Build the PDF from this directory with:
 

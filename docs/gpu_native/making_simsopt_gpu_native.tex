@@ -6,6 +6,7 @@
 \usepackage{lmodern}
 \usepackage{microtype}
 \usepackage{amsmath,amssymb}
+\usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{longtable}
 \usepackage{enumitem}
@@ -294,7 +295,7 @@ tiles with rematerialization, avoiding a full
 Independent fixtures compare both distance values and position/tangent
 gradients with the existing JAX definitions.  The complete composed objective,
 including linear length and all engineering penalties, matches the SIMSOPT CPU
-oracle in both reverse-pass modes.  The GPU test suite contains 58 passing
+oracle in both reverse-pass modes.  The GPU test suite contains 60 passing
 tests.  Historical scopes remain available; production now selects
 \code{full-engineering} and reports no deferred terms.
 
@@ -488,7 +489,7 @@ ten synchronized evaluations after three warm-up calls.
 \begin{axis}[
   width=0.94\linewidth,height=4.2cm,ybar,bar width=10pt,
   ylabel={speedup over CPU},
-  symbolic x coords={Minimal,Core,Full,25-step,Scaled},xtick=data,
+  symbolic x coords={Minimal,Core,Full,25-step,Scaled,Extended},xtick=data,
   xticklabel style={rotate=28,anchor=east,font=\tiny},
   tick label style={font=\tiny},label style={font=\scriptsize},
   ymin=0,ymax=11.5,enlarge x limits=0.10,
@@ -497,9 +498,9 @@ ten synchronized evaluations after three warm-up calls.
 ]
 \addplot[fill=green!55!black,draw=green!35!black]
  coordinates {(Minimal,1.974) (Core,2.752) (Full,10.256)
-              (25-step,3.433) (Scaled,3.476)};
+              (25-step,3.433) (Scaled,3.476) (Extended,3.141)};
 \draw[densely dashed,red!75!black,thick]
-  (axis cs:Minimal,3) -- (axis cs:Scaled,3)
+  (axis cs:Minimal,3) -- (axis cs:Extended,3)
   node[pos=.10,above,font=\tiny] {$3\times$ gate};
 \end{axis}
 \end{tikzpicture}
@@ -507,7 +508,7 @@ ten synchronized evaluations after three warm-up calls.
 \caption{Measured Tesla T4 progress.  Left: scaled CPU/GPU objective histories
 remain close initially and separate late in the nonconverged run.  Right: warm speedups
 for the minimal objective, production core, full engineering objective,
-25-step solve, and 100-step scaled solve.}
+25-step solve, 100-step scaled solve, and 300-step extended solve.}
 \label{fig:performance}
 \end{figure}
 
@@ -657,6 +658,110 @@ now extends the cap to 300: backend validation uses the first 25 iterates, while
 solver acceptance uses stationarity, final normalized-field quality, and
 constraint violations rather than identical late iterates.  It also exports
 both final surfaces and coil sets for ParaView.
+
+\subsection{Extended convergence and final-field result}
+
+The 300-iteration workflow ran on 11 September 2026 from revision
+\code{c7a622674050} on a Tesla T4 with 15,360 MiB.  The supplied archive has
+SHA-256 digest
+\nolinkurl{3ec3be9f43704a858087a48e0e32bb9bde954ea1ac307cdb3a7317642ce2f139}.
+It contains schema-3 JSON and nonempty CPU/GPU surface and coil VTK files.  The
+stress problem has 455 optimization variables, 4,320 source points, 16,384
+surface points, $1024\times4320$ custom-VJP tiles, and current scale $10^5$ A.
+
+Initial float64 value and gradient parity passed at zero and
+$6.01\times10^{-16}$ error, respectively.  Over the first 25 accepted iterates,
+maximum objective error was $3.08\times10^{-11}$ and maximum curve-state
+relative error $5.13\times10^{-10}$, comfortably inside the backend contract.
+Thereafter the nonconvex trajectories separated.  Figure~\ref{fig:extended-convergence}
+shows that both continued to reduce the objective; the GPU path became better
+from iteration 161 onward.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/extended_convergence.png}
+\caption{Extended T4 convergence from the archived accepted-iterate histories.
+The shaded region is the 25-iteration backend-parity window.  Later differences
+are solver-path differences; both gradients remain above the stationarity gate.}
+\label{fig:extended-convergence}
+\end{figure}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Optimization measurement & CPU & GPU \\
+\midrule
+Iterations & 300 & 300 \\
+Physics evaluations & 378 & 436 \\
+Wall time (s) & 420.056 & 133.737 \\
+Median evaluation time (s) & 1.04475 & 0.30133 \\
+Final objective & $3.03442\times10^{-5}$ & $2.88096\times10^{-5}$ \\
+Final gradient norm & $6.40029\times10^{-4}$ & $4.76719\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The warm optimization speedup is $3.141\times$, and $2.989\times$ including
+the $6.778$ s compilation.  Per-evaluation medians differ by $3.467\times$.
+However, the GPU path required 15.34\% more physics evaluations, missing the
+10\% evaluation-budget gate.  Both solvers stopped at the iteration cap and
+missed the $10^{-5}$ stationarity gate.  Thus the result establishes useful
+end-to-end acceleration, but not converged-solver equivalence.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Final CPU-oracle metric & Limit & CPU & GPU \\
+\midrule
+Mean $|B\cdot n|/|B|$ & -- & 0.000973 & 0.000730 \\
+RMS $|B\cdot n|/|B|$ & -- & 0.001215 & 0.000917 \\
+Maximum $|B\cdot n|/|B|$ & -- & 0.004286 & 0.003241 \\
+Minimum coil--coil distance & 0.100 & 0.099917 & 0.099912 \\
+Minimum coil--surface distance & 0.300 & 0.299702 & 0.298478 \\
+Maximum curvature & 5.000 & 5.323129 & 5.478761 \\
+Maximum mean-squared curvature & 5.000 & 5.126890 & 5.166965 \\
+Total base-coil length & -- & 29.239720 & 28.210168 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The GPU final design improves mean, RMS, and maximum normalized normal field by
+25.0\%, 24.5\%, and 24.4\%, so the normal-field quality gate passes.  It does
+not pass the relative engineering-quality gate: its coil--surface deficit is
+1.522 mm versus 0.298 mm on CPU, maximum curvature violation is 0.479 versus
+0.323, and mean-squared-curvature violation is 0.167 versus 0.127.  Neither
+design is strictly feasible.  The raw objective favors the GPU design partly
+through a trade toward flux and shorter coils; this is consistent with the
+$10^{-6}$ curvature-family weights being too small to enforce the stated
+engineering limits.
+
+The VTS files contain signed and absolute $(B\cdot n)/|B|$, raw $B\cdot n$,
+and $|B|$ at all 16,384 surface points; the VTU files contain all 24 physical
+coils and their currents.  Figure~\ref{fig:extended-field} visualizes the signed
+surface arrays.  The GPU design has smaller absolute error at 61.5\% of points.
+The maps have signed correlation 0.648 and relative $L^2$ difference 0.772;
+these compare two different final coil sets and must not be interpreted as a
+fixed-state backend-parity error.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/extended_surface_field.png}
+\caption{Archived final normalized normal-field maps.  CPU and GPU panels share
+one color scale; the difference panel has its own symmetric scale.  The visible
+pattern change is consistent with the 3.24\% final curve-state difference after
+the two L-BFGS-B paths separated.}
+\label{fig:extended-field}
+\end{figure}
+
+\textbf{Decision.}  Accept the GPU objective's parity, VTK export, final
+normal-field quality, and $3\times$ warm end-to-end performance.  Do not accept
+the optimization milestone as converged or engineering-feasible.  Merely raising
+the iteration cap again is not the next experiment.  First add an absolute
+feasibility gate, run a documented penalty-weight continuation, and sweep
+L-BFGS memory/line-search settings while retaining the first-25-iterate backend
+check.  A device-native L-BFGS implementation remains deferred until a common
+solver configuration reaches stationarity and feasibility; otherwise it would
+confound a solver redesign with an unresolved objective-conditioning problem.
 \endgroup
 
 \section{Opportunities to improve coil quality}
@@ -725,6 +830,15 @@ hardware and precision, parity tolerances, synchronized warm/cold timings, peak
 memory, profiler evidence, and unsupported terms.  Integration will periodically
 rebase on or merge a pinned \code{upstream/master} without force-updating the
 fork's existing \code{master} branch.
+
+\section{Documentation policy}
+
+This is a living engineering report, not a fixed-length deliverable.  New
+measurements, convergence plots, profiler evidence, visualizations, rejected
+alternatives, and implementation decisions will be retained whenever they help
+explain the state of the project.  Concision remains useful, but there is no
+nine-page limit.  The report concentrates on project-specific implementation
+evidence and decisions.
 
 \paragraph{References.}
 

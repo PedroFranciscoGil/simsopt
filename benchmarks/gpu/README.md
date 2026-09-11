@@ -149,3 +149,15 @@ data. The downloaded archive also contains CPU and GPU `.vts` surfaces and
       --source-tile-size 4320 \
       --visualization-dir benchmarks/gpu/results/extended-visualization \
       --output benchmarks/gpu/results/stress-extended-convergence.json
+
+Generate the convergence and surface-field figures used by the project report
+directly from the downloaded archive with:
+
+```sh
+python benchmarks/gpu/analyze_extended_convergence.py \
+  simsopt-extended-convergence.zip docs/gpu_native/figures
+```
+
+The analyzer validates the schema and required members, reads the raw-appended
+VTK surface arrays without modifying the archive, and writes
+`extended_convergence.png` and `extended_surface_field.png`.
