@@ -226,8 +226,8 @@ the profiler shows no host transfer inside the compiled field call.
 
 \subsection{Phase 3: memory-bounded reverse pass}
 
-The ordinary reverse-mode implementation remains the reference.  An opt-in
-\code{GpuConfig(vjp\_mode="custom")} path now supplies a custom VJP that
+The ordinary reverse-mode implementation remains the reference.  Setting
+\code{vjp\_mode="custom"}, now the default, supplies a custom VJP that
 analytically contracts the field cotangent with each target--source pair.  It
 returns cotangents for target points, curve positions, curve tangents, and
 currents; it stores only the primal inputs and recomputes pair interactions in
@@ -237,11 +237,12 @@ against full-tensor autodiff, and a centered directional-derivative test covers
 their joint contraction.  Because JAX custom VJPs do not provide a forward-mode
 rule, the ordinary field function remains available for JVP use.
 
-The autotuner now treats reverse-pass mode as another candidate dimension and
-always confirms both the best ordinary-autodiff result and the current default.
-The library default remains ordinary autodiff until NVIDIA timing and memory
-evidence demonstrates an advantage.  Selection uses total value-and-gradient
-time and peak memory, not forward time alone.
+The autotuner treats reverse-pass mode as another candidate dimension and
+always confirms both the best ordinary-autodiff result and the original
+baseline.  NVIDIA results in Section~\ref{sec:first-profile} motivated promotion
+of the custom VJP for composed reverse-mode objectives.  The ordinary field
+function remains the public path for forward-mode use.  Selection uses total
+value-and-gradient time and peak memory, not forward time alone.
 
 \textbf{Exit criterion:} directional derivatives pass centered finite-
 difference/Taylor tests and agree with the existing analytic VJP over random and
@@ -379,54 +380,56 @@ passed the minimal-case parity, residency, and memory gates and identified
 launch granularity and reverse-pass state movement as optimization targets;
 without a timed CPU baseline it did not establish a speedup.
 
-\subsection{Automated tile sweep}
+\subsection{Automated tile and reverse-pass sweeps}
 
 A second T4 run from revision \code{63a6631f3146} screened all 25 combinations
 of five target and five source tile sizes.  All candidates passed the objective
-and gradient gates.  The fastest three and the original default were then
-measured for ten synchronized evaluations after three warm-up calls.
+and gradient gates and identified $512\times1200$ as the best ordinary-autodiff
+configuration.  A third run from revision \code{45bb1e86fac7} jointly screened
+the same tiles with ordinary autodiff and the custom VJP.  All 50 candidates
+passed parity; the leading candidates and reference paths were confirmed with
+ten synchronized evaluations after three warm-up calls.
 
 \begin{table}[htbp]
   \centering
-  \caption{Confirmed tile candidates on the minimal T4 workload.}
-  \begin{tabular}{rrrr}
+  \caption{Confirmed progression on the minimal T4 workload.}
+  \begin{tabular}{lrrr}
     \toprule
-    Target tile & Source tile & Tile iterations & Median (ms) \\
+    Path & Target tile & Source tile & Median (ms) \\
     \midrule
-    512 & 1200 & 2  & 12.685 \\
-    256 & 1200 & 4  & 12.921 \\
-    128 & 1200 & 8  & 13.645 \\
-    128 & 256  & 40 & 21.684 \\
+    Original autodiff & 128  & 256  & 21.483 \\
+    Tuned autodiff    & 512  & 1200 & 12.489 \\
+    Custom VJP        & 1024 & 1200 &  7.979 \\
+    CPU reference     & --   & --   & 15.751 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-The confirmed $512\times1200$ winner is $1.709\times$ faster than the
-$128\times256$ default in the same sweep.  Its coefficient of variation is
-0.484\%.  A separate trace run reproduced a $12.596\ \mathrm{ms}$ median and
-the CPU-pinned, one-thread SIMSOPT reference measured $17.300\ \mathrm{ms}$
-median, giving a provisional $1.364\times$ GPU speedup.  The five CPU samples
-have 6.99\% variation and no affinity control, so this is not yet the tuned CPU
-comparison required by the speed gate.  The one-tile $1024\times1200$
-candidate took $21.236\ \mathrm{ms}$ in screening; minimizing tile count alone
-therefore does not maximize throughput.
+The custom winner is $1.565\times$ faster than tuned autodiff,
+$2.692\times$ faster than the original configuration, and provisionally
+$1.974\times$ faster than the CPU-pinned one-thread reference.  Its confirmation
+coefficient of variation is 2.31\%; a separate profile reproduced a
+$7.996\ \mathrm{ms}$ median with 0.393\% variation.  Compilation takes
+$1.567\ \mathrm{s}$, equivalent to approximately 196 steady evaluations.
+Float64 parity remains at rounding scale: objective absolute error is
+$6.94\times10^{-18}$ and curve- and current-gradient relative errors are
+$5.32\times10^{-16}$ and $1.92\times10^{-16}$.
 
-The winning trace reduces device-to-device copies from 130 to two per
-evaluation and command-buffer executions from 148 to nine.  Across three
-profiled calls, GPU-stream span falls from $58.71$ to $28.30\ \mathrm{ms}$ and
-summed GPU activity from $53.91$ to $27.10\ \mathrm{ms}$.  Peak memory rises
-from 150.27 to 256.03 MiB, but remains only 2.29\% of the JAX device limit.
-Float64 parity remains at rounding scale: the objective absolute error is
-$6.94\times10^{-18}$ and the curve- and current-gradient relative errors are
-$5.30\times10^{-16}$ and $1.11\times10^{-16}$.
+The one-tile custom trace contains no memcpy event and only one command-buffer
+execution per evaluation, down from 130 copies and 148 command buffers in the
+original path.  Across three calls, GPU-stream span is $23.85\ \mathrm{ms}$ and
+summed GPU activity is $23.14\ \mathrm{ms}$.  Peak memory is 100.14 MiB, 0.90\%
+of the JAX device limit and 61\% below the 256.03 MiB tuned-autodiff profile.
+The dominant events are now the inverse-distance power and reduction kernels.
 
-\textbf{Decision.}  Use $512\times1200$ for subsequent profiling of this
-specific minimal problem on the T4.  Do not change the library-wide defaults
-until the engineering and stress workloads and a stronger float64 accelerator
-have been swept.  The custom Biot--Savart VJP is now implemented as an opt-in
-candidate; the next NVIDIA run will jointly sweep it against ordinary autodiff.
-The production-size test and tuned CPU baseline remain necessary before
-evaluating the $3\times$ speed gate.
+\textbf{Decision.}  Promote the custom VJP to the default for composed
+reverse-mode objectives and use $1024\times1200$ for this minimal T4 case.
+Keep conservative library-wide tile defaults until engineering and stress
+workloads and a stronger float64 accelerator have been swept.  Keep ordinary
+\code{biot\_savart\_field} for forward-mode JVPs.  The next gate is scaling on
+larger workloads; low-level kernel specialization will follow only if their
+profiles show the same arithmetic bottleneck.  The production-size test and a
+tuned CPU baseline remain necessary before evaluating the $3\times$ speed gate.
 
 \section{Opportunities to improve coil quality}
 
@@ -528,6 +531,9 @@ The following sequence is suitable for the first project board or milestone:
 \section{References}
 
 \begin{thebibliography}{9}
+\footnotesize
+\setlength{\itemsep}{0pt}
+\setlength{\parskip}{0pt}
 \bibitem{simsopt}
 SIMSOPT repository,
 \url{https://github.com/hiddenSymmetries/simsopt}.

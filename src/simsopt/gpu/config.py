@@ -19,7 +19,7 @@ class GpuConfig:
     dtype: str = "float64"
     target_tile_size: int = 128
     source_tile_size: int = 256
-    vjp_mode: str = "autodiff"
+    vjp_mode: str = "custom"
 
     def __post_init__(self):
         if self.dtype not in ("float32", "float64"):

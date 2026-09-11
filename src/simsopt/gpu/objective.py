@@ -27,7 +27,7 @@ def minimal_coil_objective(
     flux_definition: str = "quadratic flux",
     target_tile_size: int = 128,
     source_tile_size: int = 256,
-    vjp_mode: str = "autodiff",
+    vjp_mode: str = "custom",
 ):
     """Minimal stage-two objective implemented as one differentiable program.
 

@@ -37,8 +37,13 @@ ordinary-autodiff and analytic-custom-VJP modes. Values larger than a problem
 dimension are clipped to that dimension, which includes a one-tile candidate
 for the minimal problem. Each candidate must pass CPU objective and gradient
 parity before it can be ranked. The fastest three from the screening pass, the
-best ordinary-autodiff candidate, and the current 128-by-256 autodiff default
+best ordinary-autodiff candidate, and the original 128-by-256 autodiff baseline
 are timed again; the confirmed median selects the winner.
+
+The analytic custom VJP is the default for composed reverse-mode objectives.
+The ordinary `biot_savart_field` function remains available when a forward-mode
+JVP is required. Tile defaults remain conservative and should be autotuned for
+each workload and accelerator.
 
     OMP_NUM_THREADS=1 python benchmarks/gpu/sweep_gpu_tiles.py \
       --problem minimal \

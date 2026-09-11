@@ -53,5 +53,6 @@ def test_minimal_coil_adapter_rejects_inconsistent_inputs():
 
 
 def test_gpu_config_rejects_unknown_vjp_mode():
+    assert GpuConfig().vjp_mode == "custom"
     with pytest.raises(ValueError, match="vjp_mode"):
         GpuConfig(vjp_mode="unknown")

@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--target-tile-size", type=int, default=128)
     parser.add_argument("--source-tile-size", type=int, default=256)
     parser.add_argument(
-        "--vjp-mode", choices=("autodiff", "custom"), default="autodiff"
+        "--vjp-mode", choices=("autodiff", "custom"), default="custom"
     )
     parser.add_argument("--trace-dir", type=Path)
     parser.add_argument("--trace-steps", type=int, default=3)
