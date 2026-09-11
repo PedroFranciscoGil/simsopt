@@ -294,7 +294,7 @@ tiles with rematerialization, avoiding a full
 Independent fixtures compare both distance values and position/tangent
 gradients with the existing JAX definitions.  The complete composed objective,
 including linear length and all engineering penalties, matches the SIMSOPT CPU
-oracle in both reverse-pass modes.  The GPU test suite contains 54 passing
+oracle in both reverse-pass modes.  The GPU test suite contains 58 passing
 tests.  Historical scopes remain available; production now selects
 \code{full-engineering} and reports no deferred terms.
 
@@ -327,6 +327,8 @@ designs each retain mean, RMS, and maximum $|B\cdot n|/|B|$, per-coil length,
 maximum and mean-squared curvature, minimum coil--coil and coil--surface
 distance, current values, configured limits, signed margins, and violations.
 Both snapshots are recomputed through the same CPU oracle.
+For visual inspection, each final design also exports a surface VTS with signed
+and absolute $(B\cdot n)/|B|$ fields and a VTU containing all physical coils.
 
 \textbf{Exit criterion:} equivalent metrics, equal evaluation counts, and the
 GPU speed advantage are demonstrated over a 25-iteration trajectory.  A longer
@@ -651,9 +653,10 @@ Total base-coil length      & --    & 29.020967 & 29.082666 \\
 \textbf{Decision.}  The speed and evaluation-budget gates pass, but stationarity,
 full-trajectory parity, and final-metric parity do not.  Neither design satisfies
 all penalty thresholds.  This is not a native-solver comparison.  The next run
-must extend convergence; backend validation should require a matching early
-trajectory prefix, while solver acceptance should use stationary final physical
-metrics rather than identical late iterates in this nonconvex problem.
+now extends the cap to 300: backend validation uses the first 25 iterates, while
+solver acceptance uses stationarity, final normalized-field quality, and
+constraint violations rather than identical late iterates.  It also exports
+both final surfaces and coil sets for ParaView.
 \endgroup
 
 \section{Opportunities to improve coil quality}

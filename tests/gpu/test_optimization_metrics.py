@@ -85,3 +85,81 @@ def test_flatten_numeric_metrics_preserves_nested_numeric_arrays_only():
 
     np.testing.assert_array_equal(result["group.values"], [1, 2])
     assert set(result) == {"group.values"}
+
+
+def test_upper_bound_quality_applies_relative_and_absolute_slack():
+    metrics = load_metrics_module()
+
+    result = metrics.upper_bound_quality(
+        {"finite": 10.5, "zero": 5e-9},
+        {"finite": 10.0, "zero": 0.0},
+    )
+
+    assert result["passed"]
+    assert result["comparisons"]["finite"]["allowed"] == 10.5
+    assert result["comparisons"]["zero"]["allowed"] == 1e-8
+
+
+def test_upper_bound_quality_rejects_material_regression():
+    metrics = load_metrics_module()
+
+    result = metrics.upper_bound_quality({"metric": 1.051}, {"metric": 1.0})
+
+    assert not result["passed"]
+    assert not result["comparisons"]["metric"]["passed"]
+
+
+class ExampleObjective:
+    x = None
+
+
+class ExampleSurface:
+    def __init__(self):
+        self.extra_data = None
+
+    def gamma(self):
+        return np.zeros((1, 2, 3))
+
+    def unitnormal(self):
+        return np.asarray([[[1.0, 0, 0], [0.0, 1.0, 0]]])
+
+    def to_vtk(self, filename, extra_data=None):
+        self.filename = Path(filename)
+        self.extra_data = extra_data
+
+
+class ExampleCoil:
+    def __init__(self, curve):
+        self.curve = curve
+
+
+class ExampleField:
+    def __init__(self):
+        self.coils = [ExampleCoil("curve-a"), ExampleCoil("curve-b")]
+
+    def B(self):
+        return np.asarray([[2.0, 0, 0], [0.0, -4.0, 0]])
+
+
+def test_export_final_design_visualization_writes_vts_vtu_and_surface_data():
+    metrics = load_metrics_module()
+    objective = ExampleObjective()
+    surface = ExampleSurface()
+    field = ExampleField()
+
+    with patch("simsopt.field.coil.coils_to_vtk") as coils_to_vtk:
+        result = metrics.export_final_design_visualization(
+            objective, field, surface, np.asarray([1.0, 2.0]), Path("final")
+        )
+
+    np.testing.assert_array_equal(objective.x, [1.0, 2.0])
+    np.testing.assert_array_equal(
+        surface.extra_data["B_dot_n_over_abs_B"].ravel(), [1.0, -1.0]
+    )
+    np.testing.assert_array_equal(
+        surface.extra_data["abs_B_dot_n_over_abs_B"].ravel(), [1.0, 1.0]
+    )
+    coils_to_vtk.assert_called_once_with(field.coils, Path("final_coils"), close=True)
+    assert result["surface_vts"] == "final_surface.vts"
+    assert result["coils_vtu"] == "final_coils.vtu"
+    assert result["coil_point_data"] == ["idx", "I"]

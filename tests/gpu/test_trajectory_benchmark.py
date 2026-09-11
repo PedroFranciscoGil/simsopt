@@ -58,7 +58,12 @@ def test_trajectory_comparison_separates_currents_and_curves():
     gpu_result = SimpleNamespace(status=1, nit=1, nfev=1, fun=0.0, x=gpu_state)
 
     comparison = module.compare_trajectories(
-        cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfree=1
+        cpu_result,
+        gpu_result,
+        cpu_recorder,
+        gpu_recorder,
+        nfree=1,
+        parity_iterations=1,
     )
 
     assert comparison["same_status"]
@@ -66,3 +71,43 @@ def test_trajectory_comparison_separates_currents_and_curves():
     assert comparison["same_evaluation_count"]
     assert comparison["final_current_relative_l2_error"] == 0.0
     assert comparison["final_curve_relative_l2_error"] > 0.0
+
+
+class ExampleResult:
+    status = 1
+    nit = 3
+    nfev = 4
+
+    def __init__(self, x, fun):
+        self.x = np.asarray(x)
+        self.fun = fun
+
+
+class ExampleRecorder:
+    def __init__(self, objectives, states):
+        self.iterations = [{"objective": value} for value in objectives]
+        self.iteration_states = [np.asarray(state) for state in states]
+
+
+def test_trajectory_comparison_separates_early_parity_from_full_diagnostics():
+    trajectory = load_trajectory_module()
+    cpu = ExampleRecorder([3.0, 2.0, 1.0], [[1, 1], [2, 2], [3, 3]])
+    gpu = ExampleRecorder(
+        [3.0 + 1e-12, 2.0 + 2e-12, 1.2],
+        [[1, 1 + 1e-12], [2, 2 + 1e-12], [3, 4]],
+    )
+
+    result = trajectory.compare_trajectories(
+        ExampleResult([3, 3], 1.0),
+        ExampleResult([3, 4], 1.2),
+        cpu,
+        gpu,
+        nfree=1,
+        parity_iterations=2,
+    )
+
+    assert result["early_parity_iterations"] == 2
+    assert result["maximum_early_iteration_objective_absolute_error"] < 1e-8
+    assert result["maximum_early_iteration_curve_relative_l2_error"] < 1e-6
+    assert np.isclose(result["maximum_iteration_objective_absolute_error"], 0.2)
+    assert result["maximum_iteration_curve_relative_l2_error"] > 0.3

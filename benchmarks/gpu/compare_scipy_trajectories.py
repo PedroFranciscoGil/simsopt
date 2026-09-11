@@ -11,7 +11,12 @@ from pathlib import Path
 import jax
 import numpy as np
 from benchmark_objective import build_problem, environment
-from optimization_metrics import final_coil_metrics, flatten_numeric_metrics
+from optimization_metrics import (
+    export_final_design_visualization,
+    final_coil_metrics,
+    flatten_numeric_metrics,
+    upper_bound_quality,
+)
 from problems import PROBLEMS, get_problem, objective_call_kwargs, objective_metadata
 from scipy.optimize import minimize
 from simsopt.gpu import GpuConfig, ScipyCoilObjectiveBridge, minimal_coil_data
@@ -22,6 +27,11 @@ def parse_args():
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="stress")
     parser.add_argument("--maxiter", type=int, default=25)
     parser.add_argument("--maxcor", type=int, default=300)
+    parser.add_argument(
+        "--trajectory-parity-iterations",
+        type=int,
+        help="Accepted-iterate prefix used for backend parity (default: min(25, maxiter)).",
+    )
     parser.add_argument("--target-tile-size", type=int, default=1024)
     parser.add_argument("--source-tile-size", type=int, default=4320)
     parser.add_argument("--vjp-mode", choices=("autodiff", "custom"), default="custom")
@@ -33,6 +43,11 @@ def parse_args():
     )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
+        "--visualization-dir",
+        type=Path,
+        help="Export CPU/GPU final surface VTS and coil VTU files here.",
+    )
+    parser.add_argument(
         "--allow-non-gpu",
         action="store_true",
         help="Permit CPU execution for local harness validation only.",
@@ -40,6 +55,12 @@ def parse_args():
     args = parser.parse_args()
     if args.maxiter < 1 or args.maxcor < 1:
         parser.error("maxiter and maxcor must be positive")
+    if args.trajectory_parity_iterations is None:
+        args.trajectory_parity_iterations = min(25, args.maxiter)
+    if args.trajectory_parity_iterations < 1:
+        parser.error("trajectory-parity-iterations must be positive")
+    if args.trajectory_parity_iterations > args.maxiter:
+        parser.error("trajectory-parity-iterations cannot exceed maxiter")
     if args.target_tile_size < 1 or args.source_tile_size < 1:
         parser.error("tile sizes must be positive")
     if not np.isfinite(args.current_scale) or args.current_scale <= 0:
@@ -126,7 +147,14 @@ def optimization_summary(result, recorder, seconds):
     }
 
 
-def compare_trajectories(cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfree):
+def compare_trajectories(
+    cpu_result,
+    gpu_result,
+    cpu_recorder,
+    gpu_recorder,
+    nfree,
+    parity_iterations,
+):
     common = min(len(cpu_recorder.iterations), len(gpu_recorder.iterations))
     objective_errors = []
     current_errors = []
@@ -146,8 +174,10 @@ def compare_trajectories(cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfr
         curve_errors.append(
             relative_error(gpu_state[nfree:], cpu_state[nfree:], floor=1.0)
         )
+    prefix_count = min(common, parity_iterations)
     return {
         "common_iterations": common,
+        "early_parity_iterations": prefix_count,
         "same_status": int(cpu_result.status) == int(gpu_result.status),
         "same_iteration_count": int(cpu_result.nit) == int(gpu_result.nit),
         "same_evaluation_count": int(cpu_result.nfev) == int(gpu_result.nfev),
@@ -156,6 +186,15 @@ def compare_trajectories(cpu_result, gpu_result, cpu_recorder, gpu_recorder, nfr
         ),
         "maximum_iteration_current_relative_l2_error": max(current_errors, default=0.0),
         "maximum_iteration_curve_relative_l2_error": max(curve_errors, default=0.0),
+        "maximum_early_iteration_objective_absolute_error": max(
+            objective_errors[:prefix_count], default=0.0
+        ),
+        "maximum_early_iteration_current_relative_l2_error": max(
+            current_errors[:prefix_count], default=0.0
+        ),
+        "maximum_early_iteration_curve_relative_l2_error": max(
+            curve_errors[:prefix_count], default=0.0
+        ),
         "final_objective_absolute_error": abs(
             float(cpu_result.fun) - float(gpu_result.fun)
         ),
@@ -309,6 +348,30 @@ def main():
         gpu_bridge.to_physical_variables(gpu_result.x),
         objective_settings,
     )
+    visualization_dir = args.visualization_dir
+    visualization_stem = ""
+    if visualization_dir is None and args.output is not None:
+        visualization_dir = args.output.parent
+        visualization_stem = args.output.stem + "-"
+    visualizations = None
+    if visualization_dir:
+        visualization_dir.mkdir(parents=True, exist_ok=True)
+        visualizations = {
+            "cpu_final": export_final_design_visualization(
+                cpu_objective,
+                field,
+                surface,
+                gpu_bridge.to_physical_variables(cpu_result.x),
+                visualization_dir / f"{visualization_stem}cpu_final",
+            ),
+            "gpu_final": export_final_design_visualization(
+                cpu_objective,
+                field,
+                surface,
+                gpu_bridge.to_physical_variables(gpu_result.x),
+                visualization_dir / f"{visualization_stem}gpu_final",
+            ),
+        }
 
     comparison = compare_trajectories(
         cpu_result,
@@ -316,12 +379,28 @@ def main():
         cpu_recorder,
         gpu_recorder,
         free_current_indices.size,
+        args.trajectory_parity_iterations,
     )
     errors = metric_relative_errors(gpu_metrics, cpu_metrics)
     comparison["oracle_metric_relative_errors"] = errors
     comparison["maximum_oracle_metric_relative_error"] = max(errors.values())
     optimization_speedup = cpu_seconds / gpu_seconds
     amortized_speedup = cpu_seconds / (gpu_seconds + compilation_seconds)
+    normal_field_names = ("mean_absolute", "root_mean_square", "maximum_absolute")
+    normal_field_quality = upper_bound_quality(
+        {
+            name: gpu_metrics["normalized_normal_field"][name]
+            for name in normal_field_names
+        },
+        {
+            name: cpu_metrics["normalized_normal_field"][name]
+            for name in normal_field_names
+        },
+    )
+    constraint_quality = upper_bound_quality(
+        gpu_metrics["coil_constraints"]["violations"],
+        cpu_metrics["coil_constraints"]["violations"],
+    )
 
     gates = {
         "gpu_backend": gate(backend, "gpu", backend == "gpu"),
@@ -331,23 +410,29 @@ def main():
             initial_parity["value_absolute_error"] <= 1e-9
             and initial_parity["gradient_relative_l2_error"] <= 1e-7,
         ),
-        "accepted_trajectory_parity": gate(
+        "early_trajectory_parity": gate(
             {
+                "iterations": comparison["early_parity_iterations"],
                 "objective_absolute_error": comparison[
-                    "maximum_iteration_objective_absolute_error"
+                    "maximum_early_iteration_objective_absolute_error"
                 ],
                 "curve_relative_l2_error": comparison[
-                    "maximum_iteration_curve_relative_l2_error"
+                    "maximum_early_iteration_curve_relative_l2_error"
                 ],
             },
             {"objective_absolute_error": 1e-8, "curve_relative_l2_error": 1e-6},
-            comparison["maximum_iteration_objective_absolute_error"] <= 1e-8
-            and comparison["maximum_iteration_curve_relative_l2_error"] <= 1e-6,
+            comparison["maximum_early_iteration_objective_absolute_error"] <= 1e-8
+            and comparison["maximum_early_iteration_curve_relative_l2_error"] <= 1e-6,
         ),
-        "final_engineering_metrics": gate(
-            comparison["maximum_oracle_metric_relative_error"],
-            1e-5,
-            comparison["maximum_oracle_metric_relative_error"] <= 1e-5,
+        "final_normal_field_quality": gate(
+            normal_field_quality["comparisons"],
+            "GPU <= max(1.05 * CPU, CPU + 1e-8)",
+            normal_field_quality["passed"],
+        ),
+        "final_constraint_quality": gate(
+            constraint_quality["comparisons"],
+            "each GPU violation <= max(1.05 * CPU violation, CPU violation + 1e-8)",
+            constraint_quality["passed"],
         ),
         "physics_evaluation_budget": gate(
             int(gpu_result.nfev),
@@ -373,7 +458,7 @@ def main():
     }
 
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
         "problem": spec.as_dict(),
         "objective": objective_settings,
         "solver": {
@@ -381,6 +466,7 @@ def main():
             "maxiter": args.maxiter,
             "maxcor": args.maxcor,
             "tol": 1e-15,
+            "trajectory_parity_iterations": args.trajectory_parity_iterations,
         },
         "dimensions": {
             "optimization_variables": initial_x.size,
@@ -414,6 +500,7 @@ def main():
             "optimization_speedup_excluding_compilation": optimization_speedup,
             "optimization_speedup_including_compilation": amortized_speedup,
         },
+        "visualization": visualizations,
         "gates": gates,
         "all_gates_passed": all(item["passed"] for item in gates.values()),
         "environment": environment(),

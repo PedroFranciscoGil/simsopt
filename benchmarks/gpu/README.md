@@ -96,6 +96,11 @@ lengths, maximum curvatures, mean-squared curvatures, minimum coil--coil and
 coil--surface distances, configured limits, signed feasibility margins, and
 positive constraint violations. Both CPU and GPU designs are evaluated by the
 same SIMSOPT CPU oracle so backend comparisons do not mix metric definitions.
+Recorded runs with `--output` also export each final surface as `.vts` with
+signed and absolute `(B dot n) / norm(B)` point data and all symmetry-expanded
+physical coils as `.vtu`. By default they are placed beside the JSON with its
+stem as a prefix; `--visualization-dir` selects a dedicated directory and the
+short `cpu_final_*` and `gpu_final_*` names.
 
 [Run the trajectory comparison in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_scipy_trajectory.ipynb)
 
@@ -123,3 +128,24 @@ comparison.
       --target-tile-size 1024 \
       --source-tile-size 4320 \
       --output benchmarks/gpu/results/stress-scaled-convergence.json
+
+## Extended convergence and ParaView export
+
+The next workflow raises the cap to 300 iterations. Numerical backend parity is
+judged over the first 25 accepted iterates, while final acceptance separately
+requires stationarity, normalized-field quality, constraint quality, evaluation
+budget, and speed. Full-trajectory differences remain in the JSON as diagnostic
+data. The downloaded archive also contains CPU and GPU `.vts` surfaces and
+`.vtu` coils.
+
+[Run extended convergence in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_extended_convergence.ipynb)
+
+    OMP_NUM_THREADS=1 python benchmarks/gpu/compare_scipy_trajectories.py \
+      --problem stress \
+      --maxiter 300 \
+      --trajectory-parity-iterations 25 \
+      --current-scale 100000 \
+      --target-tile-size 1024 \
+      --source-tile-size 4320 \
+      --visualization-dir benchmarks/gpu/results/extended-visualization \
+      --output benchmarks/gpu/results/stress-extended-convergence.json

@@ -1,5 +1,7 @@
 """Physical final-state metrics shared by coil optimization benchmarks."""
 
+from pathlib import Path
+
 import numpy as np
 
 
@@ -180,3 +182,69 @@ def flatten_numeric_metrics(metrics, prefix=""):
         if np.issubdtype(array.dtype, np.number):
             flattened[qualified_name] = array
     return flattened
+
+
+def upper_bound_quality(candidate, reference, relative_slack=0.05, absolute_slack=1e-8):
+    """Check that nonnegative candidate metrics are not materially worse."""
+    if candidate.keys() != reference.keys():
+        raise ValueError("candidate and reference metric schemas do not match")
+    comparisons = {}
+    passed = True
+    for name, reference_value in reference.items():
+        candidate_value = float(candidate[name])
+        reference_value = float(reference_value)
+        if candidate_value < 0 or reference_value < 0:
+            raise ValueError("quality metrics must be nonnegative")
+        allowed = max(
+            reference_value * (1.0 + relative_slack),
+            reference_value + absolute_slack,
+        )
+        item_passed = candidate_value <= allowed
+        comparisons[name] = {
+            "candidate": candidate_value,
+            "reference": reference_value,
+            "allowed": allowed,
+            "passed": item_passed,
+        }
+        passed = passed and item_passed
+    return {"comparisons": comparisons, "passed": passed}
+
+
+def export_final_design_visualization(objective, field, surface, x, output_prefix):
+    """Export a final surface and all physical coils for ParaView inspection."""
+    from simsopt.field.coil import coils_to_vtk
+
+    output_prefix = Path(output_prefix)
+    objective.x = np.asarray(x)
+    field_values = field.B().reshape(surface.gamma().shape)
+    field_magnitude = np.linalg.norm(field_values, axis=-1)
+    normal_field = np.sum(field_values * surface.unitnormal(), axis=-1)
+    normalized_normal_field = np.divide(
+        normal_field,
+        field_magnitude,
+        out=np.zeros_like(normal_field),
+        where=field_magnitude > 0.0,
+    )
+    surface_prefix = output_prefix.with_name(output_prefix.name + "_surface")
+    coils_prefix = output_prefix.with_name(output_prefix.name + "_coils")
+    surface.to_vtk(
+        surface_prefix,
+        extra_data={
+            "B_dot_n_over_abs_B": normalized_normal_field[:, :, None],
+            "abs_B_dot_n_over_abs_B": np.abs(normalized_normal_field)[:, :, None],
+            "B_dot_n": normal_field[:, :, None],
+            "abs_B": field_magnitude[:, :, None],
+        },
+    )
+    coils_to_vtk(field.coils, coils_prefix, close=True)
+    return {
+        "surface_vts": surface_prefix.with_suffix(".vts").name,
+        "coils_vtu": coils_prefix.with_suffix(".vtu").name,
+        "coil_point_data": ["idx", "I"],
+        "surface_point_data": [
+            "B_dot_n_over_abs_B",
+            "abs_B_dot_n_over_abs_B",
+            "B_dot_n",
+            "abs_B",
+        ],
+    }
