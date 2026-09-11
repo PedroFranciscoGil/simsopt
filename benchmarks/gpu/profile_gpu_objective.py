@@ -1,4 +1,4 @@
-"""Profile the compiled minimal coil objective on an NVIDIA GPU."""
+"""Profile the compiled GPU-native core coil objective on an NVIDIA GPU."""
 
 import argparse
 import json
@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from benchmark_objective import build_problem, environment
-from problems import PROBLEMS, get_problem
+from problems import PROBLEMS, core_objective_metadata, get_problem
 from simsopt.gpu import GpuConfig, minimal_coil_data
 
 
@@ -51,6 +51,20 @@ def block_until_ready(tree):
 def relative_error(actual, expected):
     scale = max(float(np.linalg.norm(expected)), 1e-30)
     return float(np.linalg.norm(actual - expected) / scale)
+
+
+def timing_summary(samples):
+    """Summarize synchronized steady-state samples."""
+    mean = statistics.fmean(samples)
+    deviation = statistics.pstdev(samples)
+    return {
+        "median_seconds": statistics.median(samples),
+        "mean_seconds": mean,
+        "minimum_seconds": min(samples),
+        "maximum_seconds": max(samples),
+        "coefficient_of_variation": deviation / mean if mean else 0.0,
+        "samples_seconds": samples,
+    }
 
 
 def device_memory_stats(device):
@@ -141,7 +155,7 @@ def main():
         ):
             for step in range(args.trace_steps):
                 with jax.profiler.StepTraceAnnotation(
-                    "minimal_objective_value_and_gradient", step_num=step
+                    "core_coil_objective_value_and_gradient", step_num=step
                 ):
                     block_until_ready(compiled(device_dofs, device_currents))
 
@@ -163,13 +177,9 @@ def main():
 
     device = jax.devices()[0]
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
         "problem": spec.as_dict(),
-        "objective": {
-            "terms": ["quadratic_flux", "curve_length_penalty"],
-            "length_target": 18.0,
-            "length_weight": 1.0,
-        },
+        "objective": core_objective_metadata(spec),
         "tiles": {
             "target": args.target_tile_size,
             "source": args.source_tile_size,
@@ -180,6 +190,12 @@ def main():
             "physical_coils": len(field.coils),
             "surface_points": data.surface_points.shape[0],
             "curve_quadrature_points": data.bases.shape[1],
+            "source_points": len(field.coils) * data.bases.shape[1],
+            "target_source_interactions": (
+                data.surface_points.shape[0]
+                * len(field.coils)
+                * data.bases.shape[1]
+            ),
             "differentiated_variables": int(
                 data.curve_dofs.size + data.base_currents.size
             ),
@@ -188,12 +204,7 @@ def main():
         "nvidia_smi": gpu_inventory,
         "device_memory": device_memory_stats(device),
         "compilation_seconds": compilation_seconds,
-        "steady_state": {
-            "median_seconds": statistics.median(samples),
-            "minimum_seconds": min(samples),
-            "maximum_seconds": max(samples),
-            "samples_seconds": samples,
-        },
+        "steady_state": timing_summary(samples),
         "parity": {
             "gpu_value": gpu_value,
             "cpu_value": cpu_value,

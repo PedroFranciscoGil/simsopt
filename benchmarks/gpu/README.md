@@ -56,3 +56,23 @@ The same harness can be run on any CUDA machine:
       --trace-dir benchmarks/gpu/results/minimal-trace \
       --memory-profile benchmarks/gpu/results/minimal-memory.prof \
       --output benchmarks/gpu/results/minimal-gpu.json
+
+## Production-scale core-objective benchmark
+
+The dedicated production workflow uses the `stress` dimensions: six base
+coils, order 12, 180 quadrature points per curve, and a 128-by-128 half-period
+surface. This measures the GPU-native quadratic-flux and length objective at
+production scale. Coil-distance, surface-distance, and curvature terms remain
+deferred and are identified as such in the generated summary.
+
+[Run the production-scale profiler in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_production_profile.ipynb)
+
+The production runner sweeps 25 custom-VJP tile configurations, confirms the
+three fastest, times the one-thread CPU baseline for seven repetitions, profiles
+the winner, and writes a gate summary alongside the trace and memory profile.
+The 3x speed gate is reported without suppressing artifact export when it is not
+met.
+
+    python benchmarks/gpu/production_benchmark.py \
+      --problem stress \
+      --output-dir benchmarks/gpu/results/production

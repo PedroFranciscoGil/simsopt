@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from benchmark_objective import build_problem, environment, measure
-from problems import PROBLEMS, get_problem
+from problems import PROBLEMS, core_objective_metadata, get_problem
 from simsopt.gpu import GpuConfig, minimal_coil_data
 
 
@@ -64,6 +64,16 @@ def parse_args():
     )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument(
+        "--cpu-warmup",
+        type=int,
+        help="CPU baseline warm-ups; defaults to --warmup.",
+    )
+    parser.add_argument(
+        "--cpu-repeats",
+        type=int,
+        help="CPU baseline repetitions; defaults to --repeats.",
+    )
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--confirmation-warmup", type=int, default=3)
     parser.add_argument("--confirmation-repeats", type=int, default=10)
@@ -86,6 +96,10 @@ def parse_args():
         parser.error("warm-up counts must be non-negative")
     if args.repeats < 1 or args.confirmation_repeats < 1 or args.top_k < 1:
         parser.error("repeat counts and top-k must be positive")
+    if args.cpu_warmup is not None and args.cpu_warmup < 0:
+        parser.error("cpu-warmup must be non-negative")
+    if args.cpu_repeats is not None and args.cpu_repeats < 1:
+        parser.error("cpu-repeats must be positive")
     return args
 
 
@@ -304,10 +318,12 @@ def main():
 
     cpu_timing = None
     if not args.skip_cpu_baseline:
+        cpu_warmup = args.warmup if args.cpu_warmup is None else args.cpu_warmup
+        cpu_repeats = args.repeats if args.cpu_repeats is None else args.cpu_repeats
         cpu_timing = measure(
             cpu_combined_value_gradient,
-            args.warmup,
-            args.repeats,
+            cpu_warmup,
+            cpu_repeats,
         )
     with jax.default_device(cpu_device):
         cpu_objective.x = initial_x
@@ -465,19 +481,16 @@ def main():
         ]["median_seconds"]
 
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
         "problem": spec.as_dict(),
-        "objective": {
-            "terms": ["quadratic_flux", "curve_length_penalty"],
-            "length_target": 18.0,
-            "length_weight": 1.0,
-        },
+        "objective": core_objective_metadata(spec),
         "dimensions": {
             "base_coils": len(base_curves),
             "physical_coils": len(field.coils),
             "surface_points": ntarget,
             "curve_quadrature_points": data.bases.shape[1],
             "source_points": nsource,
+            "target_source_interactions": ntarget * nsource,
             "differentiated_variables": int(
                 data.curve_dofs.size + data.base_currents.size
             ),
@@ -487,6 +500,12 @@ def main():
         "protocol": {
             "screening_warmup": args.warmup,
             "screening_repeats": args.repeats,
+            "cpu_warmup": (
+                args.warmup if args.cpu_warmup is None else args.cpu_warmup
+            ),
+            "cpu_repeats": (
+                args.repeats if args.cpu_repeats is None else args.cpu_repeats
+            ),
             "confirmation_top_k": args.top_k,
             "confirmation_warmup": args.confirmation_warmup,
             "confirmation_repeats": args.confirmation_repeats,

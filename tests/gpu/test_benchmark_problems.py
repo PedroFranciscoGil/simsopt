@@ -21,3 +21,11 @@ def test_benchmark_problem_matrix():
 
     with pytest.raises(ValueError, match="unknown problem"):
         module.get_problem("not-a-problem")
+
+    engineering = module.core_objective_metadata(module.PROBLEMS["engineering"])
+    assert engineering["scope"] == "gpu_native_flux_plus_length_core"
+    assert engineering["terms"] == ["quadratic_flux", "curve_length_penalty"]
+    assert "curvature" in engineering["deferred_terms"]
+    assert module.core_objective_metadata(module.PROBLEMS["minimal"])[
+        "deferred_terms"
+    ] == []

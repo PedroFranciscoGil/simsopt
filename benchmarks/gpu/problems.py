@@ -63,3 +63,22 @@ def get_problem(name: str) -> BenchmarkSpec:
         raise ValueError(
             f"unknown problem {name!r}; choose one of {choices}"
         ) from error
+
+
+def core_objective_metadata(spec: BenchmarkSpec):
+    """Describe the currently supported GPU objective without overstating scope."""
+    deferred_terms = []
+    if spec.regularized:
+        deferred_terms = [
+            "coil_coil_distance",
+            "coil_surface_distance",
+            "curvature",
+            "mean_squared_curvature_penalty",
+        ]
+    return {
+        "scope": "gpu_native_flux_plus_length_core",
+        "terms": ["quadratic_flux", "curve_length_penalty"],
+        "deferred_terms": deferred_terms,
+        "length_target": 18.0,
+        "length_weight": 1.0,
+    }

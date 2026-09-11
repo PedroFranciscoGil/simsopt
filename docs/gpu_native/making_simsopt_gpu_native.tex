@@ -431,6 +431,21 @@ larger workloads; low-level kernel specialization will follow only if their
 profiles show the same arithmetic bottleneck.  The production-size test and a
 tuned CPU baseline remain necessary before evaluating the $3\times$ speed gate.
 
+\subsection{Production-scale benchmark implementation}
+
+Revision following the minimal T4 study adds a dedicated production runner and
+Colab notebook for the stress dimensions: six base coils, Fourier order 12, 180
+quadrature points, and a $128\times128$ half-period surface, totaling 70,778,880
+target--source interactions.  It screens 25
+custom-VJP tile pairs, confirms the fastest three, uses seven synchronized
+one-thread CPU samples, and exports the winning trace, memory profile, raw JSON,
+and an automatically evaluated gate summary.  The $3\times$ speed criterion is
+reported but does not block artifact export.  This benchmark deliberately
+measures the currently supported quadratic-flux-plus-length core; distance and
+curvature terms are labeled as deferred, so its result will not be presented as
+complete production-objective performance.  The next decision will be based on
+the returned production archive, not extrapolation from the minimal case.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only
@@ -509,50 +524,33 @@ The integration branch will periodically rebase on or merge a pinned
 force-update of the fork's existing \code{master} branch is required for this
 project.
 
-\section{Initial issue backlog}
+\section{Remaining issue backlog}
 
-The following sequence is suitable for the first project board or milestone:
+The completed core-objective milestones remain in version history.  The active
+sequence is now:
 \begin{enumerate}
-  \item Add reproducible CPU objective/gradient benchmarks.
-  \item Define GPU configuration and supported-device reporting.
-  \item Define flat parameter schema and \simsopt{} adapters.
-  \item Implement Fourier curve evaluation and symmetry expansion.
-  \item Implement tiled Biot--Savart forward calculation.
-  \item Validate autodiff memory and implement a custom VJP if required.
-  \item Implement quadratic and normalized flux.
-  \item Port length, curvature, and arclength regularizers.
-  \item Port coil--coil and coil--surface distance penalties.
+  \item Analyze the production archive and apply its profiling decision.
+  \item Port curvature, arclength, coil--coil, and coil--surface terms.
   \item Compose and JIT the complete value-and-gradient function.
   \item Add the SciPy L-BFGS-B bridge and trajectory comparison.
-  \item Profile production cases and specialize dominant kernels.
+  \item Profile the complete production objective and specialize bottlenecks.
   \item Evaluate native L-BFGS and matrix-free least-squares solvers.
 \end{enumerate}
 
 \section{References}
 
-\begin{thebibliography}{9}
-\footnotesize
-\setlength{\itemsep}{0pt}
-\setlength{\parskip}{0pt}
-\bibitem{simsopt}
-SIMSOPT repository,
-\url{https://github.com/hiddenSymmetries/simsopt}.
-
-\bibitem{coils}
-SIMSOPT coil optimization documentation,
-\url{https://simsopt.readthedocs.io/latest/example_coils.html}.
-
-\bibitem{jaxprecision}
-JAX documentation, ``Default dtypes and the X64 flag,''
-\url{https://docs.jax.dev/en/latest/default_dtypes.html}.
-
-\bibitem{jaxbenchmark}
-JAX documentation, ``Benchmarking JAX code,''
-\url{https://docs.jax.dev/en/latest/benchmarking.html}.
-
-\bibitem{optax}
-Optax documentation, ``L-BFGS,''
-\url{https://optax.readthedocs.io/en/latest/_collections/examples/lbfgs.html}.
-\end{thebibliography}
+{\scriptsize
+\begin{enumerate}[label={\lbrack\arabic*\rbrack}]
+  \item SIMSOPT repository, \url{https://github.com/hiddenSymmetries/simsopt}.
+  \item SIMSOPT coil optimization documentation,
+        \url{https://simsopt.readthedocs.io/latest/example_coils.html}.
+  \item JAX, ``Default dtypes and the X64 flag,''
+        \url{https://docs.jax.dev/en/latest/default_dtypes.html}.
+  \item JAX, ``Benchmarking JAX code,''
+        \url{https://docs.jax.dev/en/latest/benchmarking.html}.
+  \item Optax, ``L-BFGS,''
+        \url{https://optax.readthedocs.io/en/latest/_collections/examples/lbfgs.html}.
+\end{enumerate}
+}
 
 \end{document}
