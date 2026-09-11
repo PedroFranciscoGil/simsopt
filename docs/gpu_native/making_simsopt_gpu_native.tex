@@ -277,20 +277,18 @@ before the complete production-objective benchmark is enabled.
 
 \subsection{Phase 5: integrated objective and SciPy bridge}
 
-The integrated value-and-gradient function and generic SciPy bridge are
-complete.  The coil-specific bridge now packs variables in SIMSOPT's exact
+The integrated value-and-gradient function and SciPy bridge are complete.  The
+coil-specific bridge packs variables in SIMSOPT's exact
 order---free currents followed by Fourier coefficients---while fixed currents
 remain device constants.  Compilation and warm-up precede timing; each solver
 call transfers only the flat vector, scalar, and gradient.  A trajectory harness
 runs identical L-BFGS-B settings through CPU and GPU paths, records evaluations
 and accepted iterates, and rechecks both final designs with the CPU metric
-oracle.  Its three-iteration local smoke test matched all five evaluations,
-with final objective error $2.78\times10^{-17}$ and curve-state relative error
-$1.54\times10^{-16}$.
+oracle.  Section~\ref{sec:trajectory} records the production result.
 
-\textbf{Exit criterion:} the NVIDIA production run reaches equivalent metrics
-from identical data, uses at most 10\% more physics evaluations, and preserves
-the measured speed advantage.
+\textbf{Exit criterion:} equivalent metrics, equal evaluation counts, and the
+GPU speed advantage are demonstrated over a 25-iteration trajectory.  A longer
+run is still required to compare converged stationary points.
 
 \subsection{Phase 6: profiling and kernel specialization}
 
@@ -375,6 +373,7 @@ may still be useful for development and batched float32 experiments, but they
 must not define the primary scientific-performance conclusion.
 
 \section{First NVIDIA profile result}\label{sec:first-profile}
+\begingroup\small
 
 The first external GPU run was captured on 10 September 2026 from repository
 revision \code{127e7a50c3ad} using the documented minimal problem.  The device
@@ -511,8 +510,36 @@ is only 3.6\% of latency.
 \textbf{Decision.}  Accept the all-pairs JAX implementation as the production
 reference and do not introduce Pallas/Triton or dynamic neighbor lists now.
 The measured objective has ample correctness, memory, and speed margin.  Pair
-batching remains a low-risk later optimization; the next milestone is an
-end-to-end SciPy L-BFGS-B trajectory comparison using this complete executable.
+batching remains a low-risk later optimization.
+
+\subsection{SciPy L-BFGS-B trajectory result}\label{sec:trajectory}
+
+Revision \code{8c78474e} compared identical SciPy L-BFGS-B settings for the
+complete stress problem: 455 free variables, \code{maxcor=300}, and a
+25-iteration cap.  CPU and GPU each used 43 value/gradient evaluations and
+accepted 25 iterates before stopping at that cap.  The GPU objective initially
+matched exactly and its gradient relative error was $6.01\times10^{-16}$.
+Across accepted iterates, maximum objective error was $1.12\times10^{-10}$ and
+maximum curve-state relative error $2.17\times10^{-9}$; free-current trajectories
+were identical.  Final objectives were $0.004628353933$ and $0.004628353872$,
+a $6.06\times10^{-11}$ difference.  The worst relative discrepancy among all
+CPU-oracle engineering metrics was $4.55\times10^{-7}$.
+
+CPU optimization took $44.042\ \mathrm{s}$ and GPU optimization
+$12.828\ \mathrm{s}$, a $3.433\times$ end-to-end solver speedup excluding the
+one-time $6.637\ \mathrm{s}$ compilation.  Including compilation gives
+$2.263\times$ for this short run; the compile cost breaks even after roughly
+ten evaluations.  The objective fell $56.1\times$, but neither run converged:
+the final gradient norm was 0.221 and both returned the iteration-limit status.
+
+\textbf{Decision.}  Accept the SciPy bridge: trajectory parity, engineering
+metrics, evaluation budget, and steady optimization speed all pass.  Do not
+interpret this capped run as a stationary solution.  Before comparing native
+solvers, extend the convergence experiment and address variable scaling,
+especially the raw $10^5$-ampere current coordinates used by the intermediate
+example.  Solver conclusions must use converged engineering metrics and report
+compile-amortized as well as warm-start time.
+\endgroup
 
 \section{Opportunities to improve coil quality}
 
@@ -581,7 +608,7 @@ memory, profiler evidence, and unsupported terms.  Integration will periodically
 rebase on or merge a pinned \code{upstream/master} without force-updating the
 fork's existing \code{master} branch.
 
-\section{References}
+\paragraph{References.}
 
 {\scriptsize
 [1] \href{https://github.com/hiddenSymmetries/simsopt}{SIMSOPT repository}.
