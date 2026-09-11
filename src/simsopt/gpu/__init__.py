@@ -23,6 +23,11 @@ from .curves import (
     fourier_basis_set,
     symmetry_transforms,
 )
+from .distances import (
+    coil_coil_distance,
+    coil_surface_distance,
+    curve_pair_indices,
+)
 from .flux import normalized_flux, quadratic_flux
 from .objective import minimal_coil_objective
 from .regularizers import (
@@ -43,8 +48,11 @@ __all__ = [
     "biot_savart_field_custom_vjp",
     "biot_savart_field_reference",
     "coefficients_to_dofs",
+    "coil_coil_distance",
+    "coil_surface_distance",
     "curve_curvatures",
     "curve_lengths",
+    "curve_pair_indices",
     "dofs_to_coefficients",
     "evaluate_cartesian_fourier",
     "evaluate_cartesian_fourier_derivatives",

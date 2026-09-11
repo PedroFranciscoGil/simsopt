@@ -26,9 +26,10 @@ def test_benchmark_problem_matrix():
     assert engineering["scope"] == "gpu_native_flux_plus_length_core"
     assert engineering["terms"] == ["quadratic_flux", "curve_length_penalty"]
     assert "lp_curvature" in engineering["deferred_terms"]
-    assert module.core_objective_metadata(module.PROBLEMS["minimal"])[
-        "deferred_terms"
-    ] == []
+    assert (
+        module.core_objective_metadata(module.PROBLEMS["minimal"])["deferred_terms"]
+        == []
+    )
 
     local = module.objective_metadata(
         module.PROBLEMS["engineering"], "local-engineering"
@@ -39,5 +40,11 @@ def test_benchmark_problem_matrix():
         "coil_coil_distance",
         "coil_surface_distance",
     ]
+    full = module.objective_metadata(module.PROBLEMS["engineering"], "full-engineering")
+    assert full["scope"] == "gpu_native_full_engineering"
+    assert full["length_target"] is None
+    assert "coil_coil_distance" in full["terms"]
+    assert "coil_surface_distance" in full["terms"]
+    assert full["deferred_terms"] == []
     with pytest.raises(ValueError, match="objective scope"):
         module.objective_metadata(module.PROBLEMS["minimal"], "complete")

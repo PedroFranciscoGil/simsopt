@@ -7,6 +7,7 @@ import numpy as np
 
 from .config import GpuConfig
 from .curves import fourier_basis_set, symmetry_transforms
+from .distances import curve_pair_indices
 from .objective import minimal_coil_objective
 
 
@@ -22,6 +23,7 @@ class MinimalCoilData:
     surface_points: np.ndarray
     surface_normal: np.ndarray
     target_normal_field: np.ndarray
+    coil_coil_pair_indices: np.ndarray
     order: int
     nfp: int
     stellsym: bool
@@ -39,6 +41,10 @@ class MinimalCoilData:
         mean_squared_curvature_threshold=5.0,
         mean_squared_curvature_weight=0.0,
         arclength_variation_weight=0.0,
+        coil_coil_distance_threshold=0.1,
+        coil_coil_distance_weight=0.0,
+        coil_surface_distance_threshold=0.3,
+        coil_surface_distance_weight=0.0,
         config: GpuConfig = None,
     ):
         """Evaluate the device objective using this problem's static data."""
@@ -61,6 +67,11 @@ class MinimalCoilData:
             mean_squared_curvature_threshold=mean_squared_curvature_threshold,
             mean_squared_curvature_weight=mean_squared_curvature_weight,
             arclength_variation_weight=arclength_variation_weight,
+            coil_coil_pair_indices=self.coil_coil_pair_indices,
+            coil_coil_distance_threshold=coil_coil_distance_threshold,
+            coil_coil_distance_weight=coil_coil_distance_weight,
+            coil_surface_distance_threshold=coil_surface_distance_threshold,
+            coil_surface_distance_weight=coil_surface_distance_weight,
             target_tile_size=config.target_tile_size,
             source_tile_size=config.source_tile_size,
             vjp_mode=config.vjp_mode,
@@ -126,6 +137,9 @@ def minimal_coil_data(
     transforms, current_signs = symmetry_transforms(
         nfp, stellsym, dtype=config.jax_dtype
     )
+    pair_indices = curve_pair_indices(
+        len(base_curves) * transforms.shape[0], len(base_curves)
+    )
     return MinimalCoilData(
         curve_dofs=curve_dofs,
         base_currents=current_values,
@@ -135,6 +149,7 @@ def minimal_coil_data(
         surface_points=surface_points,
         surface_normal=surface_normal,
         target_normal_field=target,
+        coil_coil_pair_indices=pair_indices,
         order=order,
         nfp=nfp,
         stellsym=stellsym,

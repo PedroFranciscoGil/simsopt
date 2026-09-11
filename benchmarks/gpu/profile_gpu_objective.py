@@ -24,16 +24,12 @@ from simsopt.gpu import GpuConfig, minimal_coil_data
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="minimal")
-    parser.add_argument(
-        "--objective-scope", choices=OBJECTIVE_SCOPES, default="core"
-    )
+    parser.add_argument("--objective-scope", choices=OBJECTIVE_SCOPES, default="core")
     parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--target-tile-size", type=int, default=128)
     parser.add_argument("--source-tile-size", type=int, default=256)
-    parser.add_argument(
-        "--vjp-mode", choices=("autodiff", "custom"), default="custom"
-    )
+    parser.add_argument("--vjp-mode", choices=("autodiff", "custom"), default="custom")
     parser.add_argument("--trace-dir", type=Path)
     parser.add_argument("--trace-steps", type=int, default=3)
     parser.add_argument("--memory-profile", type=Path)
@@ -114,7 +110,7 @@ def main():
     objective_settings = objective_metadata(spec, args.objective_scope)
     surface, base_curves, field, _, cpu_objective = build_problem(
         spec,
-        regularized=False,
+        regularized=args.objective_scope == "full-engineering",
         local_engineering=args.objective_scope == "local-engineering",
     )
     base_current_objects = [field.coils[index].current for index in range(spec.ncoils)]
@@ -203,9 +199,7 @@ def main():
             "curve_quadrature_points": data.bases.shape[1],
             "source_points": len(field.coils) * data.bases.shape[1],
             "target_source_interactions": (
-                data.surface_points.shape[0]
-                * len(field.coils)
-                * data.bases.shape[1]
+                data.surface_points.shape[0] * len(field.coils) * data.bases.shape[1]
             ),
             "differentiated_variables": int(
                 data.curve_dofs.size + data.base_currents.size

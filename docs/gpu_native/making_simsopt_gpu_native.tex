@@ -156,7 +156,8 @@ src/simsopt/gpu/
     curves.py             # Fourier geometry and symmetry expansion
     biot_savart.py        # tiled field kernel and custom VJP
     flux.py               # flux residuals and objectives
-    regularizers.py       # geometry and distance terms
+    regularizers.py       # curve-local geometry terms
+    distances.py          # tiled engineering distance terms
     objective.py          # composition and value-and-gradient API
 tests/gpu/
     test_curves.py
@@ -250,20 +251,21 @@ near-converged coil sets.
 
 \subsection{Phase 4: flux and regularizers}
 
-Quadratic and normalized flux and the length penalty are complete.  The first
-curve-local milestone adds SIMSOPT-equivalent $L_p$ thresholded curvature,
-mean-squared curvature with an outer quadratic maximum penalty, and
-full-resolution arclength variation.  They reuse precomputed first- and
-second-derivative Fourier bases and compose into the existing JIT objective.
-Independent, deliberately active fixtures test values and combined gradients;
-both reverse-pass modes also pass the integrated objective test.  Historical
-flux-plus-length benchmarks retain the explicit \code{core} scope, while the
-production runner now selects \code{local-engineering}.
+Quadratic and normalized flux, length, and the curve-local regularizers are
+complete.  The distance milestone now adds SIMSOPT-equivalent coil--coil and
+coil--surface hinge penalties.  Coil pairs are the exact static symmetry set
+$j<i$, $j<n_{\rm base}$; evaluating this complete set is equivalent to the CPU
+candidate filter because rejected pairs contribute exactly zero.  Curve pairs
+are accumulated in a compiled loop.  Surface interactions use padded target
+tiles with rematerialization, avoiding a full
+\code{coils x curve points x surface points x 3} reverse-mode tape.
 
-Coil--coil and coil--surface distances remain.  Dynamic CPU candidate discovery
-cannot occur inside a compiled objective; the initial GPU reference will use
-all-pairs tiled penalties, followed by fixed-capacity masked neighbor lists only
-if profiling requires them.
+Independent fixtures compare both distance values and position/tangent
+gradients with the existing JAX definitions.  The complete composed objective,
+including linear length and all engineering penalties, matches the SIMSOPT CPU
+oracle in both reverse-pass modes.  The GPU test suite contains 40 passing
+tests.  Historical scopes remain available; production now selects
+\code{full-engineering} and reports no deferred terms.
 
 Thresholded penalties should be tested at and near their nondifferentiable
 activation points.  A smooth approximation may be offered later, but it must
@@ -470,11 +472,12 @@ $209.9\ \mathrm{ms}$ for the exact 4320-source tile.
 \textbf{Decision.}  Accept the production core's correctness, scaling,
 residency, and memory results, but do not mark the performance gate complete.
 Retain per-workload autotuning.  The curve-local terms have subsequently been
-implemented, so the production notebook now measures a
-\code{local-engineering} scope and labels only the two distance penalties as
-deferred.  Implement those all-pairs references next; if the complete-objective
-profile remains below target, prototype a fused, tail-aware Pallas/Triton kernel
-while preserving the present JAX implementation as the reference.
+implemented, followed by exact all-pairs distance references.  A local
+full-objective smoke run reached value error $2.78\times10^{-17}$ and maximum
+gradient relative error $6.38\times10^{-16}$; this validates the harness but is
+not GPU performance evidence.  Rerun the updated production notebook on NVIDIA
+hardware before choosing specialization: fixed-capacity neighbor lists or a
+fused, tail-aware Pallas/Triton kernel remain conditional on that profile.
 
 \section{Opportunities to improve coil quality}
 
@@ -548,10 +551,9 @@ fork's existing \code{master} branch.
 The completed core-objective milestones remain in version history.  The active
 sequence is now:
 \begin{enumerate}
-  \item Port coil--coil and coil--surface distance terms.
-  \item Compose and JIT the complete value-and-gradient function.
-  \item Add the SciPy L-BFGS-B bridge and trajectory comparison.
-  \item Profile the complete production objective and specialize bottlenecks.
+  \item Profile the complete production objective on NVIDIA hardware.
+  \item Exercise the SciPy bridge in an end-to-end trajectory comparison.
+  \item Specialize distance or field bottlenecks only if the trace requires it.
   \item Evaluate native L-BFGS and matrix-free least-squares solvers.
 \end{enumerate}
 

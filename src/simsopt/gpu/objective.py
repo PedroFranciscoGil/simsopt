@@ -9,6 +9,7 @@ from .curves import (
     evaluate_cartesian_fourier_derivatives,
     expand_by_symmetry,
 )
+from .distances import coil_coil_distance, coil_surface_distance
 from .flux import normalized_flux, quadratic_flux
 from .regularizers import (
     arclength_variation,
@@ -38,6 +39,11 @@ def minimal_coil_objective(
     mean_squared_curvature_threshold: float = 5.0,
     mean_squared_curvature_weight: float = 0.0,
     arclength_variation_weight: float = 0.0,
+    coil_coil_pair_indices=None,
+    coil_coil_distance_threshold: float = 0.1,
+    coil_coil_distance_weight: float = 0.0,
+    coil_surface_distance_threshold: float = 0.3,
+    coil_surface_distance_weight: float = 0.0,
 ):
     """Minimal stage-two objective implemented as one differentiable program.
 
@@ -77,8 +83,11 @@ def minimal_coil_objective(
     else:
         raise ValueError("flux_definition must be 'quadratic flux' or 'normalized'")
     total_base_length = jnp.sum(curve_lengths(base_gammadash))
-    length_excess = jnp.maximum(total_base_length - length_target, 0.0)
-    objective = flux + 0.5 * length_weight * length_excess * length_excess
+    if length_target is None:
+        objective = flux + length_weight * total_base_length
+    else:
+        length_excess = jnp.maximum(total_base_length - length_target, 0.0)
+        objective = flux + 0.5 * length_weight * length_excess * length_excess
     if curvature_weight:
         objective = objective + curvature_weight * jnp.sum(
             lp_curve_curvature_penalty(
@@ -97,5 +106,25 @@ def minimal_coil_objective(
     if arclength_variation_weight:
         objective = objective + arclength_variation_weight * jnp.sum(
             arclength_variation(base_gammadash)
+        )
+    if coil_coil_distance_weight:
+        if coil_coil_pair_indices is None:
+            raise ValueError(
+                "coil_coil_pair_indices is required when its weight is nonzero"
+            )
+        objective = objective + coil_coil_distance_weight * coil_coil_distance(
+            gamma,
+            gammadash,
+            coil_coil_pair_indices,
+            coil_coil_distance_threshold,
+        )
+    if coil_surface_distance_weight:
+        objective = objective + coil_surface_distance_weight * coil_surface_distance(
+            gamma,
+            gammadash,
+            surface_points,
+            surface_normal,
+            coil_surface_distance_threshold,
+            target_tile_size=target_tile_size,
         )
     return objective

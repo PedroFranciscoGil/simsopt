@@ -2,7 +2,7 @@
 
 from dataclasses import asdict, dataclass
 
-OBJECTIVE_SCOPES = ("core", "local-engineering")
+OBJECTIVE_SCOPES = ("core", "local-engineering", "full-engineering")
 
 
 @dataclass(frozen=True)
@@ -72,13 +72,13 @@ def objective_metadata(spec: BenchmarkSpec, scope: str = "core"):
     if scope not in OBJECTIVE_SCOPES:
         choices = ", ".join(OBJECTIVE_SCOPES)
         raise ValueError(f"unknown objective scope {scope!r}; choose one of {choices}")
-    scope_name = (
-        "gpu_native_flux_plus_length_core"
-        if scope == "core"
-        else "gpu_native_local_engineering"
-    )
+    scope_names = {
+        "core": "gpu_native_flux_plus_length_core",
+        "local-engineering": "gpu_native_local_engineering",
+        "full-engineering": "gpu_native_full_engineering",
+    }
     metadata = {
-        "scope": scope_name,
+        "scope": scope_names[scope],
         "terms": ["quadratic_flux", "curve_length_penalty"],
         "deferred_terms": [],
         "length_target": 18.0,
@@ -100,7 +100,30 @@ def objective_metadata(spec: BenchmarkSpec, scope: str = "core"):
                 "arclength_variation_weight": 1e-9,
             }
         )
-    if spec.regularized:
+    elif scope == "full-engineering":
+        metadata.update(
+            {
+                "terms": [
+                    "quadratic_flux",
+                    "curve_length",
+                    "coil_coil_distance",
+                    "coil_surface_distance",
+                    "lp_curvature",
+                    "mean_squared_curvature_penalty",
+                ],
+                "length_target": None,
+                "length_weight": 1e-6,
+                "coil_coil_distance_threshold": 0.1,
+                "coil_coil_distance_weight": 1000.0,
+                "coil_surface_distance_threshold": 0.3,
+                "coil_surface_distance_weight": 10.0,
+                "curvature_threshold": 5.0,
+                "curvature_weight": 1e-6,
+                "mean_squared_curvature_threshold": 5.0,
+                "mean_squared_curvature_weight": 1e-6,
+            }
+        )
+    if spec.regularized and scope != "full-engineering":
         metadata["deferred_terms"] = [
             "coil_coil_distance",
             "coil_surface_distance",
@@ -126,6 +149,10 @@ def objective_call_kwargs(metadata):
         "mean_squared_curvature_threshold",
         "mean_squared_curvature_weight",
         "arclength_variation_weight",
+        "coil_coil_distance_threshold",
+        "coil_coil_distance_weight",
+        "coil_surface_distance_threshold",
+        "coil_surface_distance_weight",
     )
     return {name: metadata[name] for name in names if name in metadata}
 

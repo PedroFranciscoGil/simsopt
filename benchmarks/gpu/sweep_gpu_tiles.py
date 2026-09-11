@@ -53,9 +53,7 @@ def vjp_mode_list(value):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="minimal")
-    parser.add_argument(
-        "--objective-scope", choices=OBJECTIVE_SCOPES, default="core"
-    )
+    parser.add_argument("--objective-scope", choices=OBJECTIVE_SCOPES, default="core")
     parser.add_argument(
         "--target-tile-sizes",
         type=positive_size_list,
@@ -309,7 +307,7 @@ def main():
     objective_kwargs = objective_call_kwargs(objective_settings)
     surface, base_curves, field, _, cpu_objective = build_problem(
         spec,
-        regularized=False,
+        regularized=args.objective_scope == "full-engineering",
         local_engineering=args.objective_scope == "local-engineering",
     )
     base_current_objects = [field.coils[index].current for index in range(spec.ncoils)]
@@ -344,9 +342,7 @@ def main():
         cpu_objective.x = initial_x
         cpu_value = float(cpu_objective.J())
         cpu_derivative = cpu_objective.dJ(partials=True)
-    cpu_curve_gradient = np.stack(
-        [cpu_derivative.data[curve] for curve in base_curves]
-    )
+    cpu_curve_gradient = np.stack([cpu_derivative.data[curve] for curve in base_curves])
     cpu_current_gradient = np.asarray(
         [cpu_derivative.data[current][0] for current in base_current_objects]
     )
@@ -428,7 +424,10 @@ def main():
         ),
         None,
     )
-    if default_candidate is not None and default_candidate not in confirmation_candidates:
+    if (
+        default_candidate is not None
+        and default_candidate not in confirmation_candidates
+    ):
         confirmation_candidates.append(default_candidate)
     best_autodiff_candidate = next(
         (candidate for candidate in eligible if candidate["vjp_mode"] == "autodiff"),
@@ -517,9 +516,7 @@ def main():
         "protocol": {
             "screening_warmup": args.warmup,
             "screening_repeats": args.repeats,
-            "cpu_warmup": (
-                args.warmup if args.cpu_warmup is None else args.cpu_warmup
-            ),
+            "cpu_warmup": (args.warmup if args.cpu_warmup is None else args.cpu_warmup),
             "cpu_repeats": (
                 args.repeats if args.cpu_repeats is None else args.cpu_repeats
             ),

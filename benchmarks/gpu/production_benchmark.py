@@ -1,4 +1,4 @@
-"""Run and assess the production-scale GPU-native core-objective benchmark."""
+"""Run and assess the production-scale full GPU-native objective benchmark."""
 
 import argparse
 import json
@@ -15,12 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="stress")
-    parser.add_argument(
-        "--target-tile-sizes", default="256,512,1024,2048,4096"
-    )
-    parser.add_argument(
-        "--source-tile-sizes", default="512,1024,2048,4096,8192"
-    )
+    parser.add_argument("--target-tile-sizes", default="256,512,1024,2048,4096")
+    parser.add_argument("--source-tile-sizes", default="512,1024,2048,4096,8192")
     parser.add_argument("--screening-warmup", type=int, default=2)
     parser.add_argument("--screening-repeats", type=int, default=5)
     parser.add_argument("--confirmation-warmup", type=int, default=3)
@@ -98,8 +94,7 @@ def production_summary(sweep, profile):
         parity["current_gradient_relative_l2_error"],
     )
     parity_passed = (
-        parity["value_absolute_error"]
-        <= tolerances["value_absolute_error"]
+        parity["value_absolute_error"] <= tolerances["value_absolute_error"]
         and parity_measured <= tolerances["gradient_relative_l2_error"]
     )
     speedup = winner["speedup_over_cpu_baseline"]
@@ -173,7 +168,7 @@ def main():
             "--problem",
             args.problem,
             "--objective-scope",
-            "local-engineering",
+            "full-engineering",
             "--target-tile-sizes",
             args.target_tile_sizes,
             "--source-tile-sizes",
@@ -210,7 +205,7 @@ def main():
             "--problem",
             args.problem,
             "--objective-scope",
-            "local-engineering",
+            "full-engineering",
             "--warmup",
             str(args.confirmation_warmup),
             "--repeats",
