@@ -420,7 +420,7 @@ may still be useful for development and batched float32 experiments, but they
 must not define the primary scientific-performance conclusion.
 
 \section{First NVIDIA profile result}\label{sec:first-profile}
-\begingroup\small
+\begingroup\footnotesize
 
 The first external GPU run was captured on 10 September 2026 from repository
 revision \code{127e7a50c3ad} using the documented minimal problem.  The device
@@ -454,51 +454,58 @@ ten synchronized evaluations after three warm-up calls.
 
 \begin{figure}[htbp]
 \centering
-\begin{minipage}{0.49\textwidth}
+\begin{minipage}{0.48\textwidth}
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=\linewidth,height=4.2cm,ybar,bar width=8pt,
-  ylabel={median ms},
-  symbolic x coords={Original,Tuned,Custom,CPU},xtick=data,
-  xticklabel style={rotate=28,anchor=east,font=\tiny},
+  width=0.94\linewidth,height=4.2cm,
+  xlabel={scaled L-BFGS-B iteration},ylabel={objective},ymode=log,
+  xmin=0,xmax=100,ymin=8e-5,ymax=4e-1,
   tick label style={font=\tiny},label style={font=\scriptsize},
-  ymin=0,ymax=24,enlarge x limits=0.17,
-  nodes near coords,nodes near coords style={font=\tiny},
-  grid=major,grid style={gray!18},axis lines*=left
+  grid=major,grid style={gray!18},axis lines*=left,
+  legend style={font=\tiny,draw=none,at={(0.98,0.98)},anchor=north east}
 ]
-\addplot[fill=blue!55,draw=blue!70!black]
-  coordinates {(Original,21.483) (Tuned,12.489) (Custom,7.979)};
-\addplot[fill=gray!55,draw=gray!75]
-  coordinates {(CPU,15.751)};
+\addplot[blue!75!black,thick,mark=*] coordinates {
+  (0,0.25950643) (10,0.01535511) (20,0.00771889)
+  (30,0.00289598) (40,0.00153308) (50,0.00087949)
+  (60,0.00049620) (75,0.00026348) (90,0.00015517)
+  (100,0.00011914)};
+\addlegendentry{CPU}
+\addplot[orange!85!black,thick,dashed,mark=square*] coordinates {
+  (0,0.25950643) (10,0.01535511) (20,0.00771889)
+  (30,0.00289598) (40,0.00153307) (50,0.00088044)
+  (60,0.00049206) (75,0.00026143) (90,0.00016672)
+  (100,0.00014075)};
+\addlegendentry{GPU}
 \end{axis}
 \end{tikzpicture}
 \end{minipage}%
-\begin{minipage}{0.49\textwidth}
+\begin{minipage}{0.48\textwidth}
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=\linewidth,height=4.2cm,ybar,bar width=10pt,
+  width=0.94\linewidth,height=4.2cm,ybar,bar width=10pt,
   ylabel={speedup over CPU},
-  symbolic x coords={Minimal,Core,Full,Solve},xtick=data,
+  symbolic x coords={Minimal,Core,Full,25-step,Scaled},xtick=data,
   xticklabel style={rotate=28,anchor=east,font=\tiny},
   tick label style={font=\tiny},label style={font=\scriptsize},
-  ymin=0,ymax=11.5,enlarge x limits=0.15,
+  ymin=0,ymax=11.5,enlarge x limits=0.10,
   nodes near coords,nodes near coords style={font=\tiny},
   grid=major,grid style={gray!18},axis lines*=left
 ]
 \addplot[fill=green!55!black,draw=green!35!black]
- coordinates {(Minimal,1.974) (Core,2.752) (Full,10.256) (Solve,3.433)};
+ coordinates {(Minimal,1.974) (Core,2.752) (Full,10.256)
+              (25-step,3.433) (Scaled,3.476)};
 \draw[densely dashed,red!75!black,thick]
-  (axis cs:Minimal,3) -- (axis cs:Solve,3)
+  (axis cs:Minimal,3) -- (axis cs:Scaled,3)
   node[pos=.10,above,font=\tiny] {$3\times$ gate};
 \end{axis}
 \end{tikzpicture}
 \end{minipage}
-\caption{Measured Tesla T4 progress.  Left: minimal-objective tuning
-(original $128\!\times\!256$, tuned $512\!\times\!1200$, custom-VJP
-$1024\!\times\!1200$).  Right: warm speedups for the minimal objective,
-production core, full engineering objective, and 25-step SciPy solve.}
+\caption{Measured Tesla T4 progress.  Left: scaled CPU/GPU trajectories remain
+close initially and separate late in the nonconverged run.  Right: warm speedups
+for the minimal objective, production core, full engineering objective,
+25-step solve, and 100-step scaled solve.}
 \label{fig:performance}
 \end{figure}
 
@@ -614,16 +621,39 @@ $2.263\times$ for this short run; the compile cost breaks even after roughly
 ten evaluations.  The objective fell $56.1\times$, but neither run converged:
 the final gradient norm was 0.221 and both returned the iteration-limit status.
 
-\textbf{Decision.}  Accept the SciPy bridge: trajectory parity, engineering
-metrics, evaluation budget, and steady optimization speed all pass.  Do not
-interpret this capped run as a stationary solution.  Current scaling is now
-implemented with the same exact transform on CPU and GPU.  A local three-step
-smoke test at $s_I=10^5$ moved the currents, matched final objectives to
-$3.5\times10^{-18}$, and kept every oracle metric within $3.9\times10^{-15}$.
-The new Colab workflow raises the cap to 100 iterations and adds an explicit
-stationarity gate: both runs must report success with gradient norm at most
-$10^{-5}$.  Native-solver comparisons remain blocked on that NVIDIA result and
-must report compile-amortized as well as warm-start time.
+\textbf{Scaled convergence update.}  Revision \code{9901d14b} used
+$s_I=10^5$ on the same T4.  CPU and GPU started identically and remained close
+through roughly 40 iterations, then followed different floating-point-sensitive
+paths.  Both reached the 100-iteration cap: CPU used 140 evaluations and ended
+at $J=1.19135\times10^{-4}$ with $\lVert\nabla J\rVert=3.22\times10^{-3}$;
+GPU used 152 and reached $1.40748\times10^{-4}$ with
+$7.28\times10^{-3}$.  Wall times were 157.637 and 45.346 seconds, a
+$3.476\times$ warm speedup and $3.100\times$ including 5.497 seconds of
+compilation.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Final physical metric & Limit & CPU & GPU \\
+\midrule
+Mean $|B\cdot n|/|B|$       & --    & 0.008226 & 0.008988 \\
+RMS $|B\cdot n|/|B|$        & --    & 0.010406 & 0.011544 \\
+Maximum $|B\cdot n|/|B|$    & --    & 0.037545 & 0.037477 \\
+Minimum coil--coil distance & 0.100 & 0.099830 & 0.099287 \\
+Minimum coil--surface distance & 0.300 & 0.292981 & 0.292884 \\
+Maximum curvature           & 5.000 & 9.269878 & 6.368665 \\
+Maximum mean-squared curvature & 5.000 & 7.305160 & 7.604921 \\
+Total base-coil length      & --    & 29.020967 & 29.082666 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Decision.}  The speed and evaluation-budget gates pass, but stationarity,
+full-trajectory parity, and final-metric parity do not.  Neither design satisfies
+all penalty thresholds.  This is not a native-solver comparison.  The next run
+must extend convergence; backend validation should require a matching early
+trajectory prefix, while solver acceptance should use stationary final physical
+metrics rather than identical late iterates in this nonconvex problem.
 \endgroup
 
 \section{Opportunities to improve coil quality}
