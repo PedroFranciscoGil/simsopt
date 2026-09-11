@@ -79,3 +79,21 @@ met.
     python benchmarks/gpu/production_benchmark.py \
       --problem stress \
       --output-dir benchmarks/gpu/results/production
+
+## SciPy L-BFGS-B trajectory comparison
+
+After the complete objective passes its production gates, compare the unchanged
+SciPy solver on the CPU `Optimizable` graph and the compiled GPU bridge. The
+bridge uses SIMSOPT's current-first degree-of-freedom order, keeps fixed currents
+out of the optimization vector, and transfers only the flat vector, scalar, and
+gradient. The workflow records every evaluation and accepted iterate, then
+checks the two final designs through the CPU engineering-metric oracle.
+
+[Run the trajectory comparison in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_scipy_trajectory.ipynb)
+
+    OMP_NUM_THREADS=1 python benchmarks/gpu/compare_scipy_trajectories.py \
+      --problem stress \
+      --maxiter 25 \
+      --target-tile-size 1024 \
+      --source-tile-size 4320 \
+      --output benchmarks/gpu/results/stress-scipy-trajectory.json

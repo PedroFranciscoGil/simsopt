@@ -159,6 +159,7 @@ src/simsopt/gpu/
     regularizers.py       # curve-local geometry terms
     distances.py          # tiled engineering distance terms
     objective.py          # composition and value-and-gradient API
+    scipy.py              # flat SciPy bridge
 tests/gpu/
     test_curves.py
     test_biot_savart.py
@@ -263,7 +264,7 @@ tiles with rematerialization, avoiding a full
 Independent fixtures compare both distance values and position/tangent
 gradients with the existing JAX definitions.  The complete composed objective,
 including linear length and all engineering penalties, matches the SIMSOPT CPU
-oracle in both reverse-pass modes.  The GPU test suite contains 40 passing
+oracle in both reverse-pass modes.  The GPU test suite contains 46 passing
 tests.  Historical scopes remain available; production now selects
 \code{full-engineering} and reports no deferred terms.
 
@@ -276,15 +277,20 @@ before the complete production-objective benchmark is enabled.
 
 \subsection{Phase 5: integrated objective and SciPy bridge}
 
-Expose one compiled value-and-gradient function.  The SciPy bridge transfers
-only the free-variable vector to the device and returns only a scalar and flat
-gradient.  Compilation happens before timing and before optimization logging.
-The bridge must support callbacks and checkpointing without forcing
-intermediate field arrays to the host.
+The integrated value-and-gradient function and generic SciPy bridge are
+complete.  The coil-specific bridge now packs variables in SIMSOPT's exact
+order---free currents followed by Fourier coefficients---while fixed currents
+remain device constants.  Compilation and warm-up precede timing; each solver
+call transfers only the flat vector, scalar, and gradient.  A trajectory harness
+runs identical L-BFGS-B settings through CPU and GPU paths, records evaluations
+and accepted iterates, and rechecks both final designs with the CPU metric
+oracle.  Its three-iteration local smoke test matched all five evaluations,
+with final objective error $2.78\times10^{-17}$ and curve-state relative error
+$1.54\times10^{-16}$.
 
-\textbf{Exit criterion:} SciPy L-BFGS-B reaches an equivalent stationary point
-from identical initial data and uses a comparable number of function and
-gradient evaluations.
+\textbf{Exit criterion:} the NVIDIA production run reaches equivalent metrics
+from identical data, uses at most 10\% more physics evaluations, and preserves
+the measured speed advantage.
 
 \subsection{Phase 6: profiling and kernel specialization}
 
@@ -574,13 +580,6 @@ hardware and precision, parity tolerances, synchronized warm/cold timings, peak
 memory, profiler evidence, and unsupported terms.  Integration will periodically
 rebase on or merge a pinned \code{upstream/master} without force-updating the
 fork's existing \code{master} branch.
-
-\section{Remaining issue backlog}
-
-The completed core-objective milestones remain in version history.  The active
-sequence is now: exercise the SciPy bridge in an end-to-end trajectory
-comparison; specialize a measured bottleneck only if needed; then evaluate
-native L-BFGS and matrix-free least-squares solvers.
 
 \section{References}
 

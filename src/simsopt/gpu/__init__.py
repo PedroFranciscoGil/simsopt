@@ -36,11 +36,12 @@ from .regularizers import (
     lp_curve_curvature_penalty,
     mean_squared_curvature,
 )
-from .scipy import ScipyObjectiveBridge
+from .scipy import ScipyCoilObjectiveBridge, ScipyObjectiveBridge
 
 __all__ = [
     "GpuConfig",
     "MinimalCoilData",
+    "ScipyCoilObjectiveBridge",
     "ScipyObjectiveBridge",
     "arclength_variation",
     "backend_report",
