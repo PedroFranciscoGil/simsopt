@@ -222,3 +222,46 @@ penalty multiplier, and all final VTK payloads. It also emits a concise JSON
 summary containing the archive digest, final CPU/GPU objective, normalized
 normal-field and constraint metrics, aggregate timing, and surface-map
 comparison.
+
+## Equality-zero augmented Lagrangian
+
+The next implementation replaces escalation of one fixed weighted sum with the
+augmented-Lagrangian convention used by the supplied `auglag_qa.py` reference:
+
+```text
+L_A(x, lambda, mu) = f(x) - lambda^T c(x)
+                     + 0.5 sum_i mu_i c_i(x)^2
+lambda <- lambda - mu * c
+```
+
+Here `f` is quadratic flux plus the small linear length regularizer. The four
+entries of `c` are SIMSOPT's nonnegative coil--coil distance, coil--surface
+distance, pointwise-curvature, and mean-squared-curvature penalty objectives.
+They are equality-to-zero constraints: each is exactly zero when its underlying
+engineering inequality is satisfied. This deliberately follows the supplied
+workflow rather than a Powell--Hestenes--Rockafellar projected-inequality
+formulation. Initial multipliers are zero, making CPU/GPU comparisons
+deterministic, and multiplier and penalty vectors are dynamic inputs to one
+compiled JAX executable.
+
+The benchmark runs independent CPU-oracle and GPU-native AL trajectories from
+the same physical vector. Its schema-5 JSON stores every outer state, inner
+iterations and evaluations, constraint values, multipliers, penalties, final
+physical variables, and complete final field and coil metrics for both
+backends. The final CPU/GPU surfaces and coils are exported as VTS/VTU, with
+signed and absolute `(B dot n) / abs(B)` point arrays on each surface.
+
+[Run the augmented-Lagrangian benchmark in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_augmented_lagrangian.ipynb)
+
+```sh
+OMP_NUM_THREADS=1 python benchmarks/gpu/benchmark_augmented_lagrangian.py \
+  --problem stress --max-outer-iterations 8 --max-inner-iterations 50 \
+  --mu-init 10 --tau 10 --mu-max 1e12 --current-scale 100000 \
+  --target-tile-size 1024 --source-tile-size 4320 \
+  --output benchmarks/gpu/results/stress-augmented-lagrangian.json
+```
+
+The zero-penalty constraint tolerance and the physical feasibility tolerances
+are intentionally separate. Passing `c_i <= 1e-8` does not replace the recorded
+distance/curvature checks, and neither a failed stationary gate nor a failed
+physical gate prevents artifact export.

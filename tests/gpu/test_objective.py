@@ -17,6 +17,7 @@ from simsopt.geo import (
 from simsopt.gpu import (
     curve_pair_indices,
     fourier_basis_set,
+    minimal_coil_augmented_lagrangian_terms,
     minimal_coil_objective,
     normalized_flux,
     quadratic_flux,
@@ -183,21 +184,24 @@ def test_full_engineering_objective_and_gradients_match_simsopt(vjp_mode):
     curvature_weight, curvature_threshold = 1e-6, 5.0
     msc_weight, msc_threshold = 1e-6, 5.0
 
-    cpu_objective = SquaredFlux(surface, field)
-    cpu_objective += length_weight * sum(CurveLength(curve) for curve in base_curves)
-    cpu_objective += cc_weight * CurveCurveDistance(
+    cpu_flux = SquaredFlux(surface, field)
+    cpu_length = sum(CurveLength(curve) for curve in base_curves)
+    cpu_coil_coil = CurveCurveDistance(
         physical_curves, cc_threshold, num_basecurves=nbase
     )
-    cpu_objective += cs_weight * CurveSurfaceDistance(
-        physical_curves, surface, cs_threshold
-    )
-    cpu_objective += curvature_weight * sum(
+    cpu_coil_surface = CurveSurfaceDistance(physical_curves, surface, cs_threshold)
+    cpu_curvature = sum(
         LpCurveCurvature(curve, 2.0, curvature_threshold) for curve in base_curves
     )
-    cpu_objective += msc_weight * sum(
+    cpu_msc = sum(
         QuadraticPenalty(MeanSquaredCurvature(curve), msc_threshold, "max")
         for curve in base_curves
     )
+    cpu_objective = cpu_flux + length_weight * cpu_length
+    cpu_objective += cc_weight * cpu_coil_coil
+    cpu_objective += cs_weight * cpu_coil_surface
+    cpu_objective += curvature_weight * cpu_curvature
+    cpu_objective += msc_weight * cpu_msc
 
     curve_dofs = np.stack([curve.get_dofs() for curve in base_curves])
     base_currents = np.asarray(
@@ -239,9 +243,44 @@ def test_full_engineering_objective_and_gradients_match_simsopt(vjp_mode):
     value, (curve_gradient, current_gradient) = jax.jit(
         jax.value_and_grad(objective, argnums=(0, 1))
     )(curve_dofs, base_currents)
+    base_value, constraint_values = jax.jit(
+        lambda dofs, currents: minimal_coil_augmented_lagrangian_terms(
+            dofs,
+            currents,
+            bases,
+            transforms,
+            current_signs,
+            surface_points,
+            surface_normal,
+            target,
+            length_weight=length_weight,
+            curvature_threshold=curvature_threshold,
+            mean_squared_curvature_threshold=msc_threshold,
+            coil_coil_pair_indices=pairs,
+            coil_coil_distance_threshold=cc_threshold,
+            coil_surface_distance_threshold=cs_threshold,
+            target_tile_size=7,
+            source_tile_size=13,
+            vjp_mode=vjp_mode,
+        )
+    )(curve_dofs, base_currents)
     cpu_derivative = cpu_objective.dJ(partials=True)
 
     np.testing.assert_allclose(value, cpu_objective.J(), rtol=3e-11, atol=3e-11)
+    np.testing.assert_allclose(
+        base_value, cpu_flux.J() + length_weight * cpu_length.J(), rtol=3e-11
+    )
+    np.testing.assert_allclose(
+        constraint_values,
+        [
+            cpu_coil_coil.J(),
+            cpu_coil_surface.J(),
+            cpu_curvature.J(),
+            cpu_msc.J(),
+        ],
+        rtol=3e-11,
+        atol=3e-11,
+    )
     for index, curve in enumerate(base_curves):
         np.testing.assert_allclose(
             curve_gradient[index], cpu_derivative(curve), rtol=4e-9, atol=4e-9

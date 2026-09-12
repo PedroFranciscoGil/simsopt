@@ -128,3 +128,98 @@ def minimal_coil_objective(
             target_tile_size=target_tile_size,
         )
     return objective
+
+
+def minimal_coil_augmented_lagrangian_terms(
+    curve_dofs,
+    base_currents,
+    bases,
+    transforms,
+    current_signs,
+    surface_points,
+    surface_normal,
+    target_normal_field,
+    *,
+    length_weight: float = 1e-6,
+    flux_definition: str = "quadratic flux",
+    target_tile_size: int = 128,
+    source_tile_size: int = 256,
+    vjp_mode: str = "custom",
+    curvature_threshold: float = 5.0,
+    mean_squared_curvature_threshold: float = 5.0,
+    coil_coil_pair_indices=None,
+    coil_coil_distance_threshold: float = 0.1,
+    coil_surface_distance_threshold: float = 0.3,
+):
+    """Return the base objective and zero-target engineering constraints.
+
+    The constraint vector contains the same nonnegative hinge-penalty
+    quantities used by SIMSOPT's engineering objective, in this fixed order:
+    coil--coil distance, coil--surface distance, pointwise curvature, and
+    mean-squared curvature.  Each entry is exactly zero when its corresponding
+    inequality is satisfied.  This is the equality-to-zero construction used
+    by the augmented-Lagrangian reference workflow.
+    """
+    if coil_coil_pair_indices is None:
+        raise ValueError("coil_coil_pair_indices is required")
+
+    coefficients = dofs_to_coefficients(curve_dofs)
+    derivatives = evaluate_cartesian_fourier_derivatives(coefficients, bases[:3])
+    base_gamma, base_gammadash, base_gammadashdash = derivatives
+    gamma, gammadash, currents = expand_by_symmetry(
+        base_gamma, base_gammadash, base_currents, transforms, current_signs
+    )
+    if vjp_mode == "autodiff":
+        field_function = biot_savart_field
+    elif vjp_mode == "custom":
+        field_function = biot_savart_field_custom_vjp
+    else:
+        raise ValueError("vjp_mode must be 'autodiff' or 'custom'")
+    field = field_function(
+        surface_points,
+        gamma,
+        gammadash,
+        currents,
+        target_tile_size=target_tile_size,
+        source_tile_size=source_tile_size,
+    )
+    if flux_definition == "quadratic flux":
+        flux = quadratic_flux(field, surface_normal, target_normal_field)
+    elif flux_definition == "normalized":
+        flux = normalized_flux(field, surface_normal, target_normal_field)
+    else:
+        raise ValueError("flux_definition must be 'quadratic flux' or 'normalized'")
+
+    base_objective = flux + length_weight * jnp.sum(curve_lengths(base_gammadash))
+    mean_curvature = mean_squared_curvature(base_gammadash, base_gammadashdash)
+    mean_curvature_excess = jnp.maximum(
+        mean_curvature - mean_squared_curvature_threshold, 0.0
+    )
+    constraints = jnp.stack(
+        (
+            coil_coil_distance(
+                gamma,
+                gammadash,
+                coil_coil_pair_indices,
+                coil_coil_distance_threshold,
+            ),
+            coil_surface_distance(
+                gamma,
+                gammadash,
+                surface_points,
+                surface_normal,
+                coil_surface_distance_threshold,
+                target_tile_size=target_tile_size,
+            ),
+            jnp.sum(
+                lp_curve_curvature_penalty(
+                    base_gammadash,
+                    base_gammadashdash,
+                    p=2.0,
+                    threshold=curvature_threshold,
+                )
+            ),
+            0.5 * jnp.sum(mean_curvature_excess * mean_curvature_excess),
+        )
+    )
+    return base_objective, constraints

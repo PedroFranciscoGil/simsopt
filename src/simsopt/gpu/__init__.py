@@ -6,6 +6,12 @@ The API is experimental while the GPU-native implementation is developed.
 """
 
 from .adapters import MinimalCoilData, minimal_coil_data
+from .augmented_lagrangian import (
+    AugmentedLagrangianResult,
+    ScipyAugmentedLagrangianBridge,
+    equality_augmented_lagrangian,
+    minimize_equality_augmented_lagrangian,
+)
 from .biot_savart import (
     biot_savart_field,
     biot_savart_field_custom_vjp,
@@ -29,7 +35,10 @@ from .distances import (
     curve_pair_indices,
 )
 from .flux import normalized_flux, quadratic_flux
-from .objective import minimal_coil_objective
+from .objective import (
+    minimal_coil_augmented_lagrangian_terms,
+    minimal_coil_objective,
+)
 from .regularizers import (
     arclength_variation,
     curve_curvatures,
@@ -39,8 +48,10 @@ from .regularizers import (
 from .scipy import ScipyCoilObjectiveBridge, ScipyObjectiveBridge
 
 __all__ = [
+    "AugmentedLagrangianResult",
     "GpuConfig",
     "MinimalCoilData",
+    "ScipyAugmentedLagrangianBridge",
     "ScipyCoilObjectiveBridge",
     "ScipyObjectiveBridge",
     "arclength_variation",
@@ -55,6 +66,7 @@ __all__ = [
     "curve_lengths",
     "curve_pair_indices",
     "dofs_to_coefficients",
+    "equality_augmented_lagrangian",
     "evaluate_cartesian_fourier",
     "evaluate_cartesian_fourier_derivatives",
     "expand_by_symmetry",
@@ -62,8 +74,10 @@ __all__ = [
     "fourier_basis_set",
     "lp_curve_curvature_penalty",
     "mean_squared_curvature",
+    "minimal_coil_augmented_lagrangian_terms",
     "minimal_coil_data",
     "minimal_coil_objective",
+    "minimize_equality_augmented_lagrangian",
     "normalized_flux",
     "quadratic_flux",
     "symmetry_transforms",

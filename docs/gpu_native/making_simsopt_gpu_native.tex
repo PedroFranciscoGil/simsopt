@@ -12,7 +12,7 @@
 \usepackage{enumitem}
 \usepackage{xcolor}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
 \usepackage{hyperref}
@@ -966,14 +966,142 @@ speedup.  Reject the milestone as stationary or absolutely engineering-
 feasible.  Do not increase all penalty weights to $1000\times$: a finite
 quadratic penalty admits residual constraint error and increasing it further
 worsens conditioning while the current inner solves are already nonstationary.
-The next implementation will expose scaled, named constraint residuals from the
-GPU objective and add a Powell--Hestenes--Rockafellar augmented-Lagrangian outer
-loop while retaining SciPy for the controlled inner solve.  Multipliers and
-penalty parameters must be stored per stage, and the same absolute, parity,
-evaluation, field-quality, speed, and VTK contracts remain in force.  A native
-L-BFGS solver remains deferred until that formulation reaches a common feasible
-stationary solution.
+The next implementation will expose named constraint quantities from the GPU
+objective and add an augmented-Lagrangian outer loop while retaining SciPy for
+the controlled inner solve.  The precise formulation is selected in the next
+section.  Multipliers and penalty parameters must be stored per stage, and the
+same absolute, parity, evaluation, field-quality, speed, and VTK contracts
+remain in force.  A native L-BFGS solver remains deferred until that formulation
+reaches a common feasible stationary solution.
 \endgroup
+
+\section{Equality-zero augmented Lagrangian implementation}
+\label{sec:equality-al}
+
+\subsection{Decision and mathematical contract}
+
+The implemented method follows the augmented-Lagrangian convention in the
+supplied \code{auglag\_qa.py} workflow, replacing the previously proposed
+Powell--Hestenes--Rockafellar (PHR) projected-inequality formulation.  For a
+base objective $f$, nonnegative zero-target constraints $c_i$, multipliers
+$\lambda_i$, and componentwise penalties $\mu_i>0$, the inner problem is
+\begin{equation}
+  \mathcal L_A(x,\lambda,\mu)
+  = f(x)-\lambda^T c(x)
+    +\frac{1}{2}\sum_i\mu_i c_i(x)^2,
+  \qquad
+  \nabla_x\mathcal L_A
+  = \nabla f + J_c^T(-\lambda+\mu\odot c).
+  \label{eq:equality-zero-al}
+\end{equation}
+This sign convention requires the successful multiplier update
+$\lambda\leftarrow\lambda-\mu\odot c$.  It is internally consistent but must
+not be mixed with software that uses $f+\lambda^Tc$.  The initial multipliers
+are deterministic zeros rather than the reference implementation's random
+signed values, because reproducible CPU/GPU trajectories are part of the
+validation contract.
+
+The physics split is adapted rather than copied blindly.  Quadratic flux and
+the small linear length regularizer remain the quantity to minimize,
+\[
+  f(x)=J_{\rm flux}(x)+10^{-6}\sum_k L_k(x),
+\]
+while the four engineering terms form $c$.  Each is an existing nonnegative
+SIMSOPT hinge-penalty objective and is exactly zero when the corresponding
+inequality is feasible.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Constraint entry & Zero-level-set meaning & Stored physical check \\
+\midrule
+$c_{cc}$ & coil--coil distance penalty is zero & $d_{cc}^{\min}\geq0.1$ m \\
+$c_{cs}$ & coil--surface distance penalty is zero & $d_{cs}^{\min}\geq0.3$ m \\
+$c_{\kappa}$ & integrated curvature hinge is zero & $\max\kappa\leq5$ \\
+$c_{\rm MSC}$ & squared MSC hinge is zero & $\max\langle\kappa^2\rangle\leq5$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+This construction has an important consequence: the augmented term squares an
+already quadratic hinge penalty.  It can therefore be fourth order in a raw
+distance or curvature violation.  That behavior is intentional here because
+it matches the supplied approach; it is also a conditioning risk to measure.
+The acceptance decision continues to use the direct distances and curvatures,
+not merely $\lVert c\rVert$, so a small integrated penalty cannot conceal a
+localized physical violation.
+
+\subsection{Execution structure}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=6mm and 9mm,
+  box/.style={draw,rounded corners,align=center,minimum height=8mm,
+              inner xsep=4mm,fill=blue!7,font=\scriptsize},
+  decision/.style={draw,diamond,aspect=2.2,align=center,fill=orange!12,
+                   font=\scriptsize,inner sep=1.5mm},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (terms) {GPU terms executable\\$x\mapsto(f,c)$};
+\node[box,right=of terms] (al) {dynamic $\lambda,\mu$\\$\mathcal L_A,\nabla\mathcal L_A$};
+\node[box,right=of al] (inner) {SciPy L-BFGS-B\\inner minimization};
+\node[decision,below=10mm of inner] (progress) {$\lVert c\rVert_\infty<\eta_k$?};
+\node[box,left=of progress,fill=green!10] (lambda) {$\lambda\leftarrow\lambda-\mu\odot c$\\tighten $\omega,\eta$};
+\node[box,right=of progress,fill=red!7] (penalty) {retain $\lambda$\\reset $\omega,\eta$};
+\draw[flow] (terms) -- (al);
+\draw[flow] (al) -- (inner);
+\draw[flow] (inner) -- (progress);
+\draw[flow] (progress) -- node[above,font=\tiny] {yes} (lambda);
+\draw[flow] (progress) -- node[above,font=\tiny] {no} (penalty);
+\draw[flow] (lambda.west) -| node[pos=0.25,left,font=\tiny]
+  {next outer step} (terms.south);
+\draw[flow] (penalty.north) |- (al.south);
+\end{tikzpicture}
+\caption{Implemented equality-zero augmented-Lagrangian loop.  Penalties grow
+componentwise for nonzero constraints, and the same compiled JAX executable is
+reused because $\lambda$ and $\mu$ are runtime inputs.}
+\label{fig:equality-al-loop}
+\end{figure}
+
+The reusable \code{ScipyAugmentedLagrangianBridge} compiles both
+$x\mapsto(f,c)$ and Equation~\eqref{eq:equality-zero-al}.  Multipliers and
+penalties are executable arguments rather than closed-over Python constants,
+so outer updates do not cause JAX recompilation.  The CPU oracle assembles the
+same scalar and gradient from SIMSOPT partial derivatives in the exact
+current-first coordinate order.  Each backend starts from the same physical
+variables, zero multipliers, and common $\mu$, but then runs an independent
+outer trajectory.  This tests the actual backend implementations rather than
+forcing artificial lockstep updates.
+
+The schema-5 artifact records every outer endpoint, all inner iteration and
+physics-evaluation counts, $f$, $c$, $\lVert\nabla\mathcal L_A\rVert$,
+$\lambda$, $\mu$, $\omega$, $\eta$, and physical variables.  It also retains
+the complete CPU-oracle final normalized-normal-field and coil-constraint
+metrics for both paths.  As before, each final surface is exported to VTS with
+signed and absolute $(B\cdot n)/|B|$ data and each symmetry-expanded coil set
+to VTU.
+
+\subsection{Local verification and NVIDIA experiment}
+
+Unit tests cover the AL scalar and analytic gradient, dynamic-state executable
+reuse, convergence on a nonnegative zero-target constraint, validation of
+penalty inputs, and equality of all four GPU constraint values with their
+SIMSOPT CPU counterparts.  A one-outer-step local smoke run of the minimal
+problem achieved initial base-objective absolute error zero, constraint relative
+$L^2$ error $1.39\times10^{-16}$, and AL-gradient relative $L^2$ error
+$6.47\times10^{-16}$.  CPU and JAX executed on the same host in this smoke
+test, so its timing is deliberately not reported as GPU performance.
+
+The new \code{colab\_augmented\_lagrangian.ipynb} runs the stress problem with
+eight outer steps, at most 50 L-BFGS-B iterations per inner problem,
+$\mu_0=10$, $\tau=10$, $\mu_{\max}=10^{12}$, and the previously selected
+$1024\times4320$ tiling.  Its archive is the next required evidence.  The
+decision gates remain: float64 initial parity, direct engineering feasibility,
+stationarity, final field and constraint quality, physics-evaluation budget,
+and at least $3\times$ warm optimization speedup.  No conclusion about the new
+method's production feasibility or speed is made before that NVIDIA artifact
+is measured.
 
 \section{Opportunities to improve coil quality}
 

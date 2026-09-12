@@ -8,7 +8,10 @@ import numpy as np
 from .config import GpuConfig
 from .curves import fourier_basis_set, symmetry_transforms
 from .distances import curve_pair_indices
-from .objective import minimal_coil_objective
+from .objective import (
+    minimal_coil_augmented_lagrangian_terms,
+    minimal_coil_objective,
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,43 @@ class MinimalCoilData:
             coil_coil_distance_weight=coil_coil_distance_weight,
             coil_surface_distance_threshold=coil_surface_distance_threshold,
             coil_surface_distance_weight=coil_surface_distance_weight,
+            target_tile_size=config.target_tile_size,
+            source_tile_size=config.source_tile_size,
+            vjp_mode=config.vjp_mode,
+        )
+
+    def augmented_lagrangian_terms(
+        self,
+        curve_dofs,
+        base_currents,
+        *,
+        length_weight=1e-6,
+        flux_definition="quadratic flux",
+        curvature_threshold=5.0,
+        mean_squared_curvature_threshold=5.0,
+        coil_coil_distance_threshold=0.1,
+        coil_surface_distance_threshold=0.3,
+        config: GpuConfig = None,
+    ):
+        """Evaluate the base objective and named zero-target constraints."""
+        if config is None:
+            config = GpuConfig()
+        return minimal_coil_augmented_lagrangian_terms(
+            curve_dofs,
+            base_currents,
+            self.bases,
+            self.transforms,
+            self.current_signs,
+            self.surface_points,
+            self.surface_normal,
+            self.target_normal_field,
+            length_weight=length_weight,
+            flux_definition=flux_definition,
+            curvature_threshold=curvature_threshold,
+            mean_squared_curvature_threshold=mean_squared_curvature_threshold,
+            coil_coil_pair_indices=self.coil_coil_pair_indices,
+            coil_coil_distance_threshold=coil_coil_distance_threshold,
+            coil_surface_distance_threshold=coil_surface_distance_threshold,
             target_tile_size=config.target_tile_size,
             source_tile_size=config.source_tile_size,
             vjp_mode=config.vjp_mode,
