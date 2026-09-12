@@ -1096,12 +1096,120 @@ test, so its timing is deliberately not reported as GPU performance.
 The new \code{colab\_augmented\_lagrangian.ipynb} runs the stress problem with
 eight outer steps, at most 50 L-BFGS-B iterations per inner problem,
 $\mu_0=10$, $\tau=10$, $\mu_{\max}=10^{12}$, and the previously selected
-$1024\times4320$ tiling.  Its archive is the next required evidence.  The
-decision gates remain: float64 initial parity, direct engineering feasibility,
-stationarity, final field and constraint quality, physics-evaluation budget,
-and at least $3\times$ warm optimization speedup.  No conclusion about the new
-method's production feasibility or speed is made before that NVIDIA artifact
-is measured.
+$1024\times4320$ tiling.  The decision gates remain: float64 initial parity,
+direct engineering feasibility, stationarity, final field and constraint
+quality, physics-evaluation budget, and at least $3\times$ warm optimization
+speedup.
+
+\subsection{Measured production result}
+
+The returned archive has SHA-256 digest
+\begin{center}
+{\scriptsize\ttfamily
+f495bca131bd38e0d1299bfae78da49de65f97332cc39d23b40975705de1832a}
+\end{center}
+and records revision \code{c7d522f6}.  It contains the schema-5 JSON and all
+four required VTS/VTU files.  JAX selected \code{cuda:0}; the artifact did not
+record the accelerator model, which is a provenance gap to repair in the next
+runner revision.
+
+Initial parity is substantially tighter than the gate: the base-objective and
+augmented-Lagrangian absolute errors are both $1.39\times10^{-17}$, the
+constraint vector agrees exactly, and the gradient relative $L^2$ error is
+$1.53\times10^{-15}$.  This validates the GPU formulation at the common
+starting state.  It does not imply matching final designs after long,
+nonsmooth, independently executed L-BFGS-B trajectories.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/augmented_lagrangian_convergence.png}
+\caption{Production augmented-Lagrangian histories.  Aggregate constraint
+values decrease while stationarity does not: every inner solve after the first
+hits its 50-iteration cap, and componentwise penalties grow as high as
+$10^8$.  A plotted value of $10^{-12}$ denotes an exactly zero constraint.}
+\label{fig:augmented-lagrangian-convergence}
+\end{figure}
+
+The first inner solve accepts the starting point under its loose initial
+projected-gradient tolerance.  Each of the remaining seven inner solves uses
+all 50 iterations, giving 350 iterations in total per backend.  Neither path
+approaches the requested stationarity: final
+$\lVert\nabla\mathcal L_A\rVert_2$ is 0.2313 on CPU and 0.1635 on GPU.  The
+aggregate infinity norms are $9.41\times10^{-7}$ and
+$2.18\times10^{-8}$, respectively, and both exceed the $10^{-8}$ target.
+Penalty escalation is therefore outrunning the ability of the inner solver to
+minimize each changing subproblem.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/augmented_lagrangian_performance.png}
+\caption{Per-outer-step timing, physics-evaluation counts, and warm speedup.
+The steady GPU advantage persists across the expensive inner solves while
+evaluation counts remain comparable.}
+\label{fig:augmented-lagrangian-performance}
+\end{figure}
+
+The CPU path takes 831.44~s and 719 physics evaluations; the GPU path takes
+218.10~s and 727 evaluations.  Warm speedup is $3.812\times$.  Including the
+8.22~s compilation cost gives $3.674\times$, so the performance and evaluation
+budget gates pass.  Outer-step speedups range from $2.09\times$ for the trivial
+first step to $4.31\times$; all seven substantive inner solves exceed
+$3.3\times$.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Final CPU-oracle metric & Limit & CPU AL & GPU AL \\
+\midrule
+Mean $|B\cdot n|/|B|$ & -- & 0.013136 & 0.017131 \\
+RMS $|B\cdot n|/|B|$ & -- & 0.018998 & 0.024647 \\
+Maximum $|B\cdot n|/|B|$ & -- & 0.083779 & 0.107443 \\
+Minimum coil--coil distance (m) & 0.100 & 0.098842 & 0.098715 \\
+Minimum coil--surface distance (m) & 0.300 & 0.285872 & 0.302344 \\
+Maximum curvature & 5.000 & 4.943583 & 4.850320 \\
+Maximum mean-squared curvature & 5.000 & 5.000844 & 5.000026 \\
+Total base-coil length (m) & -- & 30.997526 & 30.854413 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Direct metrics expose a weakness that the integrated constraint norm alone
+cannot resolve.  The CPU coil--coil deficit is 1.158~mm and its coil--surface
+deficit is 14.128~mm; both exceed the 0.1~mm allowance.  The GPU coil--coil
+deficit is 1.285~mm, while its coil--surface distance is feasible by 2.344~mm.
+Both paths satisfy maximum-curvature and allowed mean-squared-curvature excess.
+Thus CPU fails two direct constraints and GPU fails one even though their
+integrated penalty objectives have become small.  Squaring and integrating a
+local hinge violation before treating it as a scalar equality permits a narrow
+but physically important violation to contribute very little to $c$.
+
+The GPU field result is also worse than the CPU endpoint: mean, RMS, and maximum
+normalized normal field increase by 30.4\%, 29.7\%, and 28.2\%.  The final VTS
+maps have signed correlation 0.984 and relative $L^2$ difference 0.369, but the
+GPU has smaller pointwise absolute error on only 24.1\% of surface points.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/augmented_lagrangian_surface_field.png}
+\caption{Final normalized normal-field maps read directly from the archived
+VTS files.  The GPU and CPU retain the same large-scale pattern but reach
+meaningfully different endpoints after the AL trajectories bifurcate.}
+\label{fig:augmented-lagrangian-surface}
+\end{figure}
+
+\textbf{Decision.}  Accept the GPU-native term implementation, float64 parity,
+artifact completeness, evaluation budget, and sustained speedup.  Reject this
+run as stationary, backend-equivalent at the final endpoint, or absolutely
+engineering-feasible.  Do not merely add more outer iterations: penalties have
+already reached $10^8$ while the inner gradients remain $O(10^{-1})$, so the
+same schedule would further damage conditioning.  The next controlled step is
+an inner-solve and scaling study at fixed AL semantics: increase the inner
+budget, reduce penalty growth, cap $\mu$ earlier, and normalize the four
+constraint families.  In parallel, design a less lossy constraint interface
+that exposes localized distance and curvature residuals instead of only one
+integrated squared penalty per family.  A formulation change must preserve the
+user-selected equality-zero AL convention unless a separate comparison is
+explicitly authorized.
 
 \section{Opportunities to improve coil quality}
 

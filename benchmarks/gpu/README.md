@@ -265,3 +265,17 @@ The zero-penalty constraint tolerance and the physical feasibility tolerances
 are intentionally separate. Passing `c_i <= 1e-8` does not replace the recorded
 distance/curvature checks, and neither a failed stationary gate nor a failed
 physical gate prevents artifact export.
+
+Validate a returned archive and generate the convergence, per-outer-step
+performance, and final normalized-normal-field figures with:
+
+```sh
+python benchmarks/gpu/analyze_augmented_lagrangian.py \
+  simsopt-augmented-lagrangian.zip docs/gpu_native/figures
+```
+
+The analyzer rejects incomplete or mismatched schemas, checks the full outer
+histories and VTK payloads, and writes
+`augmented_lagrangian_analysis_summary.json` with the archive digest, acceptance
+gates, final CPU/GPU metrics, optimization states, stage speedups, and surface
+comparison statistics.
