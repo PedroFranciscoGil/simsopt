@@ -122,5 +122,24 @@ def test_augmented_lagrangian_archive_rejects_wrong_schema(tmp_path):
     result["schema_version"] = 4
     write_archive(archive, module, result)
 
-    with pytest.raises(ValueError, match="schema version 5"):
+    with pytest.raises(ValueError, match="schema version 5 or 6"):
         module.read_archive(archive)
+
+
+def test_augmented_lagrangian_archive_accepts_scaled_schema(tmp_path):
+    module = load_analysis_module()
+    archive = tmp_path / "scaled.zip"
+    result = example_result(module)
+    result["schema_version"] = 6
+    result["constraint_scaling"] = {
+        "names": list(module.CONSTRAINT_NAMES),
+        "scales": [1e-3, 1e-2, 1e-3, 1e-3],
+    }
+    for backend in ("cpu", "gpu"):
+        record = result[backend]["optimization"]["outer_history"][0]
+        record["scaled_constraint_norm_infinity"] = 1.0
+        record["scaled_constraints"] = [1.0, 0.0, 0.0, 0.0]
+    write_archive(archive, module, result)
+
+    loaded, _ = module.read_archive(archive)
+    assert loaded["schema_version"] == 6

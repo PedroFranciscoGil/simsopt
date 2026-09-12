@@ -54,6 +54,39 @@ def test_dynamic_state_bridge_reuses_compilation():
     np.testing.assert_array_equal(constraints, [1.0])
 
 
+def test_dynamic_state_bridge_scales_only_augmented_coordinates():
+    def terms(x):
+        return 0.5 * jnp.vdot(x, x), jnp.asarray([x[0] - 1.0])
+
+    initial_x = np.asarray([3.0])
+    bridge = ScipyAugmentedLagrangianBridge(
+        terms, initial_x, 1, constraint_scales=[2.0]
+    )
+    bridge.set_state([1.5], [4.0]).compile(initial_x)
+
+    base, raw_constraints = bridge.evaluate_terms(initial_x)
+    scaled_constraints = bridge.scale_constraints(raw_constraints)
+    value, gradient = bridge(initial_x)
+
+    assert base == 4.5
+    np.testing.assert_array_equal(raw_constraints, [2.0])
+    np.testing.assert_array_equal(scaled_constraints, [1.0])
+    assert value == pytest.approx(5.0)
+    np.testing.assert_allclose(gradient, [4.25])
+    np.testing.assert_array_equal(bridge.constraint_scales, [2.0])
+
+
+@pytest.mark.parametrize("scales", ([1.0, 2.0], [0.0], [np.nan]))
+def test_dynamic_state_bridge_validates_constraint_scales(scales):
+    def terms(x):
+        return jnp.vdot(x, x), jnp.asarray([x[0]])
+
+    with pytest.raises(ValueError, match="constraint_scales"):
+        ScipyAugmentedLagrangianBridge(
+            terms, np.asarray([1.0]), 1, constraint_scales=scales
+        )
+
+
 def test_augmented_lagrangian_solver_reaches_equality_solution():
     def terms(x):
         base = 0.5 * (x[0] - 3.0) ** 2 + 0.5 * x[1] ** 2
@@ -78,6 +111,7 @@ def test_augmented_lagrangian_solver_reaches_equality_solution():
     assert result.success
     np.testing.assert_allclose(result.x, [1.0, 0.0], atol=2e-4)
     assert abs(result.constraints[0]) <= 1e-7
+    np.testing.assert_array_equal(result.scaled_constraints, result.constraints)
     assert result.total_evaluations == bridge.evaluations
     assert len(result.history) == result.outer_iterations
     assert result.history[0]["penalties_after"] == [100.0]

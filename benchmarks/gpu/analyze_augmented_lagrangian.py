@@ -67,14 +67,25 @@ def read_archive(archive):
         surfaces = {name: artifact.read(name) for name in SURFACE_NAMES}
         coils = {name: artifact.read(name) for name in COIL_NAMES}
 
-    if result.get("schema_version") != 5:
-        raise ValueError("augmented-Lagrangian schema version 5 is required")
+    schema_version = result.get("schema_version")
+    if schema_version not in (5, 6):
+        raise ValueError("augmented-Lagrangian schema version 5 or 6 is required")
     if result.get("method", {}).get("name") != (
         "equality_zero_penalty_augmented_lagrangian"
     ):
         raise ValueError("archive contains the wrong optimization method")
     if tuple(result["method"]["constraint_names"]) != CONSTRAINT_NAMES:
         raise ValueError("constraint name/order contract does not match")
+    if schema_version == 6:
+        scaling = result.get("constraint_scaling", {})
+        scales = np.asarray(scaling.get("scales", []), dtype=float)
+        if (
+            tuple(scaling.get("names", ())) != CONSTRAINT_NAMES
+            or scales.shape != (len(CONSTRAINT_NAMES),)
+            or not np.all(np.isfinite(scales))
+            or np.any(scales <= 0)
+        ):
+            raise ValueError("schema-6 constraint scaling contract is invalid")
     if any(not payload for payload in (*surfaces.values(), *coils.values())):
         raise ValueError("final VTK payloads must be nonempty")
     for backend in ("cpu", "gpu"):
@@ -105,6 +116,16 @@ def read_archive(archive):
                     np.isfinite(values)
                 ):
                     raise ValueError(f"{backend} {key} has invalid values")
+            if schema_version == 6:
+                _finite(
+                    record["scaled_constraint_norm_infinity"],
+                    f"{backend} scaled constraint norm",
+                )
+                scaled = np.asarray(record["scaled_constraints"], dtype=float)
+                if scaled.shape != (len(CONSTRAINT_NAMES),) or not np.all(
+                    np.isfinite(scaled)
+                ):
+                    raise ValueError(f"{backend} scaled_constraints has invalid values")
     return result, surfaces
 
 
@@ -322,6 +343,28 @@ def analysis_summary(archive, result, surfaces):
         backend: result[backend]["optimization"]["outer_history"]
         for backend in ("cpu", "gpu")
     }
+    final_optimization_keys = [
+        "success",
+        "seconds",
+        "outer_iterations",
+        "total_inner_iterations",
+        "total_evaluations",
+        "final_base_objective",
+        "final_gradient_norm",
+        "final_constraints",
+        "final_lagrange_multipliers",
+        "final_penalties",
+    ]
+    if result["schema_version"] == 5:
+        final_optimization_keys.append("final_constraint_norm_infinity")
+    else:
+        final_optimization_keys.extend(
+            (
+                "final_raw_constraint_norm_infinity",
+                "final_scaled_constraint_norm_infinity",
+                "final_scaled_constraints",
+            )
+        )
     return {
         "schema_version": 1,
         "workflow": "augmented_lagrangian_analysis",
@@ -347,19 +390,7 @@ def analysis_summary(archive, result, surfaces):
         "final_optimization": {
             backend: {
                 key: result[backend]["optimization"][key]
-                for key in (
-                    "success",
-                    "seconds",
-                    "outer_iterations",
-                    "total_inner_iterations",
-                    "total_evaluations",
-                    "final_base_objective",
-                    "final_gradient_norm",
-                    "final_constraint_norm_infinity",
-                    "final_constraints",
-                    "final_lagrange_multipliers",
-                    "final_penalties",
-                )
+                for key in final_optimization_keys
             }
             for backend in ("cpu", "gpu")
         },

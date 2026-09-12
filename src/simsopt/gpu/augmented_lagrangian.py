@@ -48,9 +48,11 @@ class ScipyAugmentedLagrangianBridge:
     ``terms(x)`` must return ``(base_objective, constraint_vector)``.  The
     multipliers and penalties are executable inputs, so every outer update
     reuses one compiled GPU program instead of triggering recompilation.
+    Optional positive ``constraint_scales`` define the AL coordinates
+    ``c_hat = c / scale``; diagnostics continue to return the raw ``c``.
     """
 
-    def __init__(self, terms, initial_x, constraint_count: int):
+    def __init__(self, terms, initial_x, constraint_count: int, constraint_scales=None):
         initial_x = np.asarray(initial_x)
         if initial_x.ndim != 1:
             raise ValueError("initial_x must be one-dimensional")
@@ -62,6 +64,9 @@ class ScipyAugmentedLagrangianBridge:
         self._shape = initial_x.shape
         self._dtype = initial_x.dtype
         self._constraint_count = int(constraint_count)
+        if constraint_scales is None:
+            constraint_scales = np.ones(constraint_count, dtype=initial_x.dtype)
+        self._constraint_scales = self._coerce_constraint_scales(constraint_scales)
         self._compiled = None
         self._compiled_terms = None
         self._lagrange_multipliers = np.zeros(constraint_count, dtype=initial_x.dtype)
@@ -70,12 +75,33 @@ class ScipyAugmentedLagrangianBridge:
 
         def objective(x, lagrange_multipliers, penalties):
             base_objective, constraints = terms(x)
+            constraints = constraints / jnp.asarray(self._constraint_scales)
             return equality_augmented_lagrangian(
                 base_objective, constraints, lagrange_multipliers, penalties
             )
 
         self._value_and_grad = jax.jit(jax.value_and_grad(objective, argnums=0))
         self._jitted_terms = jax.jit(terms)
+
+    def _coerce_constraint_scales(self, scales):
+        scales = np.asarray(scales, dtype=self._dtype)
+        expected = (self._constraint_count,)
+        if scales.shape != expected:
+            raise ValueError(
+                f"constraint_scales must have shape {expected}, got {scales.shape}"
+            )
+        if not np.all(np.isfinite(scales)) or np.any(scales <= 0):
+            raise ValueError("constraint_scales must be finite and positive")
+        return scales.copy()
+
+    @property
+    def constraint_scales(self):
+        return self._constraint_scales.copy()
+
+    def scale_constraints(self, constraints):
+        """Map raw physical penalty values to AL coordinates."""
+        constraints = self._coerce_state(constraints, "constraints")
+        return constraints / self._constraint_scales
 
     @property
     def is_compiled(self):
@@ -168,6 +194,7 @@ class AugmentedLagrangianResult:
     lagrange_multipliers: np.ndarray
     penalties: np.ndarray
     constraints: np.ndarray
+    scaled_constraints: np.ndarray
     base_objective: float
     success: bool
     message: str
@@ -199,9 +226,12 @@ def minimize_equality_augmented_lagrangian(
 
     The outer update mirrors the attached SIMSOPT AL workflow: penalties grow
     componentwise for constraints outside ``constraint_tolerance``; when the
-    infinity norm is below the current ``eta`` threshold, multipliers are
-    updated with the module's minus-sign convention.  ``bridge`` must provide
-    ``set_state()``, ``evaluate_terms()``, and SciPy's value-gradient protocol.
+    scaled infinity norm is below the current ``eta`` threshold, multipliers
+    are updated with the module's minus-sign convention.  Convergence and the
+    componentwise violation mask always use raw constraints, so scaling cannot
+    silently alter the requested feasibility tolerance. ``bridge`` must
+    provide ``set_state()``, ``evaluate_terms()``, and SciPy's value-gradient
+    protocol; it may provide ``scale_constraints()``.
     """
     x = np.asarray(initial_x, dtype=float).copy()
     if x.ndim != 1 or not np.all(np.isfinite(x)):
@@ -222,20 +252,32 @@ def minimize_equality_augmented_lagrangian(
     if maxcor < 1 or maxls < 1:
         raise ValueError("maxcor and maxls must be positive")
 
-    base_objective, constraints = bridge.evaluate_terms(x)
-    constraints = np.asarray(constraints, dtype=float)
-    if constraints.ndim != 1 or constraints.size == 0:
+    base_objective, raw_constraints = bridge.evaluate_terms(x)
+    raw_constraints = np.asarray(raw_constraints, dtype=float)
+    if raw_constraints.ndim != 1 or raw_constraints.size == 0:
         raise ValueError("bridge constraints must be a nonempty vector")
-    if not np.isfinite(base_objective) or not np.all(np.isfinite(constraints)):
+    if not np.isfinite(base_objective) or not np.all(np.isfinite(raw_constraints)):
         raise ValueError("initial objective and constraints must be finite")
-    constraint_count = constraints.size
+    constraint_count = raw_constraints.size
+    if hasattr(bridge, "scale_constraints"):
+        scaled_constraints = np.asarray(
+            bridge.scale_constraints(raw_constraints), dtype=float
+        )
+    else:
+        scaled_constraints = raw_constraints.copy()
+    if scaled_constraints.shape != raw_constraints.shape or not np.all(
+        np.isfinite(scaled_constraints)
+    ):
+        raise ValueError(
+            "scaled constraints must be finite and match the raw constraint vector"
+        )
     penalties = np.asarray(mu_init, dtype=float)
     if penalties.ndim == 0:
         penalties = np.full(constraint_count, float(penalties))
     else:
         penalties = penalties.copy()
     if (
-        penalties.shape != constraints.shape
+        penalties.shape != raw_constraints.shape
         or not np.all(np.isfinite(penalties))
         or np.any(penalties <= 1)
         or np.any(penalties > mu_max)
@@ -245,10 +287,10 @@ def minimize_equality_augmented_lagrangian(
             "and match the constraint vector"
         )
     if lagrange_multiplier_init is None:
-        lagrange_multipliers = np.zeros_like(constraints)
+        lagrange_multipliers = np.zeros_like(raw_constraints)
     else:
         lagrange_multipliers = np.asarray(lagrange_multiplier_init, dtype=float).copy()
-        if lagrange_multipliers.shape != constraints.shape:
+        if lagrange_multipliers.shape != raw_constraints.shape:
             raise ValueError(
                 "lagrange_multiplier_init must match the constraint vector"
             )
@@ -289,19 +331,33 @@ def minimize_equality_augmented_lagrangian(
         x = np.asarray(inner_result.x, dtype=float)
         final_value = float(inner_result.fun)
         final_gradient = np.asarray(inner_result.jac, dtype=float)
-        base_objective, constraints = bridge.evaluate_terms(x)
-        constraints = np.asarray(constraints, dtype=float)
+        base_objective, raw_constraints = bridge.evaluate_terms(x)
+        raw_constraints = np.asarray(raw_constraints, dtype=float)
+        if hasattr(bridge, "scale_constraints"):
+            scaled_constraints = np.asarray(
+                bridge.scale_constraints(raw_constraints), dtype=float
+            )
+        else:
+            scaled_constraints = raw_constraints.copy()
+        if raw_constraints.shape != (constraint_count,):
+            raise ValueError(
+                "bridge constraint shape changed during the augmented-Lagrangian solve"
+            )
+        if scaled_constraints.shape != raw_constraints.shape:
+            raise ValueError("scaled constraints must match the raw constraint vector")
         if (
             not np.isfinite(final_value)
             or not np.all(np.isfinite(final_gradient))
             or not np.isfinite(base_objective)
-            or not np.all(np.isfinite(constraints))
+            or not np.all(np.isfinite(raw_constraints))
+            or not np.all(np.isfinite(scaled_constraints))
         ):
             raise FloatingPointError(
                 "inner solve produced a non-finite AL state; inspect scaling, "
                 "penalty growth, and coil geometry"
             )
-        constraint_norm = float(np.linalg.norm(constraints, ord=np.inf))
+        constraint_norm = float(np.linalg.norm(raw_constraints, ord=np.inf))
+        scaled_constraint_norm = float(np.linalg.norm(scaled_constraints, ord=np.inf))
         gradient_norm = float(np.linalg.norm(final_gradient))
         total_inner_iterations += int(inner_result.nit)
         stage_evaluations = int(
@@ -309,7 +365,7 @@ def minimize_equality_augmented_lagrangian(
         )
         total_evaluations += stage_evaluations
 
-        progress_accepted = constraint_norm < eta
+        progress_accepted = scaled_constraint_norm < eta
         converged = (
             gradient_norm <= gradient_tolerance
             and constraint_norm <= constraint_tolerance
@@ -317,13 +373,13 @@ def minimize_equality_augmented_lagrangian(
         # Keep a converged result internally consistent: its reported AL value
         # and gradient correspond to the returned multipliers and penalties.
         if not converged:
-            violation_mask = np.abs(constraints) > constraint_tolerance
+            violation_mask = np.abs(raw_constraints) > constraint_tolerance
             penalties[violation_mask] = np.minimum(
                 penalties[violation_mask] * tau, mu_max
             )
             mean_penalty = float(np.mean(penalties))
             if progress_accepted:
-                lagrange_multipliers -= penalties * constraints
+                lagrange_multipliers -= penalties * scaled_constraints
                 omega = max(omega / mean_penalty, gradient_tolerance)
                 eta = max(eta / mean_penalty, constraint_tolerance)
             else:
@@ -342,7 +398,9 @@ def minimize_equality_augmented_lagrangian(
             "base_objective": float(base_objective),
             "gradient_norm": gradient_norm,
             "constraint_norm_infinity": constraint_norm,
-            "constraints": constraints.tolist(),
+            "scaled_constraint_norm_infinity": scaled_constraint_norm,
+            "constraints": raw_constraints.tolist(),
+            "scaled_constraints": scaled_constraints.tolist(),
             "multipliers_before": multipliers_before.tolist(),
             "multipliers_after": lagrange_multipliers.tolist(),
             "penalties_before": penalties_before.tolist(),
@@ -370,7 +428,8 @@ def minimize_equality_augmented_lagrangian(
         jac=final_gradient,
         lagrange_multipliers=lagrange_multipliers,
         penalties=penalties,
-        constraints=constraints,
+        constraints=raw_constraints,
+        scaled_constraints=scaled_constraints,
         base_objective=float(base_objective),
         success=converged,
         message=message,

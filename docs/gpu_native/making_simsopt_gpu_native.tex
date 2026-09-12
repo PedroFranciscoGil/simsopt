@@ -1211,6 +1211,96 @@ integrated squared penalty per family.  A formulation change must preserve the
 user-selected equality-zero AL convention unless a separate comparison is
 explicitly authorized.
 
+\subsection{Implemented conditioning experiment}
+
+The next runner makes the proposed conditioning study reproducible rather than
+changing the production schedule by inspection.  For a positive scale $s_i$
+for each constraint family, define
+\begin{equation}
+  \widehat c_i(x)=\frac{c_i(x)}{s_i},\qquad
+  \mathcal L_A=f-\lambda^T\widehat c
+    +\frac12\sum_i\mu_i\widehat c_i^2,
+  \qquad
+  \lambda\leftarrow\lambda-\mu\odot\widehat c.
+  \label{eq:scaled-equality-zero-al}
+\end{equation}
+Scaling changes the conditioning of each AL subproblem, but it does not change
+the feasibility contract.  The stopping test, componentwise penalty-growth
+mask, and physical gates all use raw $c_i$ and direct distances and
+curvatures.  Every outer record stores both $c$ and $\widehat c$; this prevents
+a scale choice from silently redefining the $10^{-8}$ raw-constraint target.
+CPU and GPU implement the same chain rule, including the $1/s_i$ factor in
+$J_c^T(-\lambda+\mu\odot\widehat c)$.
+
+The schema-6 benchmark also captures accelerator name, UUID, driver, and memory
+through \code{nvidia-smi}.  It retains complete final CPU and GPU objective,
+normalized-normal-field, engineering-constraint, raw/scaled AL, timing, and
+physical-variable data.  Production confirmation still exports two VTS
+surfaces carrying signed and absolute $(B\cdot n)/|B|$ and two VTU coil sets.
+
+\begin{center}
+\begin{tabular}{lrrrrl}
+\toprule
+Candidate & Outer & Inner & $\mu_0$ & $\tau$ & Scale vector $s$ \\
+\midrule
+Baseline & 6 & 50 & 10 & 10 & $(1,1,1,1)$ \\
+Long inner & 6 & 150 & 10 & 10 & $(1,1,1,1)$ \\
+Gentle growth & 8 & 150 & 4 & 2 & $(1,1,1,1)$ \\
+Scaled gentle & 8 & 150 & 4 & 2 &
+$(5\!\times\!10^{-4},2\!\times\!10^{-2},6\!\times\!10^{-4},7\!\times\!10^{-4})$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The nonunit scales are rounded per-family maxima observed in the archived
+production history, so a representative active value is order unity.  They
+are an explicitly labelled data-derived candidate, not universal defaults.
+The candidates isolate inner budget, penalty growth/cap, and family scaling as
+far as a four-run screen permits.  The baseline and long-inner schedules cap
+$\mu$ at $10^{12}$; gentle and scaled-gentle both cap it at $10^6$.  Thus the
+last pair differs only in $s$, making scaling an identifiable intervention.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=7mm and 8mm,
+  box/.style={draw,rounded corners,align=center,minimum height=8mm,
+              inner xsep=4mm,fill=blue!7,font=\scriptsize},
+  gate/.style={draw,rounded corners,align=center,minimum height=8mm,
+               inner xsep=4mm,fill=green!10,font=\scriptsize},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (candidates) {Four fixed candidates\\engineering screen};
+\node[box,right=of candidates] (records) {Independent CPU/GPU runs\\schema-6 full records};
+\node[gate,right=of records] (rank) {Feasibility-first rank\\then stationarity/field/cost};
+\node[box,below=of rank] (stress) {Winner only\\stress confirmation};
+\node[gate,left=of stress] (artifacts) {Acceptance gates\\VTS/VTU + provenance};
+\draw[flow] (candidates) -- (records);
+\draw[flow] (records) -- (rank);
+\draw[flow] (rank) -- (stress);
+\draw[flow] (stress) -- (artifacts);
+\end{tikzpicture}
+\caption{Automated AL-conditioning workflow.  Screening is deliberately
+performed on the smaller engineering case; only the feasibility-first winner
+consumes a production-scale stress run and produces visualization artifacts.}
+\label{fig:al-conditioning-workflow}
+\end{figure}
+
+Ranking is lexicographic: number of failed direct physical constraints,
+largest and summed tolerance-normalized physical violation, number of
+nonstationary backends, maximum final AL-gradient norm, mean CPU/GPU normalized
+field RMS, then total physics evaluations.  A backend or initial-parity failure
+makes a candidate ineligible.  This ordering prevents a faster but physically
+invalid design from winning.  The reduced screen selects a candidate; it is
+not itself evidence that the same ordering transfers to production scale.
+
+The new \code{colab\_augmented\_lagrangian\_conditioning.ipynb} runs all GPU
+tests, performs the four engineering screens, reruns the winner on the stress
+problem, validates schema and required final metrics, checks all four VTK
+artifacts, and downloads one archive.  No NVIDIA performance or quality result
+is claimed yet: figures and the decision will be extended from the returned
+archive, preserving the distinction between implemented experiment and
+measured outcome.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

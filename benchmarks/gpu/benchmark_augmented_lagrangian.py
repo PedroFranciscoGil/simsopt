@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import subprocess
 import time
 from pathlib import Path
 
@@ -33,6 +34,25 @@ CONSTRAINT_NAMES = (
 )
 
 
+def positive_float_vector(text):
+    """Parse four finite positive comma-separated constraint scales."""
+    try:
+        values = np.asarray([float(value) for value in text.split(",")])
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "constraint scales must be comma-separated numbers"
+        ) from error
+    if values.shape != (len(CONSTRAINT_NAMES),):
+        raise argparse.ArgumentTypeError(
+            f"exactly {len(CONSTRAINT_NAMES)} constraint scales are required"
+        )
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise argparse.ArgumentTypeError(
+            "constraint scales must be finite and positive"
+        )
+    return values
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="engineering")
@@ -43,6 +63,15 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=10.0)
     parser.add_argument("--gradient-tolerance", type=float, default=1e-8)
     parser.add_argument("--constraint-tolerance", type=float, default=1e-8)
+    parser.add_argument(
+        "--constraint-scales",
+        type=positive_float_vector,
+        default=positive_float_vector("1,1,1,1"),
+        help=(
+            "Four positive scales in coil-coil, coil-surface, curvature, MSC "
+            "order; the AL operates on c_i / scale_i."
+        ),
+    )
     parser.add_argument("--maxcor", type=int, default=100)
     parser.add_argument("--maxls", type=int, default=20)
     parser.add_argument("--target-tile-size", type=int, default=1024)
@@ -100,12 +129,24 @@ class CpuAugmentedLagrangianBridge:
     """SIMSOPT CPU oracle using the same AL scalar and coordinate scaling."""
 
     def __init__(
-        self, base_objective, constraints, coordinate_bridge, derivative_objects
+        self,
+        base_objective,
+        constraints,
+        coordinate_bridge,
+        derivative_objects,
+        constraint_scales,
     ):
         self.base_objective = base_objective
         self.constraints = tuple(constraints)
         self.coordinate_bridge = coordinate_bridge
         self.derivative_objects = tuple(derivative_objects)
+        self.constraint_scales = np.asarray(constraint_scales, dtype=float)
+        if self.constraint_scales.shape != (len(self.constraints),):
+            raise ValueError("constraint_scales must match constraints")
+        if not np.all(np.isfinite(self.constraint_scales)) or np.any(
+            self.constraint_scales <= 0
+        ):
+            raise ValueError("constraint_scales must be finite and positive")
         self.lagrange_multipliers = np.zeros(len(self.constraints))
         self.penalties = np.ones(len(self.constraints))
         self.evaluations = 0
@@ -124,8 +165,15 @@ class CpuAugmentedLagrangianBridge:
             [constraint.J() for constraint in self.constraints], dtype=float
         )
 
+    def scale_constraints(self, constraints):
+        constraints = np.asarray(constraints, dtype=float)
+        if constraints.shape != self.constraint_scales.shape:
+            raise ValueError("constraints must match constraint_scales")
+        return constraints / self.constraint_scales
+
     def __call__(self, x):
-        base_value, constraint_values = self.evaluate_terms(x)
+        base_value, raw_constraint_values = self.evaluate_terms(x)
+        constraint_values = self.scale_constraints(raw_constraint_values)
         value = (
             base_value
             - np.dot(self.lagrange_multipliers, constraint_values)
@@ -133,8 +181,13 @@ class CpuAugmentedLagrangianBridge:
         )
         gradient = self._flat_gradient(self.base_objective)
         coefficients = -self.lagrange_multipliers + self.penalties * constraint_values
-        for coefficient, constraint in zip(coefficients, self.constraints):
-            gradient += coefficient * self._flat_gradient(constraint)
+        for coefficient, constraint, scale in zip(
+            coefficients,
+            self.constraints,
+            self.constraint_scales,
+            strict=True,
+        ):
+            gradient += coefficient * self._flat_gradient(constraint) / scale
         self.evaluations += 1
         return float(value), self.coordinate_bridge.pullback_gradient(gradient)
 
@@ -175,6 +228,8 @@ def metric_relative_errors(gpu_metrics, cpu_metrics):
 
 
 def result_summary(result, coordinate_bridge):
+    raw_constraints = np.asarray(result.constraints)
+    scaled_constraints = np.asarray(result.scaled_constraints)
     return {
         "success": result.success,
         "message": result.message,
@@ -185,10 +240,16 @@ def result_summary(result, coordinate_bridge):
         "final_augmented_lagrangian": result.fun,
         "final_base_objective": result.base_objective,
         "final_gradient_norm": float(np.linalg.norm(result.jac)),
-        "final_constraint_norm_infinity": float(
-            np.linalg.norm(result.constraints, ord=np.inf)
+        "final_scaled_constraint_norm_infinity": float(
+            np.linalg.norm(scaled_constraints, ord=np.inf)
         ),
-        "final_constraints": dict(zip(CONSTRAINT_NAMES, result.constraints.tolist())),
+        "final_raw_constraint_norm_infinity": float(
+            np.linalg.norm(raw_constraints, ord=np.inf)
+        ),
+        "final_constraints": dict(zip(CONSTRAINT_NAMES, raw_constraints.tolist())),
+        "final_scaled_constraints": dict(
+            zip(CONSTRAINT_NAMES, scaled_constraints.tolist())
+        ),
         "final_lagrange_multipliers": dict(
             zip(CONSTRAINT_NAMES, result.lagrange_multipliers.tolist())
         ),
@@ -198,6 +259,19 @@ def result_summary(result, coordinate_bridge):
         ).tolist(),
         "outer_history": list(result.history),
     }
+
+
+def nvidia_smi():
+    """Return accelerator identity without making it a benchmark dependency."""
+    command = [
+        "nvidia-smi",
+        "--query-gpu=name,uuid,driver_version,memory.total",
+        "--format=csv,noheader",
+    ]
+    try:
+        return subprocess.check_output(command, text=True).strip().splitlines()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
 
 
 def main():
@@ -285,7 +359,10 @@ def main():
         )
 
     gpu_bridge = ScipyAugmentedLagrangianBridge(
-        gpu_terms, initial_x, len(CONSTRAINT_NAMES)
+        gpu_terms,
+        initial_x,
+        len(CONSTRAINT_NAMES),
+        constraint_scales=args.constraint_scales,
     )
     gpu_bridge.set_state(np.zeros(4), np.full(4, args.mu_init))
     compilation_start = time.perf_counter()
@@ -296,7 +373,11 @@ def main():
         *base_curves,
     ]
     cpu_bridge = CpuAugmentedLagrangianBridge(
-        base_objective, cpu_constraints, coordinate_bridge, derivative_objects
+        base_objective,
+        cpu_constraints,
+        coordinate_bridge,
+        derivative_objects,
+        args.constraint_scales,
     ).set_state(np.zeros(4), np.full(4, args.mu_init))
 
     cpu_base, cpu_constraint_values = cpu_bridge.evaluate_terms(initial_x)
@@ -312,6 +393,18 @@ def main():
         "gradient_relative_l2_error": relative_error(gpu_gradient, cpu_gradient),
         "cpu_constraints": dict(zip(CONSTRAINT_NAMES, cpu_constraint_values.tolist())),
         "gpu_constraints": dict(zip(CONSTRAINT_NAMES, gpu_constraint_values.tolist())),
+        "cpu_scaled_constraints": dict(
+            zip(
+                CONSTRAINT_NAMES,
+                (cpu_constraint_values / args.constraint_scales).tolist(),
+            )
+        ),
+        "gpu_scaled_constraints": dict(
+            zip(
+                CONSTRAINT_NAMES,
+                (gpu_constraint_values / args.constraint_scales).tolist(),
+            )
+        ),
     }
 
     solve_kwargs = {
@@ -459,7 +552,7 @@ def main():
     }
 
     output = {
-        "schema_version": 5,
+        "schema_version": 6,
         "method": {
             "name": "equality_zero_penalty_augmented_lagrangian",
             "formula": "f - lambda^T c + 0.5 sum(mu_i c_i^2)",
@@ -467,6 +560,9 @@ def main():
             "constraint_semantics": (
                 "nonnegative SIMSOPT hinge-penalty objectives; zero means the "
                 "underlying engineering inequality is feasible"
+            ),
+            "scaled_formula": (
+                "c_hat_i = c_i / scale_i; f - lambda^T c_hat + 0.5 sum(mu_i c_hat_i^2)"
             ),
             "reference_adaptation": (
                 "attached auglag_qa.py convention, with flux plus length retained "
@@ -499,6 +595,11 @@ def main():
             "current_scale_amperes": args.current_scale,
             "curve_scale": 1.0,
         },
+        "constraint_scaling": {
+            "names": list(CONSTRAINT_NAMES),
+            "scales": args.constraint_scales.tolist(),
+            "convention": "scaled_constraint_i = raw_constraint_i / scale_i",
+        },
         "initial_state": {
             "source": "canonical_problem"
             if args.initial_variables is None
@@ -525,6 +626,7 @@ def main():
         "acceptance_gates": gates,
         "visualizations": visualizations,
         "environment": environment(),
+        "nvidia_smi": nvidia_smi(),
     }
     rendered = json.dumps(output, indent=2)
     if args.output is None:

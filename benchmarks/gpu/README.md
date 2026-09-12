@@ -245,11 +245,13 @@ deterministic, and multiplier and penalty vectors are dynamic inputs to one
 compiled JAX executable.
 
 The benchmark runs independent CPU-oracle and GPU-native AL trajectories from
-the same physical vector. Its schema-5 JSON stores every outer state, inner
+the same physical vector. Its schema-6 JSON stores every outer state, inner
 iterations and evaluations, constraint values, multipliers, penalties, final
 physical variables, and complete final field and coil metrics for both
 backends. The final CPU/GPU surfaces and coils are exported as VTS/VTU, with
-signed and absolute `(B dot n) / abs(B)` point arrays on each surface.
+signed and absolute `(B dot n) / abs(B)` point arrays on each surface. It also
+records `nvidia-smi` accelerator identity, UUID, driver version, and memory
+when available.
 
 [Run the augmented-Lagrangian benchmark in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_augmented_lagrangian.ipynb)
 
@@ -279,3 +281,37 @@ histories and VTK payloads, and writes
 `augmented_lagrangian_analysis_summary.json` with the archive digest, acceptance
 gates, final CPU/GPU metrics, optimization states, stage speedups, and surface
 comparison statistics.
+
+## Augmented-Lagrangian conditioning study
+
+Constraint scaling is explicit in schema 6. For positive scales `s_i`, the AL
+uses `c_hat_i = c_i / s_i`, including the multiplier update, while stopping,
+the active violation mask, and all physical feasibility gates continue to use
+raw `c_i` and direct geometric metrics. Both representations are retained in
+every outer-loop record and final CPU/GPU summary.
+
+The automated study screens four predeclared candidates on the smaller
+`engineering` problem: the original schedule, a longer inner solve, gentler
+penalty growth, and measured per-family scaling with gentler growth. Candidates
+are ranked lexicographically by direct physical feasibility first, then
+stationarity, normalized field quality, and evaluation count. Only the winner
+is rerun on `stress`, where the normal-field VTS surfaces and VTU coil sets are
+exported for both CPU and GPU endpoints.
+
+[Run the conditioning study in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_augmented_lagrangian_conditioning.ipynb)
+
+```sh
+OMP_NUM_THREADS=1 python \
+  benchmarks/gpu/sweep_augmented_lagrangian_conditioning.py \
+  --screen-problem engineering --final-problem stress \
+  --maxcor 100 --maxls 50 --current-scale 100000 \
+  --target-tile-size 1024 --source-tile-size 4320 \
+  --output-dir benchmarks/gpu/results/al-conditioning
+```
+
+The compact `conditioning-study-summary.json` records candidate ranking and
+the final acceptance gates. The four screening JSON files and production
+winner JSON preserve complete CPU/GPU histories and final objective,
+`(B dot n) / abs(B)`, coil-constraint, raw/scaled AL, timing, and provenance
+metrics. No conditioning choice is accepted until the returned NVIDIA archive
+passes parity, artifact, and direct physical-feasibility validation.
