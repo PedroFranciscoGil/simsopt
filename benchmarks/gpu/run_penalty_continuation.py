@@ -328,6 +328,13 @@ def main():
             "final_normal_field_quality": final_result["gates"][
                 "final_normal_field_quality"
             ]["passed"],
+            "final_physics_evaluation_budget": final_result["gates"][
+                "physics_evaluation_budget"
+            ]["passed"],
+            "final_optimization_speedup": final_result["gates"]["optimization_speedup"][
+                "passed"
+            ],
+            "total_optimization_speedup": cpu_seconds / gpu_seconds >= 3.0,
         },
         "environment": final_result["environment"],
         "nvidia_smi": final_result["nvidia_smi"],

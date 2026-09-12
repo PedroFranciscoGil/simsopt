@@ -295,7 +295,7 @@ tiles with rematerialization, avoiding a full
 Independent fixtures compare both distance values and position/tangent
 gradients with the existing JAX definitions.  The complete composed objective,
 including linear length and all engineering penalties, matches the SIMSOPT CPU
-oracle in both reverse-pass modes.  The GPU test suite contains 69 passing
+oracle in both reverse-pass modes.  The GPU test suite contains 71 passing
 tests.  Historical scopes remain available; production now selects
 \code{full-engineering} and reports no deferred terms.
 
@@ -823,8 +823,9 @@ stage boundary, the endpoint with the better feasibility-first rank supplies
 one physical restart vector to \emph{both} backends.  Every stage stores both
 final objective/field/constraint snapshots and its selected restart provenance.
 The aggregate acceptance requires an actual GPU, initial and early parity at
-every stage, final absolute feasibility, stationary convergence, and final
-normal-field quality.
+every stage, final absolute feasibility, stationary convergence, final
+normal-field quality, the final evaluation-budget gate, and both final-stage
+and aggregate $3\times$ warm speed.
 
 The checked-in Colab notebook executes 69 GPU tests, performs the six-candidate
 sweep, feeds its winner into the three-stage continuation, validates all four
@@ -841,6 +842,137 @@ experiment is a device-resident L-BFGS implementation against this SciPy
 baseline.  If it does not, the next implementation should be explicit
 constraint handling (most likely an augmented Lagrangian), not still larger
 penalty weights.
+
+\subsection{Feasibility sweep and continuation result}
+
+The workflow ran on 11 September 2026 from revision \code{82fd11a62c49} on an
+NVIDIA Tesla T4 with 15,360~MiB.  The supplied archive has SHA-256 digest
+\nolinkurl{e785bb94c205e7bbee65b173a3da6767f6e15bd04ad831cc22bfd45d26254964}.
+It contains both version-1 workflow summaries, all six schema-4 sweep results,
+all three schema-4 continuation results and restart vectors, and four nonempty
+final VTK files.
+
+All six 25-iteration sweep candidates passed initial and early-trajectory
+parity and exceeded the $3\times$ warm speed gate, but none was stationary or
+absolutely feasible at that short horizon.  The \code{maxls=20} and 50 paths
+were materially identical, so the larger line-search budget was never used.
+Likewise, \code{maxcor=100} and 300 were identical: at 25 iterations both
+values exceed the available correction history.  The feasibility-first rank
+therefore selected \code{maxcor=100,maxls=20} as the first member of a tie, not
+as evidence that 100 is intrinsically better than 300.  \code{maxcor=10}
+finished with a slightly larger worst normalized violation.  Future memory
+sweeps must use a horizon at least as long as the largest history candidate.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/feasibility_solver_sweep.png}
+\caption{Tesla T4 solver-setting sweep.  The outlined bar is the deterministic
+winner.  All configurations are fast, but the absolute constraints are still
+orders of magnitude outside tolerance after only 25 iterations.}
+\label{fig:feasibility-sweep}
+\end{figure}
+
+The selected setting then ran three synchronized stages.  GPU and CPU initial
+objective discrepancies never exceeded $5.96\times10^{-19}$ and initial
+gradient relative error never exceeded $7.09\times10^{-13}$.  Across each
+25-iterate parity window, the maximum objective discrepancy was
+$1.26\times10^{-10}$ and maximum curve-state relative error
+$4.88\times10^{-8}$, so every backend gate passed even as the later nonconvex
+paths separated.
+
+{\scriptsize
+\begin{center}
+\begin{tabular}{rrrrrrl}
+\toprule
+Penalty & Iterations & Evaluations C/G & Seconds C/G & Speedup &
+  Worst violation/tolerance C/G & Next seed \\
+\midrule
+$1\times$   & 100 & 140/152 & 150.35/45.68 & 3.291 & 4269.88/2604.92 & GPU \\
+$10\times$  & 100 & 163/156 & 176.63/46.95 & 3.762 & 309.49/651.85 & CPU \\
+$100\times$ & 200 & 430/493 & 460.05/151.02 & 3.046 & 61.61/21.64 & final \\
+\bottomrule
+\end{tabular}
+\end{center}
+}
+
+In aggregate, CPU and GPU used 733 and 801 physics evaluations and took
+787.035 and 243.653 seconds.  Warm speedup was $3.230\times$; including all
+19.588 seconds of stage compilation gives $2.990\times$.  The GPU used 9.28\%
+more evaluations overall.  The final stage alone used 14.65\% more and failed
+its 10\% evaluation-budget gate, although it retained a $3.046\times$ wall-time
+advantage.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/feasibility_continuation.png}
+\caption{Synchronized penalty continuation.  Vertical lines mark objective
+changes and common restarts.  Larger weights greatly reduce violations, while
+the GPU objective retains its production speed advantage.  The dashed lines
+are the absolute-feasibility ratio one and speedup three gates.}
+\label{fig:feasibility-continuation}
+\end{figure}
+
+Both final solves stopped at the 200-iteration cap rather than satisfying
+SciPy's convergence condition.  Optimizer-coordinate gradient norms were
+$1.675\times10^{-3}$ (CPU) and $6.270\times10^{-3}$ (GPU), far above the
+$10^{-5}$ stationarity gate.  Nevertheless, the continuation moved the designs
+substantially closer to the engineering limits:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Final CPU-oracle metric & Limit & CPU & GPU \\
+\midrule
+Mean $|B\cdot n|/|B|$ & -- & 0.003054 & 0.002475 \\
+RMS $|B\cdot n|/|B|$ & -- & 0.003707 & 0.003099 \\
+Maximum $|B\cdot n|/|B|$ & -- & 0.009827 & 0.009542 \\
+Minimum coil--coil distance & 0.100 & 0.100007 & 0.099994 \\
+Minimum coil--surface distance & 0.300 & 0.299421 & 0.299465 \\
+Maximum curvature & 5.000 & 4.913586 & 4.861377 \\
+Maximum mean-squared curvature & 5.000 & 5.061614 & 5.021635 \\
+Total base-coil length & -- & 29.255706 & 29.283627 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Maximum curvature and coil--coil distance satisfy their absolute allowances on
+both paths (the GPU's $6.32\,\mu$m coil--coil deficit is below the 0.1~mm
+allowance).  The gate still correctly fails two constraints per backend.  The
+coil--surface deficits are 0.579~mm (CPU) and 0.535~mm (GPU), or 5.79 and 5.35
+times tolerance.  Mean-squared-curvature excesses are 0.0616 and 0.0216, or
+61.6 and 21.6 times tolerance.  Thus ``close to the nominal limit'' is not
+silently relabeled feasible.
+
+The GPU final design improves mean, RMS, and maximum normalized normal field by
+18.9\%, 16.4\%, and 2.9\% relative to the CPU continuation endpoint, so the
+relative field-quality gate passes.  This is still a trade: the GPU RMS is
+$3.38\times$ the unconverged 300-iteration $1\times$-weight result because the
+stronger objective spends freedom on engineering constraints.  The final VTS
+maps have signed correlation 0.926, relative $L^2$ difference 0.378, and lower
+GPU absolute error at 65.7\% of surface points.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/feasibility_surface_field.png}
+\caption{Final $100\times$-stage normalized normal-field maps from the archived
+VTS files.  CPU and GPU panels share one scale; the difference uses its own
+symmetric scale.}
+\label{fig:feasibility-surface}
+\end{figure}
+
+\textbf{Decision.}  Accept the GPU objective's reproducibility, all staged
+backend-parity checks, final visualization artifacts, and sustained warm
+speedup.  Reject the milestone as stationary or absolutely engineering-
+feasible.  Do not increase all penalty weights to $1000\times$: a finite
+quadratic penalty admits residual constraint error and increasing it further
+worsens conditioning while the current inner solves are already nonstationary.
+The next implementation will expose scaled, named constraint residuals from the
+GPU objective and add a Powell--Hestenes--Rockafellar augmented-Lagrangian outer
+loop while retaining SciPy for the controlled inner solve.  Multipliers and
+penalty parameters must be stored per stage, and the same absolute, parity,
+evaluation, field-quality, speed, and VTK contracts remain in force.  A native
+L-BFGS solver remains deferred until that formulation reaches a common feasible
+stationary solution.
 \endgroup
 
 \section{Opportunities to improve coil quality}

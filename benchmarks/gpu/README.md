@@ -208,3 +208,17 @@ illustrates argument placement. The aggregate result is
 `penalty-continuation-summary.json`. A false feasibility or stationarity gate
 is retained as evidence and should not be converted into a passing result by
 loosening tolerances after inspection.
+
+Generate the solver-sweep, staged-continuation, and final surface-field figures
+from the downloaded archive with:
+
+```sh
+python benchmarks/gpu/analyze_feasibility_study.py \
+  simsopt-feasibility-study.zip docs/gpu_native/figures
+```
+
+The analyzer validates both workflow summaries, every stage's schema and
+penalty multiplier, and all final VTK payloads. It also emits a concise JSON
+summary containing the archive digest, final CPU/GPU objective, normalized
+normal-field and constraint metrics, aggregate timing, and surface-map
+comparison.

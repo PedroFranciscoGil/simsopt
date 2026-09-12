@@ -171,6 +171,7 @@ def compact_candidate(result, result_file, maxcor, maxls):
     )
     return {
         "maxcor": maxcor,
+        "effective_maxcor_at_horizon": min(maxcor, result["solver"]["maxiter"]),
         "maxls": maxls,
         "result_file": result_file.name,
         "rank": list(candidate_rank(result)),
