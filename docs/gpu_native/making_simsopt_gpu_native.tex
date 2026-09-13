@@ -1802,6 +1802,116 @@ term-evaluation throughput, not yet as optimizer or equivalent-solution
 speedup.  The next optimization archive must restore the full final metric
 contract and export CPU/GPU surface VTS and coil VTU artifacts.
 
+\subsection{Local-residual optimizer integration}
+
+That optimizer boundary is now implemented.  Let $r(x)\in\mathbb{R}^m_+$ be
+the qualified local residual vector and let $s\in\mathbb{R}^m_+$ contain fixed
+scales.  The new matched CPU/GPU experiment minimizes
+\begin{equation}
+ \mathcal{L}_A(x,\lambda,\mu)
+ = f(x)-\lambda^T\widehat r(x)
+   +\frac{1}{2}\sum_{j=1}^{m}\mu_j\widehat r_j(x)^2,
+ \qquad \widehat r_j=r_j/s_j.
+\end{equation}
+The reverse pass directly evaluates
+$J_r(x)^T[-\lambda+\mu\odot\widehat r]/s$ through JAX.  No dense
+$m\times n$ residual Jacobian is formed or stored.  This distinction matters:
+the engineering case has $m=8{,}884$ residuals but only a few hundred optimizer
+coordinates, and a future high-resolution case increases $m$ much faster than
+$n$.
+
+CPU and GPU now execute the same residual and derivative program, explicitly
+lowered to a JAX CPU device and an NVIDIA GPU device respectively.  This makes
+the timing question precise: it measures backend execution rather than mixing
+a SIMSOPT derivative graph on CPU with JAX automatic differentiation on GPU.
+The independent NumPy/SIMSOPT values and finite-difference directional
+derivatives in the preceding qualification remain the implementation oracle.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=6mm and 8mm,
+  box/.style={draw,rounded corners,align=center,minimum height=9mm,
+              inner xsep=5mm,fill=blue!7,font=\scriptsize},
+  state/.style={draw,rounded corners,align=center,minimum height=9mm,
+                inner xsep=5mm,fill=orange!14,font=\scriptsize},
+  output/.style={draw,rounded corners,align=center,minimum height=9mm,
+                 inner xsep=5mm,fill=green!10,font=\scriptsize},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (x) {scaled currents\\and Fourier dofs};
+\node[box,right=of x] (terms) {$f(x)$ and $8{,}884$\\local residuals $r(x)$};
+\node[state,right=of terms] (al) {dynamic $\lambda,\mu$\\scaled AL scalar};
+\node[box,below=of terms] (vjp) {matrix-free reverse pass\\$J_r^T v$};
+\node[state,right=of vjp] (lbfgs) {SciPy L-BFGS-B\\strict stationarity gate};
+\node[output,right=of lbfgs] (artifacts) {CPU/GPU metrics\\VTS and VTU};
+\draw[flow] (x) -- (terms);
+\draw[flow] (terms) -- (al);
+\draw[flow] (al) -- (lbfgs);
+\draw[flow] (terms) -- (vjp);
+\draw[flow] (vjp) -- (lbfgs);
+\draw[flow] (lbfgs) -- (artifacts);
+\draw[flow] (lbfgs.west) -- ++(-4mm,0) |- (x.south);
+\end{tikzpicture}
+\caption{Implemented local-residual AL data path.  Only the optimizer vector,
+scalar value, and gradient cross the SciPy boundary.  Constraint state remains
+dynamic executable input, while final scientific metrics and visualization
+artifacts are evaluated through the common SIMSOPT CPU oracle.}
+\label{fig:local-residual-al-data-path}
+\end{figure}
+
+The selected family scale is
+\begin{equation}
+ s_j=s_k=\max\!\left(1,\sqrt{m_k},
+               \lVert r^{(k)}(x_0)\rVert_2\right),
+ \qquad j\in\text{family }k.
+\end{equation}
+It is attenuation-only.  For an initially active family it bounds
+$\lVert\widehat r^{(k)}(x_0)\rVert_2$ by one; for an inactive family the
+$\sqrt{m_k}$ floor prevents a later vector of order-one residuals from receiving
+an artificial factor of $m_k$ merely because the family contains many samples.
+Scaling never changes the raw stopping test or the direct physical-feasibility
+gate.
+
+One additional scheduler decision is necessary.  The earlier componentwise
+penalty update is retained as the general default, but this experiment uses a
+global update: if any raw local residual exceeds tolerance, all entries of
+$\mu$ grow together.  With componentwise updates, thousands of inactive entries
+would remain at $\mu_0$ and make the mean-penalty accuracy schedule advance only
+weakly.  Global growth preserves the scalar-penalty behavior of the supplied
+reference algorithm while retaining per-residual multipliers.
+
+The outer history now supports a compact mode.  Every stage records the size,
+nonzero count, minimum, maximum, $L^2$ norm, and infinity norm of residuals,
+scaled residuals, multipliers, and penalties instead of serializing six vectors
+of length 8,884.  Named final family summaries remain in the result.  Strict
+inner stationarity is mandatory; a nonstationary L-BFGS-B endpoint cannot
+update $\lambda$ or $\mu$.
+
+The complete final-state contract has also been restored.  Both endpoints
+record the legacy full objective, mean/RMS/maximum
+$|B\cdot n|/|B|$, all coil measurements, margins, and violations through one
+SIMSOPT CPU oracle.  Each endpoint exports a VTS surface containing signed and
+absolute normalized normal-field arrays and a VTU file containing all physical
+coils.  The analyzer validates these artifacts and produces convergence,
+performance, and surface-comparison figures.
+
+A CPU-only minimal smoke run compiled both explicitly selected CPU executables,
+gave exactly equal initial values, residuals, AL values, and gradients, retained
+the 5,554-entry compact history contract, evaluated both complete final metric
+snapshots, and stopped safely after the deliberately tiny two-iteration inner
+budget.  This is structural validation only, not performance or solution
+evidence.
+
+\textbf{Decision.}  Run the engineering-scale notebook before attempting the
+27,546-residual stress problem.  Promotion requires the NVIDIA backend and
+initial parity gates, raw local-residual and direct physical feasibility,
+strict stationary convergence on both backends, CPU-relative field and
+constraint quality, the physics-evaluation budget, and at least $3\times$ warm
+optimization speedup.  The archive is retained even if a scientific gate fails;
+the next design decision will be based on its measured family endpoints and
+not on timing alone.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

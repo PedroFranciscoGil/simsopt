@@ -55,6 +55,22 @@ def test_dynamic_state_bridge_reuses_compilation():
     np.testing.assert_array_equal(constraints, [1.0])
 
 
+def test_dynamic_state_bridge_can_pin_cpu_platform():
+    def terms(x):
+        return jnp.vdot(x, x), jnp.asarray([x[0]])
+
+    initial_x = np.asarray([2.0])
+    bridge = ScipyAugmentedLagrangianBridge(
+        terms, initial_x, 1, platform="cpu"
+    ).set_state([0.0], [10.0])
+
+    value, gradient = bridge(initial_x)
+
+    assert bridge.device_platform == "cpu"
+    assert np.isfinite(value)
+    assert np.all(np.isfinite(gradient))
+
+
 def test_dynamic_state_bridge_scales_only_augmented_coordinates():
     def terms(x):
         return 0.5 * jnp.vdot(x, x), jnp.asarray([x[0] - 1.0])
@@ -197,4 +213,53 @@ def test_inner_stationarity_factor_validation():
     with pytest.raises(ValueError, match="inner_stationarity_factor"):
         minimize_equality_augmented_lagrangian(
             bridge, np.asarray([1.0]), inner_stationarity_factor=0.5
+        )
+
+
+def test_compact_history_summarizes_large_constraint_state():
+    def terms(x):
+        return 0.5 * jnp.vdot(x, x), jnp.asarray([x[0] ** 2, x[0] ** 2])
+
+    initial_x = np.asarray([1.0])
+    bridge = ScipyAugmentedLagrangianBridge(terms, initial_x, 2)
+    result = minimize_equality_augmented_lagrangian(
+        bridge,
+        initial_x,
+        max_outer_iterations=1,
+        max_inner_iterations=2,
+        history_vector_mode="summary",
+    )
+
+    record = result.history[0]
+    assert "constraints" not in record
+    assert record["vector_summaries"]["constraints"]["size"] == 2
+    assert record["vector_summaries"]["penalties_before"]["minimum"] == 10.0
+
+
+def test_global_penalty_update_preserves_uniform_penalties():
+    def terms(x):
+        return 0.5 * jnp.vdot(x, x), jnp.asarray([1.0, 0.0])
+
+    initial_x = np.asarray([1.0])
+    bridge = ScipyAugmentedLagrangianBridge(terms, initial_x, 2)
+    result = minimize_equality_augmented_lagrangian(
+        bridge,
+        initial_x,
+        max_outer_iterations=1,
+        max_inner_iterations=1,
+        constraint_tolerance=1e-16,
+        penalty_update_mode="global",
+    )
+
+    np.testing.assert_array_equal(result.penalties, [100.0, 100.0])
+
+
+def test_penalty_update_mode_validation():
+    def terms(x):
+        return jnp.vdot(x, x), jnp.asarray([x[0]])
+
+    bridge = ScipyAugmentedLagrangianBridge(terms, np.asarray([1.0]), 1)
+    with pytest.raises(ValueError, match="penalty_update_mode"):
+        minimize_equality_augmented_lagrangian(
+            bridge, np.asarray([1.0]), penalty_update_mode="invalid"
         )

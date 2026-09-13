@@ -414,3 +414,49 @@ value-parity, Jacobian-parity, and timing figure with:
 python benchmarks/gpu/analyze_local_residual_parity.py \
   simsopt-local-residual-parity.zip docs/gpu_native/figures
 ```
+
+## Local-residual augmented-Lagrangian optimization
+
+The qualified 8,884-entry engineering residual vector is now connected to the
+safeguarded AL optimizer. CPU and GPU runs lower the same JAX program onto
+explicit CPU and GPU devices, so this experiment isolates accelerator execution
+from differences between derivative implementations. The earlier independent
+NumPy/SIMSOPT value and directional-Jacobian qualification remains the oracle
+for the residual implementation itself. Reverse mode forms the required
+Jacobian-transpose products without constructing the dense residual Jacobian.
+
+The default `family_l2` policy applies one attenuation-only scale per family:
+`max(sqrt(family count), initial family L2 norm)`. This bounds every initially
+active mapped family norm by one and prevents a newly activated large family of
+order-one residuals from dominating only because it has many entries. Raw
+normalized residuals—not scaled coordinates—continue to determine convergence
+and physical feasibility. A global penalty update preserves the scalar-like AL
+schedule across thousands of mostly inactive entries. Strict inner stationarity
+is mandatory, and outer histories summarize large vectors while retaining
+named final family statistics.
+
+[Run local-residual AL optimization in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_local_residual_augmented_lagrangian.ipynb)
+
+```sh
+OMP_NUM_THREADS=1 python \
+  benchmarks/gpu/benchmark_local_residual_augmented_lagrangian.py \
+  --problem engineering --max-outer-iterations 8 \
+  --max-inner-iterations 200 --residual-scaling-policy family_l2 \
+  --current-scale 100000 --target-tile-size 1024 \
+  --source-tile-size 4320 \
+  --output local-residual-augmented-lagrangian.json
+```
+
+The result always records final CPU/GPU objective, normalized
+`abs(B dot n) / abs(B)`, and coil-constraint metrics. With an output path it
+also exports both surfaces as VTS—including signed and absolute normalized
+normal field—and both symmetry-expanded coil sets as VTU. Failed scientific
+gates do not suppress these diagnostic artifacts.
+
+Validate a returned archive and generate convergence, performance, and surface
+figures with:
+
+```sh
+python benchmarks/gpu/analyze_local_residual_augmented_lagrangian.py \
+  simsopt-local-residual-al.zip docs/gpu_native/figures
+```

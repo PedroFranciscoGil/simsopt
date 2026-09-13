@@ -22,6 +22,8 @@ import numpy as np
 from scipy.optimize import minimize
 
 CONSTRAINT_TRANSFORMS = ("identity", "smooth_sqrt")
+HISTORY_VECTOR_MODES = ("full", "summary")
+PENALTY_UPDATE_MODES = ("componentwise", "global")
 
 
 def smooth_sqrt_constraints(constraints, epsilon: float):
@@ -76,6 +78,7 @@ class ScipyAugmentedLagrangianBridge:
         *,
         constraint_transform: str = "identity",
         transform_epsilon: float = 1e-4,
+        platform: str | None = None,
     ):
         initial_x = np.asarray(initial_x)
         if initial_x.ndim != 1:
@@ -94,6 +97,13 @@ class ScipyAugmentedLagrangianBridge:
         self._constraint_count = int(constraint_count)
         self._constraint_transform = constraint_transform
         self._transform_epsilon = float(transform_epsilon)
+        if platform is None:
+            self._device = None
+        else:
+            try:
+                self._device = jax.devices(platform)[0]
+            except (RuntimeError, IndexError) as error:
+                raise ValueError(f"JAX platform {platform!r} is unavailable") from error
         if constraint_scales is None:
             constraint_scales = np.ones(constraint_count, dtype=initial_x.dtype)
         self._constraint_scales = self._coerce_constraint_scales(constraint_scales)
@@ -135,6 +145,16 @@ class ScipyAugmentedLagrangianBridge:
     @property
     def transform_epsilon(self):
         return self._transform_epsilon
+
+    @property
+    def device_platform(self):
+        """Return the explicitly selected platform, or the JAX default."""
+        if self._device is None:
+            return jax.default_backend()
+        return self._device.platform
+
+    def _device_put(self, value):
+        return jax.device_put(value, self._device)
 
     def _map_constraints_jax(self, constraints):
         constraints = jnp.asarray(constraints)
@@ -193,9 +213,9 @@ class ScipyAugmentedLagrangianBridge:
         """Compile both the AL value-gradient and diagnostic term programs."""
         if example_x is None:
             example_x = np.zeros(self._shape, dtype=self._dtype)
-        x = jnp.asarray(self._coerce_x(example_x))
-        lagrange_multipliers = jnp.asarray(self._lagrange_multipliers)
-        penalties = jnp.asarray(self._penalties)
+        x = self._device_put(self._coerce_x(example_x))
+        lagrange_multipliers = self._device_put(self._lagrange_multipliers)
+        penalties = self._device_put(self._penalties)
         self._compiled = self._value_and_grad.lower(
             x, lagrange_multipliers, penalties
         ).compile()
@@ -219,9 +239,9 @@ class ScipyAugmentedLagrangianBridge:
         if not self.is_compiled:
             self.compile(x)
         value, gradient = self._compiled(
-            jnp.asarray(x),
-            jnp.asarray(self._lagrange_multipliers),
-            jnp.asarray(self._penalties),
+            self._device_put(x),
+            self._device_put(self._lagrange_multipliers),
+            self._device_put(self._penalties),
         )
         value.block_until_ready()
         gradient.block_until_ready()
@@ -233,7 +253,7 @@ class ScipyAugmentedLagrangianBridge:
         x = self._coerce_x(x)
         if not self.is_compiled:
             self.compile(x)
-        base_objective, constraints = self._compiled_terms(jnp.asarray(x))
+        base_objective, constraints = self._compiled_terms(self._device_put(x))
         base_objective.block_until_ready()
         constraints.block_until_ready()
         return float(base_objective), np.asarray(constraints)
@@ -279,6 +299,8 @@ def minimize_equality_augmented_lagrangian(
     require_inner_stationarity: bool = False,
     inner_stationarity_factor: float = 1.0,
     stage_callback=None,
+    history_vector_mode: str = "full",
+    penalty_update_mode: str = "componentwise",
 ):
     """Minimize a zero-equality augmented Lagrangian with L-BFGS-B.
 
@@ -292,7 +314,11 @@ def minimize_equality_augmented_lagrangian(
     protocol; it may provide ``map_constraints()`` or the legacy
     ``scale_constraints()``.  When ``require_inner_stationarity`` is true, an
     outer update is never applied unless the inner gradient infinity norm
-    satisfies the requested L-BFGS-B tolerance.
+    satisfies the requested L-BFGS-B tolerance. ``history_vector_mode`` can
+    summarize large constraint states instead of storing every entry at every
+    outer iteration. ``penalty_update_mode='global'`` preserves a scalar-like
+    penalty schedule by growing every penalty when any raw constraint remains
+    outside tolerance; the default retains componentwise growth.
     """
     x = np.asarray(initial_x, dtype=float).copy()
     if x.ndim != 1 or not np.all(np.isfinite(x)):
@@ -314,6 +340,10 @@ def minimize_equality_augmented_lagrangian(
         raise ValueError("maxcor and maxls must be positive")
     if not np.isfinite(inner_stationarity_factor) or inner_stationarity_factor < 1:
         raise ValueError("inner_stationarity_factor must be finite and at least one")
+    if history_vector_mode not in HISTORY_VECTOR_MODES:
+        raise ValueError("history_vector_mode must be 'full' or 'summary'")
+    if penalty_update_mode not in PENALTY_UPDATE_MODES:
+        raise ValueError("penalty_update_mode must be 'componentwise' or 'global'")
 
     base_objective, raw_constraints = bridge.evaluate_terms(x)
     raw_constraints = np.asarray(raw_constraints, dtype=float)
@@ -457,6 +487,8 @@ def minimize_equality_augmented_lagrangian(
         outer_update_applied = not converged and inner_stage_accepted
         if outer_update_applied:
             violation_mask = np.abs(raw_constraints) > constraint_tolerance
+            if penalty_update_mode == "global" and np.any(violation_mask):
+                violation_mask = np.ones_like(violation_mask, dtype=bool)
             penalties[violation_mask] = np.minimum(
                 penalties[violation_mask] * tau, mu_max
             )
@@ -488,17 +520,35 @@ def minimize_equality_augmented_lagrangian(
             "outer_update_applied": bool(outer_update_applied),
             "constraint_norm_infinity": constraint_norm,
             "scaled_constraint_norm_infinity": scaled_constraint_norm,
-            "constraints": raw_constraints.tolist(),
-            "scaled_constraints": scaled_constraints.tolist(),
-            "multipliers_before": multipliers_before.tolist(),
-            "multipliers_after": lagrange_multipliers.tolist(),
-            "penalties_before": penalties_before.tolist(),
-            "penalties_after": penalties.tolist(),
             "progress_accepted": bool(progress_accepted),
             "omega_after": omega,
             "eta_after": eta,
             "optimizer_variables": x.tolist(),
         }
+        state_vectors = {
+            "constraints": raw_constraints,
+            "scaled_constraints": scaled_constraints,
+            "multipliers_before": multipliers_before,
+            "multipliers_after": lagrange_multipliers,
+            "penalties_before": penalties_before,
+            "penalties_after": penalties,
+        }
+        if history_vector_mode == "full":
+            record.update(
+                {name: values.tolist() for name, values in state_vectors.items()}
+            )
+        else:
+            record["vector_summaries"] = {
+                name: {
+                    "size": int(values.size),
+                    "nonzero_count": int(np.count_nonzero(values)),
+                    "minimum": float(np.min(values)),
+                    "maximum": float(np.max(values)),
+                    "l2_norm": float(np.linalg.norm(values)),
+                    "norm_infinity": float(np.linalg.norm(values, ord=np.inf)),
+                }
+                for name, values in state_vectors.items()
+            }
         history.append(record)
         if stage_callback is not None:
             stage_callback(x.copy(), dict(record))
