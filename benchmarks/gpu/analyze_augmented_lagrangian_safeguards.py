@@ -466,6 +466,54 @@ def build_analysis(archive, workflow, results, chosen_index, chosen_result, surf
             )
         }
 
+    def candidate_analysis(index, result):
+        cpu_optimization = result["cpu"]["optimization"]
+        gpu_optimization = result["gpu"]["optimization"]
+        cpu_last = cpu_optimization["outer_history"][-1]
+        gpu_last = gpu_optimization["outer_history"][-1]
+        return {
+            "index": index,
+            "name": CANDIDATES[index]["name"],
+            "qualified": qualifies(result),
+            "diagnostic_rank": list(diagnostic_rank(result)),
+            "acceptance_gates": result["acceptance_gates"],
+            "constraint_mapping": result["constraint_mapping"],
+            "performance": {
+                "warm_speedup": result["comparison"]["optimization_speedup"],
+                "amortized_speedup": result["comparison"]["amortized_speedup"],
+                "per_evaluation_throughput_ratio": (
+                    (
+                        cpu_optimization["seconds"]
+                        / cpu_optimization["total_evaluations"]
+                    )
+                    / (
+                        gpu_optimization["seconds"]
+                        / gpu_optimization["total_evaluations"]
+                    )
+                ),
+            },
+            "safeguard_stop": {
+                "cpu_gradient_to_request_ratio": (
+                    cpu_last["gradient_norm_infinity"]
+                    / cpu_last["requested_inner_gradient_tolerance"]
+                ),
+                "gpu_gradient_to_request_ratio": (
+                    gpu_last["gradient_norm_infinity"]
+                    / gpu_last["requested_inner_gradient_tolerance"]
+                ),
+                "cpu_outer_update_applied": cpu_last["outer_update_applied"],
+                "gpu_outer_update_applied": gpu_last["outer_update_applied"],
+            },
+            "physical_violation_ratios": {
+                backend: feasibility_ratios(result, backend)
+                for backend in ("cpu", "gpu")
+            },
+            "cpu_final_metrics": result["cpu"]["final_metrics"],
+            "gpu_final_metrics": result["gpu"]["final_metrics"],
+            "cpu_optimization": optimization_snapshot(result, "cpu"),
+            "gpu_optimization": optimization_snapshot(result, "gpu"),
+        }
+
     fields = surface_fields(surfaces)
     cpu = fields["cpu"]
     gpu = fields["gpu"]
@@ -486,19 +534,7 @@ def build_analysis(archive, workflow, results, chosen_index, chosen_result, surf
             "problem": chosen_result["problem"]["name"],
         },
         "candidates": [
-            {
-                "index": index,
-                "name": CANDIDATES[index]["name"],
-                "qualified": qualifies(result),
-                "diagnostic_rank": list(diagnostic_rank(result)),
-                "acceptance_gates": result["acceptance_gates"],
-                "constraint_mapping": result["constraint_mapping"],
-                "cpu_final_metrics": result["cpu"]["final_metrics"],
-                "gpu_final_metrics": result["gpu"]["final_metrics"],
-                "cpu_optimization": optimization_snapshot(result, "cpu"),
-                "gpu_optimization": optimization_snapshot(result, "gpu"),
-            }
-            for index, result in enumerate(results)
+            candidate_analysis(index, result) for index, result in enumerate(results)
         ],
         "surface_comparison": {
             "signed_correlation": float(np.corrcoef(cpu.ravel(), gpu.ravel())[0, 1]),

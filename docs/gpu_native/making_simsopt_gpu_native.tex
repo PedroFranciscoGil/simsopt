@@ -1518,8 +1518,7 @@ production stress run.  If none qualify, the summary reports no winner and
 skips production; a diagnostic ordering remains available solely to guide the
 next design.  Thus the new code makes a stronger methodological result before
 new NVIDIA data exist: an invalid design can no longer become a production
-\emph{winner}.  The measured outcome remains pending execution of
-\code{colab\_augmented\_lagrangian\_safeguards.ipynb} on an NVIDIA runtime.
+\emph{winner}.  The NVIDIA outcome is reported below.
 The companion analyzer independently reproduces every qualification and
 diagnostic rank, rejects missing or inconsistent schema-7 stage fields,
 validates all VTK payloads and signed/absolute surface arrays, and creates four
@@ -1537,6 +1536,127 @@ optimization or export.  The validator now joins only \code{surface\_vts} and
 \code{coils\_vtu} to the artifact root, applies the same check to an optional
 production result, and permits validation and download to be rerun without
 repeating the optimization screen.
+
+\subsection{Measured safeguard-qualification result}
+
+The returned archive has SHA-256
+\code{2637ee9718a9dbff1e87a3cbf4e1e4091855dcbcf159acc2bb5ee7029f11261a}.
+It records revision \code{238029290b4b67a04e303613e7f1497f1e4973c4} on a
+Tesla T4 with 15,360~MiB, driver 580.82.07, and the JAX CUDA backend.  The
+analyzer validated all four schema-7 result files and all sixteen VTS/VTU
+payloads.  Initial CPU/GPU parity remains excellent: raw constraints agree
+exactly, base-objective absolute error is $4.16\times10^{-17}$, and relative
+gradient error is at most $7.73\times10^{-16}$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/al_safeguard_screen.png}
+\caption{Hard qualification outcome on the engineering problem.  A dashed
+ratio of one marks direct physical feasibility.  No candidate passes all
+scientific gates; lower failed-gate count is diagnostic only.}
+\label{fig:al-safeguard-screen}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{Safeguarded screening summary.  The gradient ratios divide the final
+inner infinity-norm gradient by its requested tolerance.  A value above one
+causes the safeguard to reject the stage.}
+\label{tab:al-safeguard-screen}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+Candidate & failed gates & worst physical ratio & CPU grad/request &
+GPU grad/request & CPU/GPU field RMS & warm speedup \\
+\midrule
+identity strict & 4 & 31.10 & 1.44 & 28.41 & 0.001794/0.001787 & 4.69 \\
+$q_{\varepsilon}$, $\varepsilon=10^{-3}$ & 3 & 8.71 & 24.56 & 129.73 &
+0.007218/0.007124 & 4.99 \\
+$q_{\varepsilon}$, $\varepsilon=10^{-4}$ & 2 & 3.71 & 53.36 & 7.90 &
+0.021090/0.021150 & 4.85 \\
+$q_{\varepsilon}$, $\varepsilon=10^{-4}$, $\rho=0.25$ & 4 & 8.84 &
+104.70 & 145.69 & 0.014973/0.023835 & 4.68 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+All eight CPU/GPU solves eventually exhausted the 200-iteration inner budget.
+Every final stage was marked nonstationary, no multiplier or penalty update
+was applied, and production was correctly skipped.  This is the main success
+of the implementation: the earlier failure mode would have continued
+escalating penalties and reported a mechanical winner from these same states.
+The safeguard instead turns false L-BFGS-B convergence into an explicit,
+auditable termination.
+
+The identity mapping gives the best field RMS and comes closest to CPU inner
+stationarity, but is grossly infeasible: the worst direct violation is
+31.10 times its allowance.  The $\varepsilon=10^{-4}$ residual-like mapping is
+the best diagnostic candidate because it fails only feasibility and
+stationarity.  Its GPU endpoint satisfies all stated direct physical
+allowances, while the CPU coil--coil distance is 0.099629~m, a 0.371~mm
+shortfall and 3.707 times the allowed distance deficit.  Its last CPU and GPU
+gradient infinity norms are respectively $3.33\times10^{-2}$ and
+$4.94\times10^{-3}$, against a requested $6.25\times10^{-4}$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/al_safeguard_calibration.png}
+\caption{One-shot gradient calibration.  Only coil--surface distance is active
+at the canonical initial state, so the other three Jacobian rows contribute
+zero and retain unit scale.  Constraints that activate later are therefore not
+conditioned by this initialization-only rule.}
+\label{fig:al-safeguard-calibration}
+\end{figure}
+
+The calibration plot explains an important limitation.  The initial base
+gradient norm is 0.2137.  Under the identity map, the only nonzero estimated
+constraint contribution is just 0.00729.  The square-root maps raise it to
+0.2924 before attenuation; the selected scales 1.165--1.170 reduce it to the
+base-gradient norm, while $\rho=0.25$ selects 2.339 and reduces it to 0.05343.
+Coil--coil distance, curvature, and mean-squared curvature are inactive at
+$x_0$, however, so one-shot Jacobian balancing cannot anticipate their later
+activation.  The most aggressive attenuation also produces the largest
+CPU/GPU gradient-to-request ratios and degrades endpoint agreement.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/al_safeguard_convergence.png}
+\caption{Outer history for the best diagnostic screen,
+$q_{\varepsilon}$ with $\varepsilon=10^{-4}$.  At outer step four both
+backends reach the inner iteration cap while their gradient norms remain above
+the dashed requested tolerance; the safe stop is therefore mandatory.}
+\label{fig:al-safeguard-convergence}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/al_safeguard_surface.png}
+\caption{CPU and GPU signed $(B\cdot n)/|B|$ for the best diagnostic screen,
+not an accepted production result.  Their signed correlation is 0.984 and
+relative $L^2$ difference is 0.180; GPU has the smaller pointwise absolute
+value on 46.2\% of surface points.}
+\label{fig:al-safeguard-surface}
+\end{figure}
+
+The T4 still provides consistent throughput evidence.  Warm whole-run
+speedups span 4.68--4.99, amortized speedups including compilation span
+3.54--4.13, and time-per-physics-evaluation ratios span 4.25--4.62.  These are
+kernel-throughput results, not equivalent-solution optimizer speedups, because
+the CPU and GPU trajectories use different evaluation counts and no endpoint
+qualified.
+
+\textbf{Decision.}  Accept the strict safeguard, hard promotion rule,
+schema-7 provenance, VTK exports, analyzer, and roughly $4.3$--$4.6\times$
+per-evaluation acceleration.  Reject all four candidate designs and any
+production or solution-quality claim.  A larger outer penalty or another
+initial scalar-scale sweep is not justified.  The next implementation should
+expose physically normalized, unsquared local hinge residuals before they are
+aggregated.  Applying the AL quadratic to those residuals recovers the intended
+second-order penalty instead of squaring an integrated squared penalty, and
+lets newly active distance or curvature samples enter with explicit physical
+units.  The experiment should retain the present safeguard and qualification
+policy and first prove CPU/GPU value--Jacobian parity for the residual vector
+before another optimization screen.
 
 \section{Opportunities to improve coil quality}
 
