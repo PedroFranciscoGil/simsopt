@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import minimize
 
-CONSTRAINT_TRANSFORMS = ("identity", "smooth_sqrt")
+CONSTRAINT_TRANSFORMS = ("identity", "smooth_sqrt", "smooth_abs")
 HISTORY_VECTOR_MODES = ("full", "summary")
 PENALTY_UPDATE_MODES = ("componentwise", "global")
 
@@ -37,6 +37,20 @@ def smooth_sqrt_constraints(constraints, epsilon: float):
         raise ValueError("epsilon must be finite and positive")
     constraints = jnp.asarray(constraints)
     return jnp.sqrt(constraints + epsilon * epsilon) - epsilon
+
+
+def smooth_abs_constraints(constraints, epsilon: float):
+    """Smooth nonnegative local residuals without changing their zero set.
+
+    ``sqrt(c**2 + epsilon**2) - epsilon`` has zero value and derivative at
+    ``c = 0`` and approaches ``c - epsilon`` for ``c >> epsilon``.  It removes
+    the multiplier-induced kink of a linear ReLU residual while remaining
+    asymptotically residual-like away from the feasibility boundary.
+    """
+    if not np.isfinite(epsilon) or epsilon <= 0:
+        raise ValueError("epsilon must be finite and positive")
+    constraints = jnp.asarray(constraints)
+    return jnp.sqrt(constraints * constraints + epsilon * epsilon) - epsilon
 
 
 def equality_augmented_lagrangian(
@@ -88,7 +102,10 @@ class ScipyAugmentedLagrangianBridge:
         if constraint_count < 1:
             raise ValueError("constraint_count must be positive")
         if constraint_transform not in CONSTRAINT_TRANSFORMS:
-            raise ValueError("constraint_transform must be 'identity' or 'smooth_sqrt'")
+            raise ValueError(
+                "constraint_transform must be 'identity', 'smooth_sqrt', or "
+                "'smooth_abs'"
+            )
         if not np.isfinite(transform_epsilon) or transform_epsilon <= 0:
             raise ValueError("transform_epsilon must be finite and positive")
         self._terms = terms
@@ -113,9 +130,9 @@ class ScipyAugmentedLagrangianBridge:
         self._penalties = np.ones(constraint_count, dtype=initial_x.dtype)
         self.evaluations = 0
 
-        def objective(x, lagrange_multipliers, penalties):
+        def objective(x, lagrange_multipliers, penalties, constraint_scales):
             base_objective, constraints = terms(x)
-            constraints = self._map_constraints_jax(constraints)
+            constraints = self._map_constraints_jax(constraints, constraint_scales)
             return equality_augmented_lagrangian(
                 base_objective, constraints, lagrange_multipliers, penalties
             )
@@ -138,6 +155,11 @@ class ScipyAugmentedLagrangianBridge:
     def constraint_scales(self):
         return self._constraint_scales.copy()
 
+    def set_constraint_scales(self, constraint_scales):
+        """Update AL coordinate scales without recompiling the executable."""
+        self._constraint_scales = self._coerce_constraint_scales(constraint_scales)
+        return self
+
     @property
     def constraint_transform(self):
         return self._constraint_transform
@@ -156,11 +178,13 @@ class ScipyAugmentedLagrangianBridge:
     def _device_put(self, value):
         return jax.device_put(value, self._device)
 
-    def _map_constraints_jax(self, constraints):
+    def _map_constraints_jax(self, constraints, constraint_scales):
         constraints = jnp.asarray(constraints)
         if self._constraint_transform == "smooth_sqrt":
             constraints = smooth_sqrt_constraints(constraints, self._transform_epsilon)
-        return constraints / jnp.asarray(self._constraint_scales)
+        elif self._constraint_transform == "smooth_abs":
+            constraints = smooth_abs_constraints(constraints, self._transform_epsilon)
+        return constraints / jnp.asarray(constraint_scales)
 
     def map_constraints(self, constraints):
         """Map raw nonnegative penalties to the coordinates used by the AL."""
@@ -170,6 +194,13 @@ class ScipyAugmentedLagrangianBridge:
                 raise ValueError("smooth_sqrt constraints must be nonnegative")
             constraints = (
                 np.sqrt(constraints + self._transform_epsilon**2)
+                - self._transform_epsilon
+            )
+        elif self._constraint_transform == "smooth_abs":
+            if np.any(constraints < 0):
+                raise ValueError("smooth_abs constraints must be nonnegative")
+            constraints = (
+                np.sqrt(constraints**2 + self._transform_epsilon**2)
                 - self._transform_epsilon
             )
         return constraints / self._constraint_scales
@@ -216,10 +247,13 @@ class ScipyAugmentedLagrangianBridge:
         x = self._device_put(self._coerce_x(example_x))
         lagrange_multipliers = self._device_put(self._lagrange_multipliers)
         penalties = self._device_put(self._penalties)
+        constraint_scales = self._device_put(self._constraint_scales)
         self._compiled = self._value_and_grad.lower(
-            x, lagrange_multipliers, penalties
+            x, lagrange_multipliers, penalties, constraint_scales
         ).compile()
-        value, gradient = self._compiled(x, lagrange_multipliers, penalties)
+        value, gradient = self._compiled(
+            x, lagrange_multipliers, penalties, constraint_scales
+        )
         value.block_until_ready()
         gradient.block_until_ready()
         self._compiled_terms = self._jitted_terms.lower(x).compile()
@@ -242,6 +276,7 @@ class ScipyAugmentedLagrangianBridge:
             self._device_put(x),
             self._device_put(self._lagrange_multipliers),
             self._device_put(self._penalties),
+            self._device_put(self._constraint_scales),
         )
         value.block_until_ready()
         gradient.block_until_ready()
@@ -268,6 +303,7 @@ class AugmentedLagrangianResult:
     jac: np.ndarray
     lagrange_multipliers: np.ndarray
     penalties: np.ndarray
+    constraint_scales: np.ndarray
     constraints: np.ndarray
     scaled_constraints: np.ndarray
     base_objective: float
@@ -298,9 +334,12 @@ def minimize_equality_augmented_lagrangian(
     mu_max: float = np.inf,
     require_inner_stationarity: bool = False,
     inner_stationarity_factor: float = 1.0,
+    inner_stationarity_relative_tolerance: float | None = None,
     stage_callback=None,
     history_vector_mode: str = "full",
     penalty_update_mode: str = "componentwise",
+    constraint_scale_reduction_factor: float = 1.0,
+    minimum_constraint_scales=None,
 ):
     """Minimize a zero-equality augmented Lagrangian with L-BFGS-B.
 
@@ -314,11 +353,15 @@ def minimize_equality_augmented_lagrangian(
     protocol; it may provide ``map_constraints()`` or the legacy
     ``scale_constraints()``.  When ``require_inner_stationarity`` is true, an
     outer update is never applied unless the inner gradient infinity norm
-    satisfies the requested L-BFGS-B tolerance. ``history_vector_mode`` can
+    satisfies the requested L-BFGS-B tolerance, or the optional relative
+    reduction from that stage's initial gradient. ``history_vector_mode`` can
     summarize large constraint states instead of storing every entry at every
     outer iteration. ``penalty_update_mode='global'`` preserves a scalar-like
     penalty schedule by growing every penalty when any raw constraint remains
-    outside tolerance; the default retains componentwise growth.
+    outside tolerance; the default retains componentwise growth. A scale
+    reduction below one is applied only after a stationary stage also satisfies
+    the AL progress test. Multipliers are rescaled to preserve their physical
+    linear coefficient when this continuation step changes coordinates.
     """
     x = np.asarray(initial_x, dtype=float).copy()
     if x.ndim != 1 or not np.all(np.isfinite(x)):
@@ -340,10 +383,24 @@ def minimize_equality_augmented_lagrangian(
         raise ValueError("maxcor and maxls must be positive")
     if not np.isfinite(inner_stationarity_factor) or inner_stationarity_factor < 1:
         raise ValueError("inner_stationarity_factor must be finite and at least one")
+    if inner_stationarity_relative_tolerance is not None and (
+        not np.isfinite(inner_stationarity_relative_tolerance)
+        or not 0 < inner_stationarity_relative_tolerance < 1
+    ):
+        raise ValueError(
+            "inner_stationarity_relative_tolerance must be between zero and one"
+        )
     if history_vector_mode not in HISTORY_VECTOR_MODES:
         raise ValueError("history_vector_mode must be 'full' or 'summary'")
     if penalty_update_mode not in PENALTY_UPDATE_MODES:
         raise ValueError("penalty_update_mode must be 'componentwise' or 'global'")
+    if (
+        not np.isfinite(constraint_scale_reduction_factor)
+        or not 0 < constraint_scale_reduction_factor <= 1
+    ):
+        raise ValueError(
+            "constraint_scale_reduction_factor must be in the interval (0, 1]"
+        )
 
     base_objective, raw_constraints = bridge.evaluate_terms(x)
     raw_constraints = np.asarray(raw_constraints, dtype=float)
@@ -352,6 +409,43 @@ def minimize_equality_augmented_lagrangian(
     if not np.isfinite(base_objective) or not np.all(np.isfinite(raw_constraints)):
         raise ValueError("initial objective and constraints must be finite")
     constraint_count = raw_constraints.size
+    scale_continuation_enabled = constraint_scale_reduction_factor < 1
+    if scale_continuation_enabled and not (
+        hasattr(bridge, "constraint_scales")
+        and hasattr(bridge, "set_constraint_scales")
+    ):
+        raise ValueError(
+            "constraint-scale continuation requires a mutable-scale bridge"
+        )
+    if hasattr(bridge, "constraint_scales"):
+        initial_constraint_scales = np.asarray(bridge.constraint_scales, dtype=float)
+    else:
+        initial_constraint_scales = np.ones(constraint_count)
+    if minimum_constraint_scales is None:
+        minimum_constraint_scales = (
+            np.ones(constraint_count)
+            if scale_continuation_enabled
+            else initial_constraint_scales.copy()
+        )
+    else:
+        minimum_constraint_scales = np.asarray(minimum_constraint_scales, dtype=float)
+        if minimum_constraint_scales.ndim == 0:
+            minimum_constraint_scales = np.full(
+                constraint_count, float(minimum_constraint_scales)
+            )
+    if (
+        minimum_constraint_scales.shape != (constraint_count,)
+        or not np.all(np.isfinite(minimum_constraint_scales))
+        or np.any(minimum_constraint_scales <= 0)
+        or (
+            scale_continuation_enabled
+            and np.any(minimum_constraint_scales > initial_constraint_scales)
+        )
+    ):
+        raise ValueError(
+            "minimum_constraint_scales must be positive, match constraints, and "
+            "not exceed the bridge's initial scales"
+        )
     if hasattr(bridge, "map_constraints"):
         scaled_constraints = np.asarray(
             bridge.map_constraints(raw_constraints), dtype=float
@@ -414,6 +508,12 @@ def minimize_equality_augmented_lagrangian(
         evaluation_start = getattr(bridge, "evaluations", 0)
         inner_start = time.perf_counter()
         requested_inner_gradient_tolerance = max(omega, gradient_tolerance)
+        _, stage_initial_gradient = bridge(x)
+        stage_initial_gradient_norm_infinity = float(
+            np.linalg.norm(stage_initial_gradient, ord=np.inf)
+        )
+        if not np.isfinite(stage_initial_gradient_norm_infinity):
+            raise FloatingPointError("inner stage begins with a non-finite gradient")
         inner_result = minimize(
             bridge,
             x,
@@ -465,11 +565,22 @@ def minimize_equality_augmented_lagrangian(
         gradient_norm = float(np.linalg.norm(final_gradient))
         gradient_norm_infinity = float(np.linalg.norm(final_gradient, ord=np.inf))
         step_norm_infinity = float(np.linalg.norm(x - x_before, ord=np.inf))
-        inner_stationary = gradient_norm_infinity <= (
+        absolute_stationarity_threshold = (
             inner_stationarity_factor
             * requested_inner_gradient_tolerance
             * (1.0 + 10.0 * np.finfo(float).eps)
         )
+        if inner_stationarity_relative_tolerance is None:
+            relative_stationarity_threshold = 0.0
+        else:
+            relative_stationarity_threshold = (
+                inner_stationarity_relative_tolerance
+                * stage_initial_gradient_norm_infinity
+            )
+        applied_stationarity_threshold = max(
+            absolute_stationarity_threshold, relative_stationarity_threshold
+        )
+        inner_stationary = gradient_norm_infinity <= applied_stationarity_threshold
         inner_stage_accepted = inner_stationary or not require_inner_stationarity
         total_inner_iterations += int(inner_result.nit)
         stage_evaluations = int(
@@ -478,13 +589,19 @@ def minimize_equality_augmented_lagrangian(
         total_evaluations += stage_evaluations
 
         progress_accepted = scaled_constraint_norm < eta and inner_stage_accepted
-        converged = (
-            gradient_norm <= gradient_tolerance
-            and constraint_norm <= constraint_tolerance
-        )
+        if inner_stationarity_relative_tolerance is None:
+            stationary_convergence = gradient_norm <= gradient_tolerance
+        else:
+            stationary_convergence = inner_stationary
+        converged = stationary_convergence and constraint_norm <= constraint_tolerance
         # Keep a converged result internally consistent: its reported AL value
         # and gradient correspond to the returned multipliers and penalties.
         outer_update_applied = not converged and inner_stage_accepted
+        constraint_scales_before = (
+            np.asarray(bridge.constraint_scales, dtype=float)
+            if hasattr(bridge, "constraint_scales")
+            else np.ones(constraint_count)
+        )
         if outer_update_applied:
             violation_mask = np.abs(raw_constraints) > constraint_tolerance
             if penalty_update_mode == "global" and np.any(violation_mask):
@@ -495,11 +612,32 @@ def minimize_equality_augmented_lagrangian(
             mean_penalty = float(np.mean(penalties))
             if progress_accepted:
                 lagrange_multipliers -= penalties * scaled_constraints
+                if scale_continuation_enabled:
+                    constraint_scales_after = np.maximum(
+                        minimum_constraint_scales,
+                        constraint_scales_before * constraint_scale_reduction_factor,
+                    )
+                    # Preserve lambda / scale while deliberately strengthening
+                    # the quadratic penalty through the smaller scale.
+                    lagrange_multipliers *= (
+                        constraint_scales_after / constraint_scales_before
+                    )
+                    bridge.set_constraint_scales(constraint_scales_after)
                 omega = max(omega / mean_penalty, gradient_tolerance)
                 eta = max(eta / mean_penalty, constraint_tolerance)
             else:
                 omega = max(1.0 / mean_penalty, gradient_tolerance)
                 eta = max(1.0 / mean_penalty**0.1, constraint_tolerance)
+        constraint_scales_after = (
+            np.asarray(bridge.constraint_scales, dtype=float)
+            if hasattr(bridge, "constraint_scales")
+            else constraint_scales_before.copy()
+        )
+        scaled_constraints_after_scale_update = (
+            np.asarray(bridge.map_constraints(raw_constraints), dtype=float)
+            if hasattr(bridge, "map_constraints")
+            else scaled_constraints.copy()
+        )
 
         record = {
             "outer_iteration": outer_iteration,
@@ -513,13 +651,24 @@ def minimize_equality_augmented_lagrangian(
             "base_objective": float(base_objective),
             "gradient_norm": gradient_norm,
             "gradient_norm_infinity": gradient_norm_infinity,
+            "stage_initial_gradient_norm_infinity": (
+                stage_initial_gradient_norm_infinity
+            ),
+            "gradient_infinity_reduction_ratio": gradient_norm_infinity
+            / max(stage_initial_gradient_norm_infinity, np.finfo(float).tiny),
             "requested_inner_gradient_tolerance": requested_inner_gradient_tolerance,
+            "absolute_stationarity_threshold": absolute_stationarity_threshold,
+            "relative_stationarity_threshold": relative_stationarity_threshold,
+            "applied_stationarity_threshold": applied_stationarity_threshold,
             "step_norm_infinity": step_norm_infinity,
             "inner_stationary": bool(inner_stationary),
             "inner_stage_accepted": bool(inner_stage_accepted),
             "outer_update_applied": bool(outer_update_applied),
             "constraint_norm_infinity": constraint_norm,
             "scaled_constraint_norm_infinity": scaled_constraint_norm,
+            "scaled_constraint_norm_infinity_after_scale_update": float(
+                np.linalg.norm(scaled_constraints_after_scale_update, ord=np.inf)
+            ),
             "progress_accepted": bool(progress_accepted),
             "omega_after": omega,
             "eta_after": eta,
@@ -532,6 +681,8 @@ def minimize_equality_augmented_lagrangian(
             "multipliers_after": lagrange_multipliers,
             "penalties_before": penalties_before,
             "penalties_after": penalties,
+            "constraint_scales_before": constraint_scales_before,
+            "constraint_scales_after": constraint_scales_after,
         }
         if history_vector_mode == "full":
             record.update(
@@ -552,6 +703,7 @@ def minimize_equality_augmented_lagrangian(
         history.append(record)
         if stage_callback is not None:
             stage_callback(x.copy(), dict(record))
+        scaled_constraints = scaled_constraints_after_scale_update
         if converged:
             break
         if require_inner_stationarity and not inner_stationary:
@@ -574,6 +726,11 @@ def minimize_equality_augmented_lagrangian(
         jac=final_gradient,
         lagrange_multipliers=lagrange_multipliers,
         penalties=penalties,
+        constraint_scales=(
+            np.asarray(bridge.constraint_scales, dtype=float)
+            if hasattr(bridge, "constraint_scales")
+            else np.ones(constraint_count)
+        ),
         constraints=raw_constraints,
         scaled_constraints=scaled_constraints,
         base_objective=float(base_objective),

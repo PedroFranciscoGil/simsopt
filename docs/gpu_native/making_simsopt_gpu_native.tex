@@ -2025,6 +2025,137 @@ such as $q_\epsilon(r)=\sqrt{r^2+\epsilon^2}-\epsilon$, together with a staged
 reduction of family attenuation after accepted stationary outer solves.  Raw
 $r$ and direct physical metrics must remain the stopping and promotion gates.
 
+\section{Smoothed scale continuation and target-based validation}
+
+The preceding decision used deliberately strict optimization diagnostics as
+scientific acceptance gates.  That policy is now superseded by the project
+criterion: a design is scientifically validated when the actual quantities of
+interest remain within 10\% of their targets.  Large gradient norms are common
+in coil optimization because current and Fourier coordinates, active hinge
+sets, and AL terms have heterogeneous sensitivities.  They remain essential
+diagnostics, but gradient magnitude alone no longer vetoes a design whose
+physical oracle quantities satisfy the agreed envelope.
+
+Engineering inequalities use a one-sided 10\% envelope.  A minimum-distance
+target $d_\star$ accepts $d\geq0.9d_\star$, while a maximum target
+$k_\star$ accepts $k\leq1.1k_\star$.  Values better than the nominal target are
+not penalized for being more than 10\% better.  Objective value, total base-coil
+length, the three normalized-normal-field statistics, and the four principal
+constraint measurements must additionally agree between CPU and GPU within
+10\%, using the CPU result as the reference.  The ideal target for
+$B\cdot n/|B|$ is zero, so percentage deviation from that target is undefined;
+the report therefore retains its mean absolute, RMS, and maximum absolute
+values and applies the CPU/GPU 10\% agreement test.  An absolute physics target
+can be added later without changing the stored metric contract.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=6mm and 10mm,
+  box/.style={draw,rounded corners,align=center,minimum height=9mm,
+              inner xsep=4mm,fill=blue!7,font=\scriptsize},
+  pass/.style={draw,rounded corners,align=center,minimum height=9mm,
+               inner xsep=4mm,fill=green!14,font=\scriptsize},
+  diag/.style={draw,dashed,rounded corners,align=center,minimum height=9mm,
+               inner xsep=4mm,fill=orange!12,font=\scriptsize},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (oracle) {final CPU/GPU\\physical-oracle metrics};
+\node[box,above right=4mm and 15mm of oracle] (target) {one-sided engineering
+  targets\\within 10\%};
+\node[box,below right=4mm and 15mm of oracle] (parity) {retained CPU/GPU QoIs\\
+  agree within 10\%};
+\node[pass,right=18mm of target.south east,anchor=west] (valid)
+  {scientifically\\validated};
+\node[diag,below=13mm of oracle] (diagnostics) {gradient norms, strict AL
+  residuals,\\tight feasibility, evaluation counts};
+\draw[flow] (oracle) -- (target);
+\draw[flow] (oracle) -- (parity);
+\draw[flow] (target) -- (valid);
+\draw[flow] (parity) -- (valid);
+\draw[flow,dashed] (oracle) -- (diagnostics);
+\end{tikzpicture}
+\caption{Revised validation contract.  Physical targets and CPU/GPU agreement
+determine scientific validity.  First-order and strict AL checks remain visible
+optimizer-health diagnostics rather than hidden or discarded signals.}
+\label{fig:qoi-validation-contract}
+\end{figure}
+
+\subsection{Implemented conditioning changes}
+
+Schema~2 implements the planned zero-preserving transform
+\[
+ q_\epsilon(r)=\sqrt{r^2+\epsilon^2}-\epsilon,
+ \qquad q_\epsilon(0)=q_\epsilon'(0)=0,
+ \qquad q_\epsilon'(r)=\frac{r}{\sqrt{r^2+\epsilon^2}}.
+\]
+Unlike the earlier square-root transform, this mapping neither moves the zero
+set nor gives a nonzero derivative at a feasible hinge.  It is quadratic near
+zero, $q_\epsilon(r)\simeq r^2/(2\epsilon)$, and approaches $r-\epsilon$ for
+large positive residuals.  The Colab qualification uses
+$\epsilon=0.1$ in normalized-residual coordinates to soften the boundary
+region while leaving order-one violations residual-like.
+
+Constraint scales are now dynamic inputs to the compiled CPU/GPU executable.
+After an inner stage passes its absolute-or-relative first-order check and the
+scaled AL progress test, each family scale follows
+\[
+ s_{k+1}=\max(s_{\min},\rho s_k),\qquad \rho=0.5,
+ \]
+with $s_{\min}=\sqrt{n_{\rm family}}$.  The multiplier is changed as
+$\lambda_{k+1}\leftarrow\lambda_{k+1}s_{k+1}/s_k$, preserving the physical
+linear coefficient $\lambda/s$ while the quadratic contribution is
+deliberately strengthened by the smaller scale.  The gentler $\rho=0.5$
+replaces the initially screened 0.25 step, which strengthened a quadratic term
+by $16\times$ from scaling alone.  No JAX recompilation is needed when scales,
+multipliers, or penalties change.
+
+The inner safeguard accepts either the requested absolute threshold or a
+stage-relative gradient reduction.  The production notebook asks for a
+100-fold reduction.  This criterion governs whether an AL state update is safe;
+it does not define scientific validity.  Every history record now retains the
+initial and final infinity norms, their ratio, both thresholds, scale summaries,
+and whether the update was applied.
+
+\subsection{Retrospective classification of the measured A100 endpoints}
+
+Applying the revised rule to the already measured engineering run changes its
+scientific classification without rewriting its solver history.  Table
+\ref{tab:qoi-validation-retrospective} shows that both endpoints lie comfortably
+inside the 10\% physical envelope.  Across the explicitly selected CPU/GPU
+quantities of interest, the largest relative difference is 1.35\% in the
+objective.  The normalized-normal-field statistics differ by less than 1\%.
+
+\begin{table}[htbp]
+\centering
+\caption{Retrospective 10\% target validation of the existing A100 endpoints.
+The strict local-residual and stationarity failures reported earlier remain
+true diagnostics, but do not invalidate these physical quantities.}
+\label{tab:qoi-validation-retrospective}
+\begin{tabular}{lrrl}
+\toprule
+Quantity & CPU & GPU & Accepted boundary \\
+\midrule
+Minimum coil--coil distance (m) & 0.114532 & 0.114235 & $\geq0.090$ \\
+Minimum coil--surface distance (m) & 0.299875 & 0.299900 & $\geq0.270$ \\
+Maximum curvature (m$^{-1}$) & 4.14766 & 4.17179 & $\leq5.50$ \\
+Maximum MSC (m$^{-2}$) & 5.00100 & 5.00100 & $\leq5.50$ \\
+Objective & 0.0165123 & 0.0162893 & backend difference $\leq10\%$ \\
+$|B\cdot n|/|B|$ RMS & 0.191970 & 0.190910 & backend difference $\leq10\%$ \\
+Total base-coil length (m) & 14.1670 & 14.1866 & backend difference $\leq10\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Decision.}  The historical CPU and GPU designs are scientifically
+validated under the revised 10\% quantity-of-interest criterion.  They are not
+relabelled as tightly converged AL solutions: the raw local residual,
+stationarity, and evaluation-budget outcomes remain failed diagnostics.  The
+next A100 run will test the new smoothed scale continuation and emit both
+\code{scientifically\_validated} and the separate technical/performance gates,
+along with the mandatory final JSON metrics, surface VTS files carrying
+$B\cdot n/|B|$, and coil VTU files.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

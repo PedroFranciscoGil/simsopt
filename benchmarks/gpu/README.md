@@ -426,14 +426,13 @@ for the residual implementation itself. Reverse mode forms the required
 Jacobian-transpose products without constructing the dense residual Jacobian.
 
 The default `family_l2` policy applies one attenuation-only scale per family:
-`max(sqrt(family count), initial family L2 norm)`. This bounds every initially
-active mapped family norm by one and prevents a newly activated large family of
-order-one residuals from dominating only because it has many entries. Raw
-normalized residuals—not scaled coordinates—continue to determine convergence
-and physical feasibility. A global penalty update preserves the scalar-like AL
-schedule across thousands of mostly inactive entries. Strict inner stationarity
-is mandatory, and outer histories summarize large vectors while retaining
-named final family statistics.
+`max(sqrt(family count), initial family L2 norm)`. The schema-2 workflow then
+uses the zero-preserving transform `sqrt(r**2 + epsilon**2) - epsilon` and can
+reduce family scales after accepted outer stages without recompiling. The
+Colab qualification uses a gentler 0.5 scale reduction, a `sqrt(count)` floor,
+and an absolute-or-relative inner first-order safeguard. Raw residuals remain
+available for strict convergence diagnostics, and outer histories summarize
+large vectors while retaining named final family statistics.
 
 [Run local-residual AL optimization in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_local_residual_augmented_lagrangian.ipynb)
 
@@ -441,15 +440,28 @@ named final family statistics.
 OMP_NUM_THREADS=1 python \
   benchmarks/gpu/benchmark_local_residual_augmented_lagrangian.py \
   --problem engineering --max-outer-iterations 8 \
-  --max-inner-iterations 200 --residual-scaling-policy family_l2 \
+  --max-inner-iterations 300 --residual-scaling-policy family_l2 \
+  --target-relative-tolerance 0.10 \
+  --inner-stationarity-relative-tolerance 0.01 \
+  --constraint-transform smooth_abs --constraint-transform-epsilon 0.1 \
+  --minimum-residual-scaling-policy sqrt_count \
+  --constraint-scale-reduction-factor 0.5 \
   --current-scale 100000 --target-tile-size 1024 \
   --source-tile-size 4320 \
   --output local-residual-augmented-lagrangian.json
 ```
 
 The result always records final CPU/GPU objective, normalized
-`abs(B dot n) / abs(B)`, and coil-constraint metrics. With an output path it
-also exports both surfaces as VTS—including signed and absolute normalized
+`abs(B dot n) / abs(B)`, and coil-constraint metrics. Scientific validation
+requires both designs to satisfy one-sided engineering targets within 10% and
+requires all retained CPU/GPU quantities of interest to agree within 10%.
+Because the ideal normalized normal field is zero, a percentage-to-target test
+is undefined for it; the benchmark stores mean, RMS, and maximum absolute
+values and applies the 10% CPU/GPU agreement test. Gradient magnitude, strict
+local-residual feasibility, and tight physical allowances remain explicit
+diagnostics and do not veto an otherwise physically validated design. With an
+output path, the workflow also exports both surfaces as VTS—including signed
+and absolute normalized
 normal field—and both symmetry-expanded coil sets as VTU. Failed scientific
 gates do not suppress these diagnostic artifacts.
 

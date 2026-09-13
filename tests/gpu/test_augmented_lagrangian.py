@@ -6,6 +6,7 @@ from simsopt.gpu import (
     ScipyAugmentedLagrangianBridge,
     equality_augmented_lagrangian,
     minimize_equality_augmented_lagrangian,
+    smooth_abs_constraints,
     smooth_sqrt_constraints,
 )
 
@@ -126,6 +127,41 @@ def test_dynamic_state_bridge_maps_smooth_residual_coordinates():
     assert value == pytest.approx(2.0 + 2.0 * mapped**2)
     expected_gradient = 2.0 + 4.0 * mapped / np.sqrt(4.0 + 0.25**2)
     np.testing.assert_allclose(gradient, [expected_gradient])
+
+
+def test_smooth_abs_mapping_is_zero_preserving_and_asymptotically_linear():
+    epsilon = 0.1
+    constraints = jnp.asarray([0.0, 0.2, 10.0])
+    values = smooth_abs_constraints(constraints, epsilon)
+    zero_gradient = jax.grad(
+        lambda value: smooth_abs_constraints(value[None], epsilon)[0]
+    )(jnp.asarray(0.0))
+
+    np.testing.assert_allclose(
+        values, np.sqrt(np.asarray(constraints) ** 2 + epsilon**2) - epsilon
+    )
+    assert values[0] == 0.0
+    assert zero_gradient == 0.0
+    assert values[-1] == pytest.approx(10.0 - epsilon, rel=1e-4)
+
+
+def test_dynamic_constraint_scales_reuse_compilation():
+    def terms(x):
+        return 0.5 * jnp.vdot(x, x), jnp.asarray([x[0]])
+
+    initial_x = np.asarray([2.0])
+    bridge = ScipyAugmentedLagrangianBridge(
+        terms, initial_x, 1, constraint_scales=[2.0]
+    ).set_state([0.0], [10.0])
+    bridge.compile(initial_x)
+    compiled = bridge._compiled
+    first_value, _ = bridge(initial_x)
+    bridge.set_constraint_scales([1.0])
+    second_value, _ = bridge(initial_x)
+
+    assert bridge._compiled is compiled
+    assert second_value > first_value
+    np.testing.assert_array_equal(bridge.constraint_scales, [1.0])
 
 
 @pytest.mark.parametrize("scales", ([1.0, 2.0], [0.0], [np.nan]))
@@ -263,3 +299,51 @@ def test_penalty_update_mode_validation():
         minimize_equality_augmented_lagrangian(
             bridge, np.asarray([1.0]), penalty_update_mode="invalid"
         )
+
+
+def test_stationarity_can_use_relative_stage_gradient_reduction():
+    def terms(x):
+        return 0.5 * (x[0] - 3.0) ** 2, jnp.asarray([1.0])
+
+    initial_x = np.asarray([100.0])
+    bridge = ScipyAugmentedLagrangianBridge(terms, initial_x, 1)
+    result = minimize_equality_augmented_lagrangian(
+        bridge,
+        initial_x,
+        max_outer_iterations=1,
+        max_inner_iterations=1,
+        require_inner_stationarity=True,
+        inner_stationarity_relative_tolerance=0.999,
+    )
+
+    record = result.history[0]
+    assert record["gradient_norm_infinity"] > record["absolute_stationarity_threshold"]
+    assert record["gradient_infinity_reduction_ratio"] < 0.999
+    assert record["inner_stationary"]
+    assert record["outer_update_applied"]
+    assert not result.terminated_by_inner_safeguard
+
+
+def test_scale_continuation_reduces_scale_and_preserves_linear_coefficient():
+    def terms(x):
+        return 0.5 * jnp.vdot(x, x), jnp.asarray([1.0])
+
+    initial_x = np.asarray([1.0])
+    bridge = ScipyAugmentedLagrangianBridge(
+        terms, initial_x, 1, constraint_scales=[4.0]
+    )
+    result = minimize_equality_augmented_lagrangian(
+        bridge,
+        initial_x,
+        max_outer_iterations=1,
+        constraint_scale_reduction_factor=0.5,
+        minimum_constraint_scales=[1.0],
+    )
+
+    record = result.history[0]
+    np.testing.assert_array_equal(result.constraint_scales, [2.0])
+    np.testing.assert_array_equal(record["constraint_scales_before"], [4.0])
+    np.testing.assert_array_equal(record["constraint_scales_after"], [2.0])
+    old_linear_coefficient = record["multipliers_after"][0] / 2.0
+    unrescaled_coefficient = -100.0 * 0.25 / 4.0
+    assert old_linear_coefficient == pytest.approx(unrescaled_coefficient)

@@ -11,6 +11,7 @@ from .augmented_lagrangian import (
     ScipyAugmentedLagrangianBridge,
     equality_augmented_lagrangian,
     minimize_equality_augmented_lagrangian,
+    smooth_abs_constraints,
     smooth_sqrt_constraints,
 )
 from .biot_savart import (
@@ -95,6 +96,7 @@ __all__ = [
     "minimize_equality_augmented_lagrangian",
     "normalized_flux",
     "quadratic_flux",
+    "smooth_abs_constraints",
     "smooth_sqrt_constraints",
     "symmetry_transforms",
 ]

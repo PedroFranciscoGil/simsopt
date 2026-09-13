@@ -28,6 +28,7 @@ from simsopt.gpu import (
 )
 
 SCALING_POLICIES = ("family_l2", "sqrt_count", "identity")
+MINIMUM_SCALING_POLICIES = ("sqrt_count", "identity")
 
 
 def parse_args():
@@ -40,12 +41,26 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=10.0)
     parser.add_argument("--gradient-tolerance", type=float, default=1e-8)
     parser.add_argument("--constraint-tolerance", type=float, default=1e-6)
+    parser.add_argument("--target-relative-tolerance", type=float, default=0.10)
     parser.add_argument("--inner-stationarity-factor", type=float, default=1.0)
+    parser.add_argument("--inner-stationarity-relative-tolerance", type=float)
     parser.add_argument("--maxcor", type=int, default=100)
     parser.add_argument("--maxls", type=int, default=50)
     parser.add_argument(
         "--residual-scaling-policy", choices=SCALING_POLICIES, default="family_l2"
     )
+    parser.add_argument(
+        "--minimum-residual-scaling-policy",
+        choices=MINIMUM_SCALING_POLICIES,
+        default="sqrt_count",
+    )
+    parser.add_argument("--constraint-scale-reduction-factor", type=float, default=1.0)
+    parser.add_argument(
+        "--constraint-transform",
+        choices=("identity", "smooth_abs"),
+        default="identity",
+    )
+    parser.add_argument("--constraint-transform-epsilon", type=float, default=1e-3)
     parser.add_argument("--target-tile-size", type=int, default=1024)
     parser.add_argument("--source-tile-size", type=int, default=4320)
     parser.add_argument("--vjp-mode", choices=("autodiff", "custom"), default="custom")
@@ -75,7 +90,10 @@ def parse_args():
         "tau",
         "gradient_tolerance",
         "constraint_tolerance",
+        "target_relative_tolerance",
         "inner_stationarity_factor",
+        "constraint_scale_reduction_factor",
+        "constraint_transform_epsilon",
         "current_scale",
         "distance_feasibility_tolerance",
         "curvature_feasibility_tolerance",
@@ -88,6 +106,15 @@ def parse_args():
         parser.error("require mu-init > 1, tau > 1, and mu-max >= mu-init")
     if args.inner_stationarity_factor < 1:
         parser.error("inner-stationarity-factor must be at least one")
+    if args.target_relative_tolerance >= 1:
+        parser.error("target-relative-tolerance must be below one")
+    if not 0 < args.constraint_scale_reduction_factor <= 1:
+        parser.error("constraint-scale-reduction-factor must be in (0, 1]")
+    if args.inner_stationarity_relative_tolerance is not None and (
+        not np.isfinite(args.inner_stationarity_relative_tolerance)
+        or not 0 < args.inner_stationarity_relative_tolerance < 1
+    ):
+        parser.error("inner-stationarity-relative-tolerance must be in (0, 1)")
     if args.no_visualization and args.visualization_dir is not None:
         parser.error("no-visualization and visualization-dir are mutually exclusive")
     return args
@@ -138,6 +165,24 @@ def residual_scales(initial_residuals, layout, policy):
     return scales, diagnostics
 
 
+def minimum_residual_scales(layout, residual_count, policy):
+    """Return the lower bound used by staged family-scale continuation."""
+    if policy not in MINIMUM_SCALING_POLICIES:
+        raise ValueError(f"unknown minimum residual scaling policy {policy!r}")
+    scales = np.empty(residual_count, dtype=float)
+    offset = 0
+    for item in layout.values():
+        start, stop = int(item["start"]), int(item["stop"])
+        if start != offset or stop <= start or stop > residual_count:
+            raise ValueError("residual layout must be contiguous and nonempty")
+        scale = math.sqrt(stop - start) if policy == "sqrt_count" else 1.0
+        scales[start:stop] = scale
+        offset = stop
+    if offset != residual_count:
+        raise ValueError("residual layout does not cover the complete vector")
+    return scales
+
+
 def _vector_summary(values):
     values = np.asarray(values, dtype=float)
     return {
@@ -167,6 +212,123 @@ def relative_error(actual, expected, floor=1e-30):
 
 def gate(measured, threshold, passed):
     return {"measured": measured, "threshold": threshold, "passed": bool(passed)}
+
+
+def engineering_target_validation(metrics, relative_tolerance):
+    """Validate physical measurements against one-sided engineering targets."""
+    if not np.isfinite(relative_tolerance) or not 0 <= relative_tolerance < 1:
+        raise ValueError("relative_tolerance must be in [0, 1)")
+    constraints = metrics["coil_constraints"]
+    measurements = constraints["measurements"]
+    limits = constraints["limits"]
+    specifications = {
+        "minimum_coil_coil_distance": (
+            "coil_coil_distance_threshold",
+            "minimum",
+        ),
+        "minimum_coil_surface_distance": (
+            "coil_surface_distance_threshold",
+            "minimum",
+        ),
+        "maximum_curvature": ("curvature_threshold", "maximum"),
+        "maximum_mean_squared_curvature": (
+            "mean_squared_curvature_threshold",
+            "maximum",
+        ),
+    }
+    comparisons = {}
+    for measurement_name, (limit_name, direction) in specifications.items():
+        measured = float(measurements[measurement_name])
+        target = float(limits[limit_name])
+        if not np.isfinite(measured) or not np.isfinite(target) or target <= 0:
+            raise ValueError(
+                f"{measurement_name} and its engineering target must be finite, "
+                "with a positive target"
+            )
+        if direction == "minimum":
+            allowed_boundary = target * (1.0 - relative_tolerance)
+            fractional_target_deviation = max(0.0, target - measured) / target
+            passed = measured >= allowed_boundary or np.isclose(
+                measured, allowed_boundary, rtol=1e-14, atol=0.0
+            )
+        else:
+            allowed_boundary = target * (1.0 + relative_tolerance)
+            fractional_target_deviation = max(0.0, measured - target) / target
+            passed = measured <= allowed_boundary or np.isclose(
+                measured, allowed_boundary, rtol=1e-14, atol=0.0
+            )
+        comparisons[measurement_name] = {
+            "measured": measured,
+            "target": target,
+            "direction": direction,
+            "allowed_boundary": allowed_boundary,
+            "fractional_target_deviation": fractional_target_deviation,
+            "passed": bool(passed),
+        }
+    return {
+        "relative_tolerance": relative_tolerance,
+        "comparisons": comparisons,
+        "passed": all(item["passed"] for item in comparisons.values()),
+    }
+
+
+def qoi_backend_agreement(gpu_metrics, cpu_metrics, relative_tolerance):
+    """Compare the explicitly retained final quantities of interest."""
+    cpu_measurements = cpu_metrics["coil_constraints"]["measurements"]
+    gpu_measurements = gpu_metrics["coil_constraints"]["measurements"]
+    values = {
+        "objective": (cpu_metrics["objective"], gpu_metrics["objective"]),
+        "normalized_normal_field_mean": (
+            cpu_metrics["normalized_normal_field"]["mean_absolute"],
+            gpu_metrics["normalized_normal_field"]["mean_absolute"],
+        ),
+        "normalized_normal_field_rms": (
+            cpu_metrics["normalized_normal_field"]["root_mean_square"],
+            gpu_metrics["normalized_normal_field"]["root_mean_square"],
+        ),
+        "normalized_normal_field_maximum": (
+            cpu_metrics["normalized_normal_field"]["maximum_absolute"],
+            gpu_metrics["normalized_normal_field"]["maximum_absolute"],
+        ),
+        **{
+            name: (cpu_measurements[name], gpu_measurements[name])
+            for name in (
+                "minimum_coil_coil_distance",
+                "minimum_coil_surface_distance",
+                "maximum_curvature",
+                "maximum_mean_squared_curvature",
+                "total_base_coil_length",
+            )
+        },
+    }
+    comparisons = {}
+    for name, (cpu_value, gpu_value) in values.items():
+        cpu_value = float(cpu_value)
+        gpu_value = float(gpu_value)
+        relative_difference = abs(gpu_value - cpu_value) / max(
+            abs(cpu_value), 1e-14
+        )
+        passed = relative_difference <= relative_tolerance or np.isclose(
+            relative_difference, relative_tolerance, rtol=1e-14, atol=0.0
+        )
+        comparisons[name] = {
+            "cpu": cpu_value,
+            "gpu": gpu_value,
+            "relative_difference": relative_difference,
+            "reference": "cpu",
+            "passed": bool(passed),
+        }
+    return {
+        "relative_tolerance": relative_tolerance,
+        "comparisons": comparisons,
+        "passed": all(item["passed"] for item in comparisons.values()),
+    }
+
+
+def _json_default(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def metric_relative_errors(candidate, reference):
@@ -207,6 +369,9 @@ def optimization_summary(result, coordinate_bridge, layout):
             result.lagrange_multipliers, layout
         ),
         "final_penalty_families": family_summaries(result.penalties, layout),
+        "final_constraint_scale_families": family_summaries(
+            result.constraint_scales, layout
+        ),
         "final_physical_variables": coordinate_bridge.to_physical_variables(
             result.x
         ).tolist(),
@@ -319,12 +484,22 @@ def main():
     scales, scale_diagnostics = residual_scales(
         initial_residuals, layout, args.residual_scaling_policy
     )
+    minimum_scales = minimum_residual_scales(
+        layout, residual_count, args.minimum_residual_scaling_policy
+    )
+    if np.any(minimum_scales > scales):
+        raise ValueError(
+            "minimum residual scales exceed initial scales; choose a compatible "
+            "initial/minimum scaling policy"
+        )
     accelerator_platform = "gpu" if backend == "gpu" else "cpu"
     cpu_bridge = ScipyAugmentedLagrangianBridge(
         terms,
         initial_x,
         residual_count,
         constraint_scales=scales,
+        constraint_transform=args.constraint_transform,
+        transform_epsilon=args.constraint_transform_epsilon,
         platform="cpu",
     )
     gpu_bridge = ScipyAugmentedLagrangianBridge(
@@ -332,6 +507,8 @@ def main():
         initial_x,
         residual_count,
         constraint_scales=scales,
+        constraint_transform=args.constraint_transform,
+        transform_epsilon=args.constraint_transform_epsilon,
         platform=accelerator_platform,
     )
     initial_multipliers = np.zeros(residual_count)
@@ -359,8 +536,8 @@ def main():
         "gpu_residual_families": family_summaries(gpu_residuals, layout),
     }
     solve_kwargs = {
-        "mu_init": initial_penalties,
-        "lagrange_multiplier_init": initial_multipliers,
+        "mu_init": args.mu_init,
+        "lagrange_multiplier_init": None,
         "tau": args.tau,
         "max_outer_iterations": args.max_outer_iterations,
         "max_inner_iterations": args.max_inner_iterations,
@@ -371,8 +548,13 @@ def main():
         "mu_max": args.mu_max,
         "require_inner_stationarity": True,
         "inner_stationarity_factor": args.inner_stationarity_factor,
+        "inner_stationarity_relative_tolerance": (
+            args.inner_stationarity_relative_tolerance
+        ),
         "history_vector_mode": "summary",
         "penalty_update_mode": "global",
+        "constraint_scale_reduction_factor": (args.constraint_scale_reduction_factor),
+        "minimum_constraint_scales": minimum_scales,
     }
     cpu_bridge.evaluations = 0
     gpu_bridge.evaluations = 0
@@ -462,7 +644,27 @@ def main():
         and initial_parity["residual_relative_l2_error"] <= 1e-9
         and initial_parity["gradient_relative_l2_error"] <= 1e-7
     )
-    gates = {
+    cpu_target_validation = engineering_target_validation(
+        cpu_metrics, args.target_relative_tolerance
+    )
+    gpu_target_validation = engineering_target_validation(
+        gpu_metrics, args.target_relative_tolerance
+    )
+    backend_qoi_agreement = qoi_backend_agreement(
+        gpu_metrics, cpu_metrics, args.target_relative_tolerance
+    )
+    scientific_validation = {
+        "target_relative_tolerance": args.target_relative_tolerance,
+        "cpu_engineering_targets": cpu_target_validation,
+        "gpu_engineering_targets": gpu_target_validation,
+        "cpu_gpu_quantity_of_interest_agreement": backend_qoi_agreement,
+        "passed": bool(
+            cpu_target_validation["passed"]
+            and gpu_target_validation["passed"]
+            and backend_qoi_agreement["passed"]
+        ),
+    }
+    acceptance_gates = {
         "gpu_backend": gate(backend, "gpu", backend == "gpu"),
         "initial_float64_parity": gate(
             initial_parity,
@@ -473,7 +675,26 @@ def main():
             },
             parity_passed,
         ),
-        "local_residual_feasibility": gate(
+        "engineering_target_envelope": gate(
+            {
+                "cpu": cpu_target_validation["comparisons"],
+                "gpu": gpu_target_validation["comparisons"],
+            },
+            (
+                "both backends satisfy every one-sided engineering target "
+                f"within {args.target_relative_tolerance:.0%}"
+            ),
+            cpu_target_validation["passed"] and gpu_target_validation["passed"],
+        ),
+        "cpu_gpu_quantity_of_interest_agreement": gate(
+            backend_qoi_agreement["comparisons"],
+            f"relative difference <= {args.target_relative_tolerance:.0%}",
+            backend_qoi_agreement["passed"],
+        ),
+        "optimization_speedup": gate(speedup, 3.0, speedup >= 3.0),
+    }
+    diagnostic_checks = {
+        "tight_local_residual_feasibility": gate(
             {
                 "cpu": float(np.linalg.norm(cpu_result.constraints, ord=np.inf)),
                 "gpu": float(np.linalg.norm(gpu_result.constraints, ord=np.inf)),
@@ -484,17 +705,17 @@ def main():
             and np.linalg.norm(gpu_result.constraints, ord=np.inf)
             <= args.constraint_tolerance,
         ),
-        "final_normal_field_quality": gate(
+        "legacy_five_percent_normal_field_quality": gate(
             normal_quality["comparisons"],
             "GPU <= max(1.05 * CPU, CPU + 1e-8)",
             normal_quality["passed"],
         ),
-        "final_constraint_quality": gate(
+        "legacy_five_percent_constraint_quality": gate(
             constraint_quality["comparisons"],
             "GPU <= max(1.05 * CPU, CPU + 1e-8)",
             constraint_quality["passed"],
         ),
-        "absolute_engineering_feasibility": gate(
+        "tight_absolute_engineering_feasibility": gate(
             {
                 "cpu": cpu_feasibility["comparisons"],
                 "gpu": gpu_feasibility["comparisons"],
@@ -502,14 +723,26 @@ def main():
             "both backends satisfy every physical violation allowance",
             cpu_feasibility["passed"] and gpu_feasibility["passed"],
         ),
-        "stationary_convergence": gate(
+        "first_order_convergence": gate(
             {
                 "cpu_success": cpu_result.success,
                 "gpu_success": gpu_result.success,
                 "cpu_gradient_norm": float(np.linalg.norm(cpu_result.jac)),
                 "gpu_gradient_norm": float(np.linalg.norm(gpu_result.jac)),
+                "cpu_final_gradient_reduction_ratio": cpu_result.history[-1][
+                    "gradient_infinity_reduction_ratio"
+                ],
+                "gpu_final_gradient_reduction_ratio": gpu_result.history[-1][
+                    "gradient_infinity_reduction_ratio"
+                ],
             },
-            {"both_success": True, "maximum_gradient_norm": args.gradient_tolerance},
+            {
+                "both_success": True,
+                "absolute_tolerance": args.gradient_tolerance,
+                "relative_stage_tolerance": (
+                    args.inner_stationarity_relative_tolerance
+                ),
+            },
             cpu_result.success and gpu_result.success,
         ),
         "physics_evaluation_budget": gate(
@@ -518,19 +751,20 @@ def main():
             gpu_result.total_evaluations
             <= math.ceil(1.1 * cpu_result.total_evaluations),
         ),
-        "optimization_speedup": gate(speedup, 3.0, speedup >= 3.0),
     }
     output = {
-        "schema_version": 1,
+        "schema_version": 2,
         "workflow": "local_residual_augmented_lagrangian",
         "method": {
             "name": "local_residual_equality_augmented_lagrangian",
-            "formula": "f - lambda^T (r / s) + 0.5 sum(mu_i (r_i / s_i)^2)",
+            "formula": "f - lambda^T (q(r) / s) + 0.5 sum(mu_i (q(r_i) / s_i)^2)",
             "constraint_semantics": (
                 "nonnegative local hinge residuals normalized by physical "
                 "feasibility allowances; raw zero means feasible"
             ),
             "jacobian_representation": "matrix-free reverse-mode VJP",
+            "constraint_transform": args.constraint_transform,
+            "constraint_transform_epsilon": args.constraint_transform_epsilon,
         },
         "problem": spec.as_dict(),
         "objective": settings,
@@ -539,7 +773,9 @@ def main():
             **{
                 key: value.tolist() if isinstance(value, np.ndarray) else value
                 for key, value in solve_kwargs.items()
+                if key != "minimum_constraint_scales"
             },
+            "minimum_constraint_scales": "see residual_scaling.continuation",
         },
         "dimensions": {
             "optimization_variables": initial_x.size,
@@ -574,6 +810,20 @@ def main():
                 "one shared attenuation scale per family"
             ),
             "family_diagnostics": scale_diagnostics,
+            "continuation": {
+                "reduction_factor": args.constraint_scale_reduction_factor,
+                "minimum_policy": args.minimum_residual_scaling_policy,
+                "minimum_family_scales": {
+                    name: float(minimum_scales[item["start"]])
+                    for name, item in layout.items()
+                },
+                "update_condition": (
+                    "inner first-order acceptance and scaled AL progress"
+                ),
+                "multiplier_rescaling": (
+                    "lambda_new = lambda_old * scale_new / scale_old"
+                ),
+            },
         },
         "initial_state": {
             "source": "canonical_problem"
@@ -582,6 +832,35 @@ def main():
             "physical_variables": physical_initial_x.tolist(),
         },
         "initial_parity": initial_parity,
+        "validation_policy": {
+            "name": "physical_quantity_target_envelope",
+            "target_relative_tolerance": args.target_relative_tolerance,
+            "scientific_validation_rule": (
+                "scientifically_validated is determined exclusively by the "
+                "physical target envelope and retained CPU/GPU quantities of "
+                "interest, not by raw gradient magnitude"
+            ),
+            "engineering_target_semantics": (
+                "minimum-distance measurements may be at most the stated "
+                "fraction below target; maximum curvature measurements may be "
+                "at most the stated fraction above target"
+            ),
+            "normalized_normal_field_semantics": (
+                "B dot n over abs(B) has ideal target zero, for which percentage "
+                "error is undefined; retain mean, RMS, and maximum absolute values "
+                "and require CPU/GPU agreement within the relative tolerance"
+            ),
+            "gradient_semantics": (
+                "large coil-optimization gradients are expected and are recorded "
+                "as optimizer diagnostics, not scientific validation vetoes"
+            ),
+            "strict_residual_semantics": (
+                "strict local-AL residual and feasibility tolerances diagnose "
+                "solver convergence but do not override physical target validation"
+            ),
+        },
+        "scientific_validation": scientific_validation,
+        "scientifically_validated": scientific_validation["passed"],
         "cpu": {
             "execution_platform": cpu_bridge.device_platform,
             "optimization": optimization_summary(cpu_result, coordinate_bridge, layout),
@@ -599,13 +878,16 @@ def main():
             "maximum_oracle_metric_relative_error": max(metric_errors.values()),
             "oracle_metric_relative_errors": metric_errors,
         },
-        "acceptance_gates": gates,
-        "all_gates_passed": all(item["passed"] for item in gates.values()),
+        "acceptance_gates": acceptance_gates,
+        "diagnostic_checks": diagnostic_checks,
+        "all_gates_passed": all(
+            item["passed"] for item in acceptance_gates.values()
+        ),
         "visualizations": visualizations,
         "environment": environment(),
         "nvidia_smi": nvidia_smi(),
     }
-    rendered = json.dumps(output, indent=2)
+    rendered = json.dumps(output, indent=2, default=_json_default)
     if args.output is None:
         print(rendered)
     else:

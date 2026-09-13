@@ -74,7 +74,7 @@ def read_archive(path):
 
 
 def validate_result(result):
-    if result.get("schema_version") != 1 or result.get("workflow") != (
+    if result.get("schema_version") not in (1, 2) or result.get("workflow") != (
         "local_residual_augmented_lagrangian"
     ):
         raise ValueError("local-residual AL result contract does not match")
@@ -100,6 +100,43 @@ def validate_result(result):
         or solver.get("penalty_update_mode") != "global"
     ):
         raise ValueError("required safeguard or large-vector policy is missing")
+    if result["schema_version"] >= 2:
+        if result.get("method", {}).get("constraint_transform") not in (
+            "identity",
+            "smooth_abs",
+        ):
+            raise ValueError("schema-2 local transform is invalid")
+        continuation = result.get("residual_scaling", {}).get("continuation", {})
+        reduction_factor = continuation.get("reduction_factor")
+        if reduction_factor is None or not 0 < float(reduction_factor) <= 1:
+            raise ValueError("schema-2 scale continuation contract is invalid")
+        relative_tolerance = solver.get("inner_stationarity_relative_tolerance")
+        if relative_tolerance is not None and not 0 < float(relative_tolerance) < 1:
+            raise ValueError("schema-2 relative first-order contract is invalid")
+        scientific_validation = result.get("scientific_validation", {})
+        scientific_components = (
+            scientific_validation.get("cpu_engineering_targets", {}),
+            scientific_validation.get("gpu_engineering_targets", {}),
+            scientific_validation.get("cpu_gpu_quantity_of_interest_agreement", {}),
+        )
+        reproduced_validation = all(
+            component.get("passed") is True for component in scientific_components
+        )
+        if (
+            result.get("scientifically_validated") is not reproduced_validation
+            or scientific_validation.get("passed") is not reproduced_validation
+        ):
+            raise ValueError("scientific-validation summary does not reproduce")
+        validation_policy = result.get("validation_policy", {})
+        target_tolerance = validation_policy.get("target_relative_tolerance")
+        if (
+            validation_policy.get("name") != "physical_quantity_target_envelope"
+            or target_tolerance is None
+            or not 0 < float(target_tolerance) < 1
+        ):
+            raise ValueError("schema-2 physical target validation policy is invalid")
+        if not isinstance(result.get("diagnostic_checks"), dict):
+            raise ValueError("schema-2 optimizer diagnostics are missing")
     for backend in ("cpu", "gpu"):
         optimization = result[backend]["optimization"]
         history = optimization.get("outer_history", [])
@@ -145,6 +182,12 @@ def validate_result(result):
         ):
             if tuple(optimization.get(summary_name, {})) != FAMILIES:
                 raise ValueError(f"{backend} {summary_name} is incomplete")
+        if (
+            result["schema_version"] >= 2
+            and tuple(optimization.get("final_constraint_scale_families", {}))
+            != FAMILIES
+        ):
+            raise ValueError(f"{backend} final constraint scales are incomplete")
     gates = result.get("acceptance_gates", {})
     if result.get("all_gates_passed") is not all(
         item.get("passed") is True for item in gates.values()
@@ -311,7 +354,11 @@ def main():
         "environment": result["environment"],
         "residual_scaling": result["residual_scaling"],
         "initial_parity": result["initial_parity"],
+        "validation_policy": result.get("validation_policy"),
+        "scientific_validation": result.get("scientific_validation"),
+        "scientifically_validated": result.get("scientifically_validated"),
         "acceptance_gates": result["acceptance_gates"],
+        "diagnostic_checks": result.get("diagnostic_checks", {}),
         "all_gates_passed": result["all_gates_passed"],
         "comparison": result["comparison"],
         "final_metrics": {
