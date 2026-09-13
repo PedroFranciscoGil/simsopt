@@ -1721,7 +1721,7 @@ scaling, diagnostics, and matrix-free products without a dense Jacobian.
 
 Unit coverage now checks each primitive, tiled versus full nearest-distance
 values, the composed objective boundary, stable family offsets, and the
-independent NumPy oracle.  Eighteen focused tests and all 103 GPU-module tests
+independent NumPy oracle.  Nineteen focused tests and all 104 GPU-module tests
 pass locally.  An engineering CPU-only smoke run additionally gives
 $1.1\times10^{-16}$ relative
 forced-residual value error and $1.6\times10^{-9}$ relative
@@ -1733,12 +1733,74 @@ warm timing, and all acceptance gates.  Its analyzer validates a returned ZIP
 and produces one four-panel activation, magnitude, Jacobian, and performance
 figure.
 
-\textbf{Decision.}  Keep the original aggregate constraints for backward
-compatibility, but make this local residual vector the required boundary for the
-next safeguarded optimization experiment.  Do not run that experiment until an
-NVIDIA archive passes all residual value and directional-Jacobian gates.  Exact
-symmetry points remain valid for value tests; a deterministic off-symmetry probe
-is required only when claiming a classical Jacobian comparison.
+Exact symmetry points remain valid for value tests; a deterministic
+off-symmetry probe is required only when claiming a classical Jacobian
+comparison.
+
+\subsection{NVIDIA qualification result}
+
+The returned archive was produced from revision \code{9849fb4c}.  Its SHA-256
+is:
+\begin{center}
+\small\ttfamily
+d0d372935ca9b1a695a6ecaf8c18527c\\
+7110b830e5e393b766fe6e9d7e0389b6
+\end{center}
+It records Linux, Python 3.13.15, JAX 0.11.1, one
+\code{cuda:0} device, float64, and one OpenMP thread.  The exact accelerator
+model was not recorded, so this result is correctly described as an NVIDIA
+CUDA result rather than attributed to a particular GPU.  Device-kind metadata
+has now been added to the shared environment recorder for subsequent archives.
+
+\begin{table}[htbp]
+\centering
+\caption{Measured engineering-scale local-residual qualification.  Every gate
+passes; smaller parity errors are better.}
+\label{tab:local-residual-qualification}
+\begin{tabular}{lrr}
+\toprule
+Quantity & Observed & Gate \\
+\midrule
+Base-objective relative error & $1.26\times10^{-15}$ & $\leq5\times10^{-10}$ \\
+Production-residual relative $L^2$ error & $4.10\times10^{-16}$ & $\leq5\times10^{-10}$ \\
+Forced-residual relative $L^2$ error & $1.76\times10^{-16}$ & $\leq5\times10^{-10}$ \\
+Worst directional-Jacobian relative $L^2$ error & $1.60\times10^{-9}$ & $\leq5\times10^{-4}$ \\
+CPU warm median & 348.553 ms & --- \\
+GPU warm median & 30.775 ms & --- \\
+Warm term-evaluation speedup & $11.326\times$ & report \\
+GPU compilation & 1.713 s & report \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/local_residual_parity.png}
+\caption{Measured local-residual qualification.  The production initial point
+activates 294 of 1,920 coil--surface residuals and no other family.  The forced
+probe activates every family; CPU and GPU maxima overlay visually, all three
+Jacobian errors are near $1.5\times10^{-9}$, and warm term evaluation is
+$11.33\times$ faster on the recorded CUDA device.}
+\label{fig:local-residual-qualification}
+\end{figure}
+
+The production-threshold result is also diagnostically useful.  Coil--coil,
+curvature, and mean-squared-curvature residuals are all zero, while 294
+coil--surface samples are active.  Their maximum normalized residual is
+1,869.19, corresponding to a 0.186919 m deficit relative to the allowed
+0.2999 m sampled separation.  The forced probe then activates 2,298
+coil--coil, 672 coil--surface, 168 curvature, and two mean-squared-curvature
+entries.  This proves parity for active derivatives in every family rather than
+passing only because most production hinges are inactive.
+
+\textbf{Decision.}  Accept all local-residual value, active-family,
+directional-Jacobian, dimension, and backend gates.  Keep the original
+aggregate constraints for backward compatibility, promote the normalized local
+residual vector to the safeguarded optimizer boundary, and proceed to a matched
+CPU/GPU optimization screen.  The $11.33\times$ number is accepted as
+term-evaluation throughput, not yet as optimizer or equivalent-solution
+speedup.  The next optimization archive must restore the full final metric
+contract and export CPU/GPU surface VTS and coil VTU artifacts.
 
 \section{Opportunities to improve coil quality}
 

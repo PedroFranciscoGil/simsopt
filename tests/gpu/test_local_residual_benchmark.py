@@ -69,3 +69,15 @@ def test_forced_settings_activate_constant_and_varying_families_off_boundary():
     assert all(np.count_nonzero(values > 0.0) > 0 for values in families.values())
     np.testing.assert_allclose(families["curvature"], 10.0)
     np.testing.assert_allclose(families["mean_squared_curvature"], 10.0)
+
+
+def test_shared_environment_records_device_kind():
+    module = load_benchmark_module()
+
+    report = module.environment()
+
+    assert len(report["jax_device_details"]) == len(report["jax_devices"])
+    assert all(
+        {"platform", "device_kind", "id"} == set(device)
+        for device in report["jax_device_details"]
+    )

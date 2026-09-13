@@ -82,6 +82,17 @@ def validate_result(result):
                     raise ValueError(
                         f"{section_name} {family} count differs from layout"
                     )
+                if metrics["active_count"] > metrics["count"]:
+                    raise ValueError(
+                        f"{section_name} {family} active count exceeds its count"
+                    )
+        for family in FAMILIES:
+            cpu = section["cpu_families"][family]
+            gpu = section["gpu_families"][family]
+            if cpu["active_count"] != gpu["active_count"]:
+                raise ValueError(
+                    f"{section_name} {family} CPU/GPU active sets disagree"
+                )
     directions = result["forced_activation"].get("directional_jacobian_parity", [])
     expected_directions = result["configuration"]["finite_difference_directions"]
     if len(directions) != expected_directions:
@@ -105,6 +116,46 @@ def validate_result(result):
     )
     if tuple(gates) != required_gates:
         raise ValueError("acceptance gate contract differs")
+    base_parity = result["production"]["base_objective_parity"]
+    production_parity = result["production"]["residual_parity"]
+    forced_parity = result["forced_activation"]["residual_parity"]
+    maximum_directional_error = max(
+        direction["relative_l2_error"] for direction in directions
+    )
+    directional_gate = gates["directional_jacobian_parity"]
+    reproduced_gates = {
+        "gpu_backend": result["environment"]["jax_backend"] == "gpu",
+        "float64_enabled": result["precision"] == "float64"
+        and gates["float64_enabled"].get("observed") is True,
+        "base_objective_value_parity": (
+            base_parity["relative_error"] <= 5e-10
+            or base_parity["absolute_error"] <= 1e-11
+        ),
+        "production_residual_value_parity": (
+            production_parity["relative_l2_error"] <= 5e-10
+            or production_parity["maximum_absolute_error"] <= 1e-11
+        ),
+        "forced_family_activation": all(
+            result["forced_activation"]["cpu_families"][family]["active_count"] > 0
+            for family in FAMILIES
+        ),
+        "forced_residual_value_parity": (forced_parity["relative_l2_error"] <= 5e-10),
+        "directional_jacobian_parity": (
+            maximum_directional_error <= directional_gate["tolerance"]
+        ),
+        "residual_dimension": offset <= gates["residual_dimension"]["maximum"],
+    }
+    for name, reproduced_passed in reproduced_gates.items():
+        if gates[name].get("passed") is not reproduced_passed:
+            raise ValueError(f"acceptance gate {name} does not reproduce")
+    if not math.isclose(
+        directional_gate["maximum_relative_l2_error"],
+        maximum_directional_error,
+        rel_tol=1e-14,
+    ):
+        raise ValueError("directional-Jacobian gate maximum does not reproduce")
+    if gates["residual_dimension"].get("observed") != offset:
+        raise ValueError("residual-dimension gate differs from the layout")
     reproduced = all(gate.get("passed") is True for gate in gates.values())
     if result.get("all_gates_passed") is not reproduced:
         raise ValueError("all-gates summary does not reproduce")
@@ -130,6 +181,7 @@ def make_figure(result, output):
         ]
         axes[0, 0].bar(x + offset, counts, width, label=name)
     axes[0, 0].set_xticks(x, labels, rotation=18)
+    axes[0, 0].set_yscale("symlog", linthresh=0.5)
     axes[0, 0].set_ylabel("active residuals")
     axes[0, 0].set_title("Residual activation")
     axes[0, 0].legend()
@@ -186,6 +238,12 @@ def main():
         "input_sha256": digest,
         "problem": result["problem"]["name"],
         "backend": result["environment"]["jax_backend"],
+        "environment": result["environment"],
+        "configuration": result["configuration"],
+        "residual_contract": result["residual_contract"],
+        "production": result["production"],
+        "forced_activation": result["forced_activation"],
+        "timing": result["timing"],
         "all_gates_passed": result["all_gates_passed"],
         "acceptance_gates": result["acceptance_gates"],
         "warm_speedup": result["timing"]["warm_speedup"],

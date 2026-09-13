@@ -180,6 +180,7 @@ def revision():
 
 
 def environment():
+    devices = jax.devices()
     return {
         "platform": platform.platform(),
         "processor": platform.processor(),
@@ -190,7 +191,15 @@ def environment():
         "simsopt": simsopt.__version__,
         "simsopt_revision": revision(),
         "jax_backend": jax.default_backend(),
-        "jax_devices": [str(device) for device in jax.devices()],
+        "jax_devices": [str(device) for device in devices],
+        "jax_device_details": [
+            {
+                "platform": device.platform,
+                "device_kind": device.device_kind,
+                "id": str(device.id),
+            }
+            for device in devices
+        ],
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
     }
 
