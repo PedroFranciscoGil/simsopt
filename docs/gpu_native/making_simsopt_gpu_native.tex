@@ -1912,6 +1912,119 @@ optimization speedup.  The archive is retained even if a scientific gate fails;
 the next design decision will be based on its measured family endpoints and
 not on timing alone.
 
+\subsubsection{A100 engineering qualification result}
+
+The returned archive was produced from revision \code{423a4f6e} on one NVIDIA
+A100-SXM4-40GB with driver 580.82.07, JAX 0.11.1, Python 3.13.15, float64, and
+one OpenMP thread.  Its SHA-256 is:
+\begin{center}
+\small\ttfamily
+444f179a1319f59d8c9a124abcefafb9\allowbreak
+6bc4529172da23892e16ff83018c2e36
+\end{center}
+All four VTK files are nonempty and the analyzer independently validates the
+8,884-residual layout, compact histories, final metric contract, and surface
+point arrays.
+
+Initial CPU/GPU agreement is at roundoff: base-objective absolute error is
+$6.94\times10^{-18}$, residual relative $L^2$ error is
+$1.20\times10^{-16}$, and AL-gradient relative $L^2$ error is
+$1.19\times10^{-16}$.  The archive therefore confirms that the explicitly
+pinned CPU and GPU executables begin from the same mathematical problem.
+
+\begin{table}[htbp]
+\centering
+\caption{Measured local-residual AL endpoints on the engineering problem.
+Neither endpoint is accepted because stationarity and feasibility gates fail.}
+\label{tab:local-residual-al-result}
+\begin{tabular}{lrr}
+\toprule
+Quantity & CPU & GPU \\
+\midrule
+Solve time (s) & 499.412 & 6.225 \\
+Physics evaluations & 705 & 914 \\
+Outer / total inner iterations & 2 / 245 & 2 / 173 \\
+Final base objective & 0.0165123 & 0.0162893 \\
+Final gradient infinity norm & 0.02933 & 205.916 \\
+Raw residual infinity norm & 0.245661 & $5.023\times10^{-5}$ \\
+$|B\cdot n|/|B|$ mean & 0.164378 & 0.163532 \\
+$|B\cdot n|/|B|$ RMS & 0.191970 & 0.190910 \\
+$|B\cdot n|/|B|$ maximum & 0.383547 & 0.380934 \\
+Minimum coil--coil distance (m) & 0.114532 & 0.114235 \\
+Minimum coil--surface distance (m) & 0.299875 & 0.299900 \\
+Maximum curvature (m$^{-1}$) & 4.14766 & 4.17179 \\
+Maximum mean-squared curvature (m$^{-2}$) & 5.0010000 & 5.0010001 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/local_residual_al_convergence.png}
+\caption{Measured local-residual AL history.  Both first inner solves satisfy
+their requested $10^{-1}$ infinity-norm stationarity tolerance and permit one
+outer update.  At the second stage, CPU exhausts 200 iterations at gradient
+infinity norm 0.0293; GPU reports function-reduction termination but has
+gradient infinity norm 205.9.  The safeguard correctly rejects both returns.}
+\label{fig:local-residual-al-convergence}
+\end{figure}
+
+The CPU endpoint has one active coil--surface residual of 0.245661.  In physical
+terms its minimum separation is 0.29987543~m, so the deficit from the nominal
+0.3~m limit is 0.124566~mm and exceeds the allowed 0.1~mm deficit by
+0.024566~mm.  The GPU endpoint reduces its coil--surface residual to
+$3.41\times10^{-9}$, but one mean-squared-curvature residual remains
+$5.02\times10^{-5}$.  The direct oracle correspondingly reports an MSC excess
+of 0.001000050, just $5.02\times10^{-8}$ beyond its allowance.  Its
+coil--surface deficit is 0.10000000034~mm, only $3.4\times10^{-10}$~m beyond
+the boundary.  These near-boundary values are diagnostically encouraging but
+must not be rounded into passing results.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/local_residual_al_performance.png}
+\caption{A100 timing for the nonqualifying trajectories.  Warm whole-solve
+speedup is $80.22\times$ and speedup including 3.541~s GPU compilation is
+$51.14\times$.  Different evaluation counts and failed stationarity mean these
+are throughput measurements, not equivalent-solution speedups.}
+\label{fig:local-residual-al-performance}
+\end{figure}
+
+The field and relative-quality gates pass.  GPU normalized-normal-field mean,
+RMS, and maximum are respectively 0.5--0.7\% below the CPU values.  The two
+signed surface maps have correlation 0.999974, relative $L^2$ difference
+0.00906, and maximum pointwise difference 0.00488.  The physics-evaluation
+budget fails because GPU uses 914 evaluations versus the allowed
+$\lceil1.1\times705\rceil=776$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/local_residual_al_surface.png}
+\caption{Final signed $(B\cdot n)/|B|$ maps from the two rejected endpoints.
+The close maps show that the physical designs remain similar even though the
+second-stage line searches terminate very differently.}
+\label{fig:local-residual-al-surface}
+\end{figure}
+
+The failure exposes two conditioning mechanisms.  First, the initial
+coil--surface family scale is 18,498 because that family begins with a very
+large residual norm.  Near feasibility, this fixed scale attenuates the
+remaining raw constraint by the same factor, so the AL progress coordinate can
+look extremely small while the physical residual still fails.  Second, after
+the first multiplier update the linear term in a ReLU hinge introduces a kink
+at its zero boundary.  L-BFGS-B can then report relative function reduction
+without stationarity, as observed on GPU.  Merely increasing penalties or
+promoting to the stress problem would compound these effects.
+
+\textbf{Decision.}  Accept backend parity, VTK/metric completeness, the compact
+matrix-free implementation, field/relative-constraint quality, and the A100
+throughput evidence.  Reject both endpoints, the physics-budget result, and any
+equivalent-solution or production claim.  Do not run the stress case yet.  The
+next implementation should screen a zero-preserving smooth local transform,
+such as $q_\epsilon(r)=\sqrt{r^2+\epsilon^2}-\epsilon$, together with a staged
+reduction of family attenuation after accepted stationary outer solves.  Raw
+$r$ and direct physical metrics must remain the stopping and promotion gates.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only
