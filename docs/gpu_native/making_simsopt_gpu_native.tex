@@ -1529,6 +1529,15 @@ are explicitly based on the best diagnostic screen and are labelled as such in
 the machine-readable analysis summary; they are not presented as an accepted
 production result.
 
+The artifact contract uses VTK filenames relative to the workflow output
+directory.  A notebook validation defect initially resolved these names
+against the repository working directory and iterated over descriptive
+point-data lists as though they were paths.  This did not affect any
+optimization or export.  The validator now joins only \code{surface\_vts} and
+\code{coils\_vtu} to the artifact root, applies the same check to an optional
+production result, and permits validation and download to be rerun without
+repeating the optimization screen.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

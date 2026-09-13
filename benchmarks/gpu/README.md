@@ -360,6 +360,11 @@ quality, and final constraint quality. Diagnostic ranking is reported but is
 not permitted to turn a failed candidate into a winner; “no qualified winner”
 is an expected valid result.
 
+Visualization paths in the result JSON are artifact names relative to the
+workflow output directory. Notebook validation resolves only the `surface_vts`
+and `coils_vtu` fields against that directory; the accompanying point-data
+lists describe array names and are not filesystem paths.
+
 After downloading the archive, reproduce its qualification decisions, validate
 all VTK arrays, and generate the screen, calibration, convergence, and surface
 figures with:

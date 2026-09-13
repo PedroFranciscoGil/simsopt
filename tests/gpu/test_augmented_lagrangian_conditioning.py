@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -189,3 +190,24 @@ def test_safeguard_command_enables_guard_and_keeps_visualizations(tmp_path):
     assert "--automatic-constraint-scaling" in command
     assert "--no-visualization" not in command
     assert command[command.index("--constraint-transform") + 1] == "smooth_sqrt"
+
+
+def test_safeguard_notebook_resolves_only_vtk_metadata_against_artifact_root():
+    notebook_path = (
+        Path(__file__).parents[2]
+        / "benchmarks"
+        / "gpu"
+        / "colab_augmented_lagrangian_safeguards.ipynb"
+    )
+    notebook = json.loads(notebook_path.read_text())
+    validation_source = "".join(
+        next(
+            cell["source"]
+            for cell in notebook["cells"]
+            if any("def validate_result" in line for line in cell.get("source", []))
+        )
+    )
+
+    assert '("surface_vts", "coils_vtu")' in validation_source
+    assert "artifact_root / Path(final_design[artifact_key]).name" in validation_source
+    assert "for artifact in final_design.values()" not in validation_source
