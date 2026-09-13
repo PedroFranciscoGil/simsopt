@@ -68,15 +68,15 @@ def read_archive(archive):
         coils = {name: artifact.read(name) for name in COIL_NAMES}
 
     schema_version = result.get("schema_version")
-    if schema_version not in (5, 6):
-        raise ValueError("augmented-Lagrangian schema version 5 or 6 is required")
+    if schema_version not in (5, 6, 7):
+        raise ValueError("augmented-Lagrangian schema version 5, 6, or 7 is required")
     if result.get("method", {}).get("name") != (
         "equality_zero_penalty_augmented_lagrangian"
     ):
         raise ValueError("archive contains the wrong optimization method")
     if tuple(result["method"]["constraint_names"]) != CONSTRAINT_NAMES:
         raise ValueError("constraint name/order contract does not match")
-    if schema_version == 6:
+    if schema_version >= 6:
         scaling = result.get("constraint_scaling", {})
         scales = np.asarray(scaling.get("scales", []), dtype=float)
         if (
@@ -116,7 +116,7 @@ def read_archive(archive):
                     np.isfinite(values)
                 ):
                     raise ValueError(f"{backend} {key} has invalid values")
-            if schema_version == 6:
+            if schema_version >= 6:
                 _finite(
                     record["scaled_constraint_norm_infinity"],
                     f"{backend} scaled constraint norm",

@@ -122,7 +122,7 @@ def test_augmented_lagrangian_archive_rejects_wrong_schema(tmp_path):
     result["schema_version"] = 4
     write_archive(archive, module, result)
 
-    with pytest.raises(ValueError, match="schema version 5 or 6"):
+    with pytest.raises(ValueError, match="schema version 5, 6, or 7"):
         module.read_archive(archive)
 
 

@@ -6,6 +6,7 @@ from simsopt.gpu import (
     ScipyAugmentedLagrangianBridge,
     equality_augmented_lagrangian,
     minimize_equality_augmented_lagrangian,
+    smooth_sqrt_constraints,
 )
 
 
@@ -76,6 +77,41 @@ def test_dynamic_state_bridge_scales_only_augmented_coordinates():
     np.testing.assert_array_equal(bridge.constraint_scales, [2.0])
 
 
+def test_smooth_sqrt_constraint_mapping_value_and_gradient():
+    epsilon = 0.25
+    constraints = jnp.asarray([0.0, 4.0])
+    values = smooth_sqrt_constraints(constraints, epsilon)
+    gradient = jax.grad(lambda value: smooth_sqrt_constraints(value[None], epsilon)[0])(
+        jnp.asarray(4.0)
+    )
+
+    np.testing.assert_allclose(values, np.sqrt([epsilon**2, 4 + epsilon**2]) - epsilon)
+    assert values[0] == 0
+    assert gradient == pytest.approx(0.5 / np.sqrt(4 + epsilon**2))
+
+
+def test_dynamic_state_bridge_maps_smooth_residual_coordinates():
+    def terms(x):
+        return 0.5 * jnp.vdot(x, x), jnp.asarray([x[0] ** 2])
+
+    initial_x = np.asarray([2.0])
+    bridge = ScipyAugmentedLagrangianBridge(
+        terms,
+        initial_x,
+        1,
+        constraint_scales=[2.0],
+        constraint_transform="smooth_sqrt",
+        transform_epsilon=0.25,
+    ).set_state([0.0], [4.0])
+    value, gradient = bridge(initial_x)
+    mapped = (np.sqrt(4.0 + 0.25**2) - 0.25) / 2.0
+
+    np.testing.assert_allclose(bridge.map_constraints([4.0]), [mapped])
+    assert value == pytest.approx(2.0 + 2.0 * mapped**2)
+    expected_gradient = 2.0 + 4.0 * mapped / np.sqrt(4.0 + 0.25**2)
+    np.testing.assert_allclose(gradient, [expected_gradient])
+
+
 @pytest.mark.parametrize("scales", ([1.0, 2.0], [0.0], [np.nan]))
 def test_dynamic_state_bridge_validates_constraint_scales(scales):
     def terms(x):
@@ -125,3 +161,40 @@ def test_augmented_lagrangian_validates_penalties():
     bridge = ScipyAugmentedLagrangianBridge(terms, initial_x, 1)
     with pytest.raises(ValueError, match="mu_init"):
         minimize_equality_augmented_lagrangian(bridge, initial_x, mu_init=1.0)
+
+
+def test_inner_stationarity_safeguard_prevents_outer_update():
+    def terms(x):
+        return 0.5 * jnp.vdot(x, x), jnp.asarray([1.0])
+
+    initial_x = np.asarray([10.0])
+    bridge = ScipyAugmentedLagrangianBridge(terms, initial_x, 1)
+    result = minimize_equality_augmented_lagrangian(
+        bridge,
+        initial_x,
+        mu_init=10.0,
+        max_outer_iterations=4,
+        max_inner_iterations=1,
+        require_inner_stationarity=True,
+    )
+
+    assert not result.success
+    assert result.terminated_by_inner_safeguard
+    assert result.outer_iterations == 1
+    np.testing.assert_array_equal(result.penalties, [10.0])
+    np.testing.assert_array_equal(result.lagrange_multipliers, [0.0])
+    assert not result.history[0]["inner_stationary"]
+    assert not result.history[0]["inner_stage_accepted"]
+    assert not result.history[0]["outer_update_applied"]
+    assert "safeguard" in result.message
+
+
+def test_inner_stationarity_factor_validation():
+    def terms(x):
+        return jnp.vdot(x, x), jnp.asarray([x[0] ** 2])
+
+    bridge = ScipyAugmentedLagrangianBridge(terms, np.asarray([1.0]), 1)
+    with pytest.raises(ValueError, match="inner_stationarity_factor"):
+        minimize_equality_augmented_lagrangian(
+            bridge, np.asarray([1.0]), inner_stationarity_factor=0.5
+        )

@@ -1432,6 +1432,103 @@ inner stage that stagnates with a large gradient and stop penalty escalation,
 and (iii) derive conditioning from gradient/Jacobian norms or expose local
 unsquared residuals.  Another blind scale or penalty sweep is not justified.
 
+\subsection{Implemented safeguard and gradient-aware redesign}
+
+The next implementation enforces those three decisions in schema~7.  First,
+the outer loop records the requested inner tolerance, final infinity-norm
+gradient, step norm, and whether the stage was accepted.  In strict mode an
+inner solve is accepted only if
+\[
+  \|\nabla_x \mathcal L_A\|_\infty
+  \leq \kappa\max(\omega_k,\epsilon_g),\qquad \kappa\geq 1.
+\]
+Failure terminates the run before either $\lambda$ or $\mu$ changes.  This
+directly prevents the false-convergence sequence seen on the T4, where
+L-BFGS-B stopped by relative function reduction while the gradient grew and
+the outer loop continued increasing the penalty.
+
+Second, the AL may use a zero-preserving, residual-like coordinate
+\[
+ q_\varepsilon(c)=\sqrt{c+\varepsilon^2}-\varepsilon,
+ \qquad \widehat c_i=\frac{q_\varepsilon(c_i)}{s_i}.
+\]
+For the current nonnegative, integrated squared-hinge objectives this mapping
+is exactly zero at feasibility and approaches $\sqrt c$ away from its smooth
+region.  Therefore the AL quadratic behaves approximately quadratically in an
+aggregate violation amplitude rather than quartically.  This is not identical
+to exposing every local unsquared residual; it is a safe intermediate test that
+does not change SIMSOPT's physical feasibility definition.
+
+Third, automatic scaling is based on derivatives in the actual optimizer
+coordinates.  At the initial state, with zero multipliers, the estimated norm
+of constraint family $i$'s penalty-gradient contribution is
+\[
+ A_i=\mu_0|q(c_i)|\,|q'(c_i)|\,\|\nabla_xc_i\|_2.
+\]
+For a requested maximum fraction $\rho$ of the base-objective gradient, the
+applied attenuation is
+\[
+ s_i=\sqrt{\max\!\left(\frac{A_i}
+ {\rho\max(\|\nabla f\|_2,\mathrm{tiny})},1\right)}.
+\]
+Because $s_i\geq1$, automatic calibration can only attenuate a family.  It can
+never reproduce the previous $s_i<1$ amplification, while the archive records
+the base gradient, every Jacobian row norm, unscaled estimate, recommended
+scale, applied scale, and post-scaling estimate.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=5mm and 7mm,
+  box/.style={draw,rounded corners,align=center,minimum height=8mm,
+              text width=31mm,fill=blue!7,font=\scriptsize},
+  gate/.style={draw,diamond,aspect=2.0,align=center,fill=orange!14,
+               font=\scriptsize,inner sep=1.5mm},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (jac) {CPU oracle at $x_0$\\$\nabla f,\nabla c_i$};
+\node[box,right=of jac] (map) {choose $q_\varepsilon$\\attenuation-only $s_i$};
+\node[box,right=of map] (inner) {CPU and GPU\\inner L-BFGS-B};
+\node[gate,below=8mm of inner] (stationary) {$\|\nabla\mathcal L_A\|_\infty$\\meets request?};
+\node[box,left=of stationary,fill=red!10] (stop) {stop safely\\no outer update};
+\node[box,right=of stationary,fill=green!10] (update) {accept stage\\update AL state};
+\draw[flow] (jac) -- (map);
+\draw[flow] (map) -- (inner);
+\draw[flow] (inner) -- (stationary);
+\draw[flow] (stationary) -- node[above,font=\tiny] {no} (stop);
+\draw[flow] (stationary) -- node[above,font=\tiny] {yes} (update);
+\end{tikzpicture}
+\caption{Safeguarded AL stage.  Conditioning is calibrated once from physical
+derivatives, while every outer update is conditional on measured inner
+stationarity.}
+\label{fig:al-safeguard-stage}
+\end{figure}
+
+The automated qualification screen contains an identity reference and three
+smooth-square-root variants that isolate the smoothing width and maximum
+initial gradient ratio.  All share the gentler $\mu_0=4$, $\tau=2$ schedule
+and a 200-iteration inner budget.  Every CPU and GPU endpoint exports a coil
+VTU and a surface VTS with signed and absolute $(B\cdot n)/|B|$ arrays.
+
+Promotion is now a hard predicate rather than a ranking side effect.  A
+candidate must pass GPU-backend provenance, float64 initial parity, direct
+physical feasibility, stationary convergence, final normal-field quality, and
+final constraint quality.  Only qualified candidates may be ranked for the
+production stress run.  If none qualify, the summary reports no winner and
+skips production; a diagnostic ordering remains available solely to guide the
+next design.  Thus the new code makes a stronger methodological result before
+new NVIDIA data exist: an invalid design can no longer become a production
+\emph{winner}.  The measured outcome remains pending execution of
+\code{colab\_augmented\_lagrangian\_safeguards.ipynb} on an NVIDIA runtime.
+The companion analyzer independently reproduces every qualification and
+diagnostic rank, rejects missing or inconsistent schema-7 stage fields,
+validates all VTK payloads and signed/absolute surface arrays, and creates four
+figures covering qualification, gradient calibration, convergence, and the
+selected surface comparison.  When no candidate qualifies, the last two plots
+are explicitly based on the best diagnostic screen and are labelled as such in
+the machine-readable analysis summary; they are not presented as an accepted
+production result.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

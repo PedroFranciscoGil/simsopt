@@ -69,9 +69,22 @@ def parse_args():
         default=positive_float_vector("1,1,1,1"),
         help=(
             "Four positive scales in coil-coil, coil-surface, curvature, MSC "
-            "order; the AL operates on c_i / scale_i."
+            "order; the AL operates on q(c_i) / scale_i."
         ),
     )
+    parser.add_argument(
+        "--constraint-transform",
+        choices=("identity", "smooth_sqrt"),
+        default="identity",
+        help="Coordinate transform applied before constraint scaling.",
+    )
+    parser.add_argument("--constraint-transform-epsilon", type=float, default=1e-4)
+    parser.add_argument("--automatic-constraint-scaling", action="store_true")
+    parser.add_argument(
+        "--maximum-initial-constraint-gradient-ratio", type=float, default=1.0
+    )
+    parser.add_argument("--require-inner-stationarity", action="store_true")
+    parser.add_argument("--inner-stationarity-factor", type=float, default=1.0)
     parser.add_argument("--maxcor", type=int, default=100)
     parser.add_argument("--maxls", type=int, default=20)
     parser.add_argument("--target-tile-size", type=int, default=1024)
@@ -108,6 +121,29 @@ def parse_args():
         parser.error("tile sizes must be positive")
     if not np.isfinite(args.current_scale) or args.current_scale <= 0:
         parser.error("current-scale must be finite and positive")
+    if (
+        not np.isfinite(args.constraint_transform_epsilon)
+        or args.constraint_transform_epsilon <= 0
+    ):
+        parser.error("constraint-transform-epsilon must be finite and positive")
+    if (
+        not np.isfinite(args.maximum_initial_constraint_gradient_ratio)
+        or args.maximum_initial_constraint_gradient_ratio <= 0
+    ):
+        parser.error(
+            "maximum-initial-constraint-gradient-ratio must be finite and positive"
+        )
+    if (
+        not np.isfinite(args.inner_stationarity_factor)
+        or args.inner_stationarity_factor < 1
+    ):
+        parser.error("inner-stationarity-factor must be finite and at least one")
+    if args.automatic_constraint_scaling and not np.array_equal(
+        args.constraint_scales, np.ones(len(CONSTRAINT_NAMES))
+    ):
+        parser.error(
+            "automatic-constraint-scaling cannot be combined with manual scales"
+        )
     for name in (
         "gradient_tolerance",
         "constraint_tolerance",
@@ -135,18 +171,26 @@ class CpuAugmentedLagrangianBridge:
         coordinate_bridge,
         derivative_objects,
         constraint_scales,
+        constraint_transform="identity",
+        transform_epsilon=1e-4,
     ):
         self.base_objective = base_objective
         self.constraints = tuple(constraints)
         self.coordinate_bridge = coordinate_bridge
         self.derivative_objects = tuple(derivative_objects)
         self.constraint_scales = np.asarray(constraint_scales, dtype=float)
+        self.constraint_transform = constraint_transform
+        self.transform_epsilon = float(transform_epsilon)
         if self.constraint_scales.shape != (len(self.constraints),):
             raise ValueError("constraint_scales must match constraints")
         if not np.all(np.isfinite(self.constraint_scales)) or np.any(
             self.constraint_scales <= 0
         ):
             raise ValueError("constraint_scales must be finite and positive")
+        if self.constraint_transform not in ("identity", "smooth_sqrt"):
+            raise ValueError("unsupported constraint_transform")
+        if not np.isfinite(self.transform_epsilon) or self.transform_epsilon <= 0:
+            raise ValueError("transform_epsilon must be finite and positive")
         self.lagrange_multipliers = np.zeros(len(self.constraints))
         self.penalties = np.ones(len(self.constraints))
         self.evaluations = 0
@@ -165,15 +209,49 @@ class CpuAugmentedLagrangianBridge:
             [constraint.J() for constraint in self.constraints], dtype=float
         )
 
-    def scale_constraints(self, constraints):
+    def map_constraints(self, constraints):
         constraints = np.asarray(constraints, dtype=float)
         if constraints.shape != self.constraint_scales.shape:
             raise ValueError("constraints must match constraint_scales")
+        if self.constraint_transform == "smooth_sqrt":
+            if np.any(constraints < 0):
+                raise ValueError("smooth_sqrt constraints must be nonnegative")
+            constraints = (
+                np.sqrt(constraints + self.transform_epsilon**2)
+                - self.transform_epsilon
+            )
         return constraints / self.constraint_scales
+
+    def scale_constraints(self, constraints):
+        return self.map_constraints(constraints)
+
+    def constraint_map_derivative(self, constraints):
+        constraints = np.asarray(constraints, dtype=float)
+        if self.constraint_transform == "identity":
+            derivative = np.ones_like(constraints)
+        else:
+            derivative = 0.5 / np.sqrt(constraints + self.transform_epsilon**2)
+        return derivative / self.constraint_scales
+
+    def evaluate_term_derivatives(self, x):
+        """Return base gradient and constraint Jacobian in optimizer coordinates."""
+        self._set_x(x)
+        base_gradient = self.coordinate_bridge.pullback_gradient(
+            self._flat_gradient(self.base_objective)
+        )
+        constraint_jacobian = np.stack(
+            [
+                self.coordinate_bridge.pullback_gradient(
+                    self._flat_gradient(constraint)
+                )
+                for constraint in self.constraints
+            ]
+        )
+        return base_gradient, constraint_jacobian
 
     def __call__(self, x):
         base_value, raw_constraint_values = self.evaluate_terms(x)
-        constraint_values = self.scale_constraints(raw_constraint_values)
+        constraint_values = self.map_constraints(raw_constraint_values)
         value = (
             base_value
             - np.dot(self.lagrange_multipliers, constraint_values)
@@ -181,13 +259,14 @@ class CpuAugmentedLagrangianBridge:
         )
         gradient = self._flat_gradient(self.base_objective)
         coefficients = -self.lagrange_multipliers + self.penalties * constraint_values
-        for coefficient, constraint, scale in zip(
+        map_derivatives = self.constraint_map_derivative(raw_constraint_values)
+        for coefficient, constraint, map_derivative in zip(
             coefficients,
             self.constraints,
-            self.constraint_scales,
+            map_derivatives,
             strict=True,
         ):
-            gradient += coefficient * self._flat_gradient(constraint) / scale
+            gradient += coefficient * map_derivative * self._flat_gradient(constraint)
         self.evaluations += 1
         return float(value), self.coordinate_bridge.pullback_gradient(gradient)
 
@@ -214,6 +293,75 @@ def relative_error(actual, expected, floor=1e-30):
     )
 
 
+def gradient_balanced_constraint_scales(
+    raw_constraints,
+    base_gradient,
+    constraint_jacobian,
+    *,
+    mu_init,
+    constraint_transform,
+    transform_epsilon,
+    maximum_ratio,
+):
+    """Choose attenuation-only scales from initial AL gradient contributions.
+
+    The returned scales are never below one.  Consequently automatic scaling
+    cannot amplify a constraint relative to the unscaled formulation, which
+    prevents the ``1 / s**2`` explosion observed in the value-scaled study.
+    """
+    raw_constraints = np.asarray(raw_constraints, dtype=float)
+    base_gradient = np.asarray(base_gradient, dtype=float)
+    constraint_jacobian = np.asarray(constraint_jacobian, dtype=float)
+    if raw_constraints.ndim != 1 or base_gradient.ndim != 1:
+        raise ValueError("constraints and base_gradient must be one-dimensional")
+    if constraint_jacobian.shape != (raw_constraints.size, base_gradient.size):
+        raise ValueError("constraint_jacobian shape does not match gradients")
+    if not (
+        np.all(np.isfinite(raw_constraints))
+        and np.all(np.isfinite(base_gradient))
+        and np.all(np.isfinite(constraint_jacobian))
+    ):
+        raise ValueError("calibration inputs must be finite")
+    if constraint_transform == "smooth_sqrt" and np.any(raw_constraints < 0):
+        raise ValueError("smooth_sqrt constraints must be nonnegative")
+    if not np.isfinite(transform_epsilon) or transform_epsilon <= 0:
+        raise ValueError("transform_epsilon must be finite and positive")
+    if not np.isfinite(mu_init) or mu_init <= 0:
+        raise ValueError("mu_init must be finite and positive")
+    if not np.isfinite(maximum_ratio) or maximum_ratio <= 0:
+        raise ValueError("maximum_ratio must be finite and positive")
+    if constraint_transform == "identity":
+        mapped = raw_constraints
+        map_derivative = np.ones_like(raw_constraints)
+    elif constraint_transform == "smooth_sqrt":
+        mapped = np.sqrt(raw_constraints + transform_epsilon**2) - transform_epsilon
+        map_derivative = 0.5 / np.sqrt(raw_constraints + transform_epsilon**2)
+    else:
+        raise ValueError("unsupported constraint_transform")
+    base_gradient_norm = float(np.linalg.norm(base_gradient))
+    denominator = maximum_ratio * max(base_gradient_norm, np.finfo(float).tiny)
+    row_norms = np.linalg.norm(constraint_jacobian, axis=1)
+    unscaled_contributions = (
+        float(mu_init) * np.abs(mapped) * np.abs(map_derivative) * row_norms
+    )
+    scales = np.sqrt(np.maximum(unscaled_contributions / denominator, 1.0))
+    diagnostics = {
+        "base_gradient_norm": base_gradient_norm,
+        "constraint_jacobian_row_norms": dict(
+            zip(CONSTRAINT_NAMES, row_norms.tolist())
+        ),
+        "unscaled_initial_penalty_gradient_norm_estimates": dict(
+            zip(CONSTRAINT_NAMES, unscaled_contributions.tolist())
+        ),
+        "maximum_ratio_to_base_gradient": maximum_ratio,
+        "selected_scales": dict(zip(CONSTRAINT_NAMES, scales.tolist())),
+        "balanced_initial_penalty_gradient_norm_estimates": dict(
+            zip(CONSTRAINT_NAMES, (unscaled_contributions / scales**2).tolist())
+        ),
+    }
+    return scales, diagnostics
+
+
 def gate(measured, threshold, passed):
     return {"measured": measured, "threshold": threshold, "passed": bool(passed)}
 
@@ -229,7 +377,7 @@ def metric_relative_errors(gpu_metrics, cpu_metrics):
 
 def result_summary(result, coordinate_bridge):
     raw_constraints = np.asarray(result.constraints)
-    scaled_constraints = np.asarray(result.scaled_constraints)
+    al_constraints = np.asarray(result.scaled_constraints)
     return {
         "success": result.success,
         "message": result.message,
@@ -240,15 +388,22 @@ def result_summary(result, coordinate_bridge):
         "final_augmented_lagrangian": result.fun,
         "final_base_objective": result.base_objective,
         "final_gradient_norm": float(np.linalg.norm(result.jac)),
+        "terminated_by_inner_safeguard": result.terminated_by_inner_safeguard,
+        "final_al_constraint_norm_infinity": float(
+            np.linalg.norm(al_constraints, ord=np.inf)
+        ),
+        "final_al_constraints": dict(zip(CONSTRAINT_NAMES, al_constraints.tolist())),
+        # Retained for schema-6 consumers.  In schema 7 these are the complete
+        # transformed-and-scaled AL coordinates, not necessarily c / s alone.
         "final_scaled_constraint_norm_infinity": float(
-            np.linalg.norm(scaled_constraints, ord=np.inf)
+            np.linalg.norm(al_constraints, ord=np.inf)
         ),
         "final_raw_constraint_norm_infinity": float(
             np.linalg.norm(raw_constraints, ord=np.inf)
         ),
         "final_constraints": dict(zip(CONSTRAINT_NAMES, raw_constraints.tolist())),
         "final_scaled_constraints": dict(
-            zip(CONSTRAINT_NAMES, scaled_constraints.tolist())
+            zip(CONSTRAINT_NAMES, al_constraints.tolist())
         ),
         "final_lagrange_multipliers": dict(
             zip(CONSTRAINT_NAMES, result.lagrange_multipliers.tolist())
@@ -358,26 +513,77 @@ def main():
             curve_dofs, currents, **term_kwargs, config=config
         )
 
+    derivative_objects = [
+        *[current for current in base_current_objects if current.x.size],
+        *base_curves,
+    ]
+    calibration_bridge = CpuAugmentedLagrangianBridge(
+        base_objective,
+        cpu_constraints,
+        coordinate_bridge,
+        derivative_objects,
+        np.ones(len(CONSTRAINT_NAMES)),
+        constraint_transform=args.constraint_transform,
+        transform_epsilon=args.constraint_transform_epsilon,
+    )
+    cpu_base, cpu_constraint_values = calibration_bridge.evaluate_terms(initial_x)
+    base_gradient, constraint_jacobian = calibration_bridge.evaluate_term_derivatives(
+        initial_x
+    )
+    recommended_scales, gradient_balance = gradient_balanced_constraint_scales(
+        cpu_constraint_values,
+        base_gradient,
+        constraint_jacobian,
+        mu_init=args.mu_init,
+        constraint_transform=args.constraint_transform,
+        transform_epsilon=args.constraint_transform_epsilon,
+        maximum_ratio=args.maximum_initial_constraint_gradient_ratio,
+    )
+    constraint_scales = (
+        recommended_scales
+        if args.automatic_constraint_scaling
+        else np.asarray(args.constraint_scales, dtype=float)
+    )
+    unscaled_estimates = np.asarray(
+        list(
+            gradient_balance[
+                "unscaled_initial_penalty_gradient_norm_estimates"
+            ].values()
+        )
+    )
+    gradient_balance["automatic_scaling_enabled"] = bool(
+        args.automatic_constraint_scaling
+    )
+    gradient_balance["recommended_attenuation_scales"] = gradient_balance.pop(
+        "selected_scales"
+    )
+    gradient_balance["applied_scales"] = dict(
+        zip(CONSTRAINT_NAMES, constraint_scales.tolist())
+    )
+    gradient_balance["applied_initial_penalty_gradient_norm_estimates"] = dict(
+        zip(CONSTRAINT_NAMES, (unscaled_estimates / constraint_scales**2).tolist())
+    )
+
     gpu_bridge = ScipyAugmentedLagrangianBridge(
         gpu_terms,
         initial_x,
         len(CONSTRAINT_NAMES),
-        constraint_scales=args.constraint_scales,
+        constraint_scales=constraint_scales,
+        constraint_transform=args.constraint_transform,
+        transform_epsilon=args.constraint_transform_epsilon,
     )
     gpu_bridge.set_state(np.zeros(4), np.full(4, args.mu_init))
     compilation_start = time.perf_counter()
     gpu_bridge.compile(initial_x)
     compilation_seconds = time.perf_counter() - compilation_start
-    derivative_objects = [
-        *[current for current in base_current_objects if current.x.size],
-        *base_curves,
-    ]
     cpu_bridge = CpuAugmentedLagrangianBridge(
         base_objective,
         cpu_constraints,
         coordinate_bridge,
         derivative_objects,
-        args.constraint_scales,
+        constraint_scales,
+        constraint_transform=args.constraint_transform,
+        transform_epsilon=args.constraint_transform_epsilon,
     ).set_state(np.zeros(4), np.full(4, args.mu_init))
 
     cpu_base, cpu_constraint_values = cpu_bridge.evaluate_terms(initial_x)
@@ -393,19 +599,22 @@ def main():
         "gradient_relative_l2_error": relative_error(gpu_gradient, cpu_gradient),
         "cpu_constraints": dict(zip(CONSTRAINT_NAMES, cpu_constraint_values.tolist())),
         "gpu_constraints": dict(zip(CONSTRAINT_NAMES, gpu_constraint_values.tolist())),
-        "cpu_scaled_constraints": dict(
+        "cpu_al_constraints": dict(
             zip(
                 CONSTRAINT_NAMES,
-                (cpu_constraint_values / args.constraint_scales).tolist(),
+                cpu_bridge.map_constraints(cpu_constraint_values).tolist(),
             )
         ),
-        "gpu_scaled_constraints": dict(
+        "gpu_al_constraints": dict(
             zip(
                 CONSTRAINT_NAMES,
-                (gpu_constraint_values / args.constraint_scales).tolist(),
+                gpu_bridge.map_constraints(gpu_constraint_values).tolist(),
             )
         ),
     }
+    # Schema-6 aliases retained for downstream readers during migration.
+    initial_parity["cpu_scaled_constraints"] = initial_parity["cpu_al_constraints"]
+    initial_parity["gpu_scaled_constraints"] = initial_parity["gpu_al_constraints"]
 
     solve_kwargs = {
         "mu_init": args.mu_init,
@@ -418,6 +627,8 @@ def main():
         "maxcor": args.maxcor,
         "maxls": args.maxls,
         "mu_max": args.mu_max,
+        "require_inner_stationarity": args.require_inner_stationarity,
+        "inner_stationarity_factor": args.inner_stationarity_factor,
     }
     # Exclude parity calls from optimization evaluation accounting.
     cpu_bridge.evaluations = 0
@@ -552,7 +763,7 @@ def main():
     }
 
     output = {
-        "schema_version": 6,
+        "schema_version": 7,
         "method": {
             "name": "equality_zero_penalty_augmented_lagrangian",
             "formula": "f - lambda^T c + 0.5 sum(mu_i c_i^2)",
@@ -561,8 +772,9 @@ def main():
                 "nonnegative SIMSOPT hinge-penalty objectives; zero means the "
                 "underlying engineering inequality is feasible"
             ),
-            "scaled_formula": (
-                "c_hat_i = c_i / scale_i; f - lambda^T c_hat + 0.5 sum(mu_i c_hat_i^2)"
+            "al_coordinate_formula": (
+                "c_hat_i = q(c_i) / scale_i; f - lambda^T c_hat + "
+                "0.5 sum(mu_i c_hat_i^2)"
             ),
             "reference_adaptation": (
                 "attached auglag_qa.py convention, with flux plus length retained "
@@ -597,8 +809,14 @@ def main():
         },
         "constraint_scaling": {
             "names": list(CONSTRAINT_NAMES),
-            "scales": args.constraint_scales.tolist(),
-            "convention": "scaled_constraint_i = raw_constraint_i / scale_i",
+            "scales": constraint_scales.tolist(),
+            "convention": "al_constraint_i = q(raw_constraint_i) / scale_i",
+        },
+        "constraint_mapping": {
+            "transform": args.constraint_transform,
+            "transform_epsilon": args.constraint_transform_epsilon,
+            "automatic_gradient_balancing": args.automatic_constraint_scaling,
+            "gradient_balance_calibration": gradient_balance,
         },
         "initial_state": {
             "source": "canonical_problem"

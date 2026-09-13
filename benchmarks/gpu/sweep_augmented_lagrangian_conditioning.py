@@ -279,8 +279,8 @@ def main():
             env=environment,
         )
         result = json.loads(result_file.read_text())
-        if result.get("schema_version") != 6:
-            raise ValueError("conditioning screen requires comparison schema 6")
+        if result.get("schema_version") != 7:
+            raise ValueError("conditioning screen requires comparison schema 7")
         candidate_results.append(result)
         candidate_summaries.append(
             compact_candidate(index, candidate, result, result_file)
@@ -299,8 +299,8 @@ def main():
         env=environment,
     )
     final_result = json.loads(final_file.read_text())
-    if final_result.get("schema_version") != 6:
-        raise ValueError("production confirmation requires comparison schema 6")
+    if final_result.get("schema_version") != 7:
+        raise ValueError("production confirmation requires comparison schema 7")
 
     summary = {
         "schema_version": 1,

@@ -245,7 +245,7 @@ deterministic, and multiplier and penalty vectors are dynamic inputs to one
 compiled JAX executable.
 
 The benchmark runs independent CPU-oracle and GPU-native AL trajectories from
-the same physical vector. Its schema-6 JSON stores every outer state, inner
+the same physical vector. Its schema-7 JSON stores every outer state, inner
 iterations and evaluations, constraint values, multipliers, penalties, final
 physical variables, and complete final field and coil metrics for both
 backends. The final CPU/GPU surfaces and coils are exported as VTS/VTU, with
@@ -325,6 +325,46 @@ python benchmarks/gpu/analyze_augmented_lagrangian_conditioning.py \
 ```
 
 The analyzer independently reproduces the candidate ranking, validates every
-schema-6 history, cross-checks the selected production configuration, verifies
+schema-6/7 history, cross-checks the selected production configuration, verifies
 the signed/absolute surface fields, and emits
 `al_conditioning_analysis_summary.json` with all decision metrics.
+
+## Safeguarded AL qualification
+
+The next workflow addresses the failure observed in the conditioning study.
+It adds a strict inner-stationarity safeguard: when L-BFGS-B returns without
+meeting its requested infinity-norm gradient tolerance, that stage cannot
+update multipliers or penalties and the outer solve stops. It also tests the
+zero-preserving residual-like mapping
+`q(c) = sqrt(c + epsilon**2) - epsilon`. Optional automatic scales are computed
+from the initial base gradient and constraint Jacobian in optimizer coordinates;
+they are never below one, so calibration can attenuate but never amplify a
+constraint penalty-gradient contribution.
+
+[Run safeguarded qualification in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_augmented_lagrangian_safeguards.ipynb)
+
+```sh
+OMP_NUM_THREADS=1 python \
+  benchmarks/gpu/sweep_augmented_lagrangian_safeguards.py \
+  --screen-problem engineering --final-problem stress \
+  --max-outer-iterations 10 --max-inner-iterations 200 \
+  --current-scale 100000 --target-tile-size 1024 \
+  --source-tile-size 4320 \
+  --output-dir benchmarks/gpu/results/al-safeguards
+```
+
+Every screen exports CPU/GPU surface VTS files with signed and absolute
+`(B dot n) / abs(B)` and coil VTU files. Production is run only when a screen
+passes backend, float64 parity, physical feasibility, stationarity, final field
+quality, and final constraint quality. Diagnostic ranking is reported but is
+not permitted to turn a failed candidate into a winner; “no qualified winner”
+is an expected valid result.
+
+After downloading the archive, reproduce its qualification decisions, validate
+all VTK arrays, and generate the screen, calibration, convergence, and surface
+figures with:
+
+```sh
+python benchmarks/gpu/analyze_augmented_lagrangian_safeguards.py \
+  simsopt-al-safeguards.zip docs/gpu_native/figures
+```

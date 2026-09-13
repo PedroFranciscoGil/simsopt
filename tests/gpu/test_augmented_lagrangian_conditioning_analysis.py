@@ -19,6 +19,18 @@ def load_analysis_module():
     return module
 
 
+def load_safeguard_analysis_module():
+    benchmark_dir = Path(__file__).parents[2] / "benchmarks" / "gpu"
+    spec = spec_from_file_location(
+        "gpu_al_safeguard_analysis",
+        benchmark_dir / "analyze_augmented_lagrangian_safeguards.py",
+    )
+    module = module_from_spec(spec)
+    with patch.object(sys, "path", [str(benchmark_dir), *sys.path]):
+        spec.loader.exec_module(module)
+    return module
+
+
 def synthetic_result(failed_ratio, *, success=True):
     violations = {
         "minimum_coil_coil_distance": failed_ratio * 1e-4,
@@ -88,6 +100,17 @@ def test_analysis_rank_reproduces_feasibility_first_policy():
 
 def test_analysis_reads_cpu_gpu_surface_fields():
     module = load_analysis_module()
+    cpu = vtk_surface([1.0, -2.0, 3.0, -4.0])
+    gpu = vtk_surface([2.0, -1.0, 4.0, -3.0])
+
+    fields = module.surface_fields({"cpu": cpu, "gpu": gpu})
+
+    assert fields["cpu"].shape == (2, 2)
+    np.testing.assert_array_equal(fields["gpu"] - fields["cpu"], 1.0)
+
+
+def test_safeguard_analysis_reads_cpu_gpu_surface_fields():
+    module = load_safeguard_analysis_module()
     cpu = vtk_surface([1.0, -2.0, 3.0, -4.0])
     gpu = vtk_surface([2.0, -1.0, 4.0, -3.0])
 

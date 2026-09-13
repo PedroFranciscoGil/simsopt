@@ -4,6 +4,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 
 
@@ -24,6 +25,42 @@ def test_constraint_scale_parser():
     for text in ("1,2,3", "1,2,3,0", "1,2,3,nan"):
         with pytest.raises(argparse.ArgumentTypeError):
             module.positive_float_vector(text)
+
+
+def test_gradient_balancing_is_attenuation_only_and_caps_contributions():
+    module = load_benchmark_module(
+        "benchmark_augmented_lagrangian.py", "gpu_al_gradient_balance"
+    )
+    scales, diagnostics = module.gradient_balanced_constraint_scales(
+        np.asarray([4.0, 0.0, 1.0, 9.0]),
+        np.asarray([2.0, 0.0]),
+        np.asarray([[3.0, 0.0], [1.0, 0.0], [0.0, 2.0], [0.0, 4.0]]),
+        mu_init=4.0,
+        constraint_transform="identity",
+        transform_epsilon=1e-4,
+        maximum_ratio=1.0,
+    )
+
+    np.testing.assert_allclose(scales, np.sqrt([24.0, 1.0, 4.0, 72.0]))
+    assert np.all(scales >= 1.0)
+    balanced = diagnostics["balanced_initial_penalty_gradient_norm_estimates"]
+    assert max(balanced.values()) == pytest.approx(diagnostics["base_gradient_norm"])
+
+
+def test_smooth_sqrt_gradient_balancing_rejects_negative_penalties():
+    module = load_benchmark_module(
+        "benchmark_augmented_lagrangian.py", "gpu_al_gradient_balance_validation"
+    )
+    with pytest.raises(ValueError, match="nonnegative"):
+        module.gradient_balanced_constraint_scales(
+            np.asarray([-1.0, 0.0, 0.0, 0.0]),
+            np.asarray([1.0]),
+            np.ones((4, 1)),
+            mu_init=4.0,
+            constraint_transform="smooth_sqrt",
+            transform_epsilon=1e-4,
+            maximum_ratio=1.0,
+        )
 
 
 def test_conditioning_command_records_configuration_and_visualization(tmp_path):
@@ -104,3 +141,51 @@ def test_candidate_rank_prioritizes_physical_feasibility():
     assert module.candidate_rank(feasible_but_nonstationary) < module.candidate_rank(
         stationary_but_infeasible
     )
+
+
+def test_safeguard_qualification_requires_every_scientific_gate():
+    module = load_benchmark_module(
+        "sweep_augmented_lagrangian_safeguards.py", "gpu_al_safeguard_gates"
+    )
+    result = {
+        "acceptance_gates": {
+            name: {"passed": True} for name in module.QUALIFICATION_GATES
+        }
+    }
+    assert module.qualifies(result)
+    result["acceptance_gates"]["stationary_convergence"]["passed"] = False
+    assert not module.qualifies(result)
+
+
+def test_safeguard_command_enables_guard_and_keeps_visualizations(tmp_path):
+    module = load_benchmark_module(
+        "sweep_augmented_lagrangian_safeguards.py", "gpu_al_safeguard_command"
+    )
+    args = argparse.Namespace(
+        max_outer_iterations=10,
+        max_inner_iterations=200,
+        mu_init=4.0,
+        tau=2.0,
+        mu_max=1e6,
+        inner_stationarity_factor=1.0,
+        gradient_tolerance=1e-8,
+        constraint_tolerance=1e-8,
+        maxcor=100,
+        maxls=50,
+        current_scale=1e5,
+        target_tile_size=1024,
+        source_tile_size=4320,
+        distance_feasibility_tolerance=1e-4,
+        curvature_feasibility_tolerance=1e-3,
+        mean_squared_curvature_feasibility_tolerance=1e-3,
+        allow_non_gpu=False,
+    )
+    candidate = module.CANDIDATES[1]
+    command = module.benchmark_command(
+        args, "engineering", candidate, tmp_path / "screen.json"
+    )
+
+    assert "--require-inner-stationarity" in command
+    assert "--automatic-constraint-scaling" in command
+    assert "--no-visualization" not in command
+    assert command[command.index("--constraint-transform") + 1] == "smooth_sqrt"

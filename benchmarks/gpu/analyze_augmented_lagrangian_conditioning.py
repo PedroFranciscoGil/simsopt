@@ -43,8 +43,8 @@ def _finite(value, label):
 
 
 def _validate_result(result, label, *, require_visualizations=False):
-    if result.get("schema_version") != 6:
-        raise ValueError(f"{label} must use augmented-Lagrangian schema 6")
+    if result.get("schema_version") not in (6, 7):
+        raise ValueError(f"{label} must use augmented-Lagrangian schema 6 or 7")
     method = result.get("method", {})
     if method.get("name") != "equality_zero_penalty_augmented_lagrangian":
         raise ValueError(f"{label} contains the wrong optimization method")
