@@ -373,3 +373,44 @@ figures with:
 python benchmarks/gpu/analyze_augmented_lagrangian_safeguards.py \
   simsopt-al-safeguards.zip docs/gpu_native/figures
 ```
+
+## Local engineering-residual parity
+
+The next boundary replaces the four already-aggregated squared engineering
+penalties with a fixed vector of physically normalized, unsquared local hinge
+residuals. Coil--coil and coil--surface entries retain one nearest-sampled-point
+violation per relevant coil point, curvature remains pointwise on each base
+curve, and mean-squared curvature contributes one value per base curve. The
+zero set includes exactly the configured physical feasibility allowance.
+
+This is deliberately a qualification benchmark, not an optimization run. It
+therefore does not produce final-design VTS/VTU files or claim solution quality;
+those mandatory artifacts and final CPU/GPU field/constraint metrics resume
+when the qualified residual vector is connected to the safeguarded optimizer.
+
+[Run local-residual parity in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_local_residual_parity.ipynb)
+
+The notebook runs the engineering case in float64 on an NVIDIA GPU. It checks
+production-threshold values and then uses a deterministic, slightly
+off-symmetry probe to avoid non-unique derivatives at exact nearest-neighbor or
+curvature ties. Three CPU centered finite differences are compared with GPU
+JVPs. Download the archive even when a gate fails.
+
+The equivalent command is:
+
+```sh
+OMP_NUM_THREADS=1 python \
+  benchmarks/gpu/benchmark_local_residual_parity.py \
+  --problem engineering --directions 3 --finite-difference-step 1e-7 \
+  --current-scale 100000 --target-tile-size 1024 \
+  --source-tile-size 4320 \
+  --output local-residual-parity.json
+```
+
+Validate either the JSON file or downloaded ZIP and generate the activation,
+value-parity, Jacobian-parity, and timing figure with:
+
+```sh
+python benchmarks/gpu/analyze_local_residual_parity.py \
+  simsopt-local-residual-parity.zip docs/gpu_native/figures
+```

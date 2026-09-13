@@ -1658,6 +1658,88 @@ units.  The experiment should retain the present safeguard and qualification
 policy and first prove CPU/GPU value--Jacobian parity for the residual vector
 before another optimization screen.
 
+\section{Local residual qualification boundary}
+
+The next implementation now exposes a fixed, device-resident residual vector
+without changing the existing aggregate-penalty API.  Let $\epsilon_d$ be the
+allowed distance violation, $\epsilon_\kappa$ the allowed curvature violation,
+and $\epsilon_m$ the allowed mean-squared-curvature violation.  With nominal
+limits $d_{cc}$, $d_{cs}$, $\kappa_{\max}$, and $m_{\max}$, the new residuals are
+\begin{align}
+r^{cc}_{ijq} &=\frac{\left[d_{cc}-\epsilon_d-
+ \min_{q'}\|\gamma_{iq}-\gamma_{jq'}\|\right]_+}{\epsilon_d},\\
+r^{cs}_{iq} &=\frac{\left[d_{cs}-\epsilon_d-
+ \min_s\|\gamma_{iq}-S_s\|\right]_+}{\epsilon_d},\\
+r^\kappa_{iq} &=\frac{\left[\kappa_{iq}-(\kappa_{\max}
+ +\epsilon_\kappa)\right]_+}{\epsilon_\kappa},\\
+r^m_i &=\frac{\left[m_i-(m_{\max}+\epsilon_m)\right]_+}{\epsilon_m}.
+\end{align}
+Thus $r=0$ is equivalent to the existing direct physical-feasibility allowance,
+and a positive value reports violation in units of that allowance.  Applying an
+AL quadratic to these unsquared hinges gives a second-order local penalty.  In
+contrast, applying it to the earlier integrated squared penalty produces a
+fourth-order response near feasibility and suppresses useful first-order
+information.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=5mm and 6mm,
+  box/.style={draw,rounded corners,align=center,minimum height=8mm,
+              inner xsep=4mm,fill=blue!7,font=\scriptsize},
+  probe/.style={draw,rounded corners,align=center,minimum height=8mm,
+                inner xsep=4mm,fill=orange!14,font=\scriptsize},
+  gate/.style={draw,rounded corners,align=center,minimum height=8mm,
+               inner xsep=4mm,fill=green!10,font=\scriptsize},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (geometry) {Fourier dofs\\and currents};
+\node[box,right=of geometry] (samples) {device geometry\\and nearest samples};
+\node[box,right=of samples] (residuals) {8,884 normalized\\local residuals};
+\node[probe,below=of samples] (probe) {off-symmetry probe\\removes exact ties};
+\node[gate,right=of probe] (parity) {CPU centered FD\\versus GPU JVP};
+\draw[flow] (geometry) -- (samples);
+\draw[flow] (samples) -- (residuals);
+\draw[flow] (probe) -- (parity);
+\draw[flow] (geometry.south) |- (probe.west);
+\draw[flow] (residuals.south) |- (parity.east);
+\end{tikzpicture}
+\caption{Residual qualification precedes optimizer integration.  Production
+values are checked at the unmodified initial point; directional derivatives are
+checked at a documented $10^{-4}$ off-symmetry geometry probe because an exact
+nearest-neighbor tie has no unique classical Jacobian.}
+\label{fig:local-residual-boundary}
+\end{figure}
+
+The engineering layout contains 6,480 coil--coil entries, 1,920 coil--surface
+entries, 480 curvature entries, and four mean-squared-curvature entries, for
+8,884 residuals total.  The stress layout remains modest at 27,546 entries.
+Coil--surface nearest distances are reduced in target tiles, so neither layout
+materializes the full coil-point--surface interaction matrix.  Named, contiguous
+family slices are part of the public experimental contract and allow familywise
+scaling, diagnostics, and matrix-free products without a dense Jacobian.
+
+Unit coverage now checks each primitive, tiled versus full nearest-distance
+values, the composed objective boundary, stable family offsets, and the
+independent NumPy oracle.  Eighteen focused tests and all 103 GPU-module tests
+pass locally.  An engineering CPU-only smoke run additionally gives
+$1.1\times10^{-16}$ relative
+forced-residual value error and $1.6\times10^{-9}$ relative
+directional-Jacobian error between the two
+implementations; this validates the harness but is not NVIDIA performance
+evidence.  The Colab workflow records float64 hardware provenance, production
+and forced-activation value parity, three directional JVP checks, compilation,
+warm timing, and all acceptance gates.  Its analyzer validates a returned ZIP
+and produces one four-panel activation, magnitude, Jacobian, and performance
+figure.
+
+\textbf{Decision.}  Keep the original aggregate constraints for backward
+compatibility, but make this local residual vector the required boundary for the
+next safeguarded optimization experiment.  Do not run that experiment until an
+NVIDIA archive passes all residual value and directional-Jacobian gates.  Exact
+symmetry points remain valid for value tests; a deterministic off-symmetry probe
+is required only when claiming a classical Jacobian comparison.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

@@ -9,13 +9,51 @@ from .curves import (
     evaluate_cartesian_fourier_derivatives,
     expand_by_symmetry,
 )
-from .distances import coil_coil_distance, coil_surface_distance
+from .distances import (
+    coil_coil_distance,
+    coil_coil_distance_residuals,
+    coil_surface_distance,
+    coil_surface_distance_residuals,
+)
 from .flux import normalized_flux, quadratic_flux
 from .regularizers import (
     arclength_variation,
+    curve_curvature_residuals,
     lp_curve_curvature_penalty,
     mean_squared_curvature,
+    mean_squared_curvature_residuals,
 )
+
+LOCAL_RESIDUAL_FAMILIES = (
+    "coil_coil_distance",
+    "coil_surface_distance",
+    "curvature",
+    "mean_squared_curvature",
+)
+
+
+def local_engineering_residual_layout(
+    base_curve_count: int,
+    physical_curve_count: int,
+    quadrature_count: int,
+    pair_count: int,
+):
+    """Describe the fixed family slices in the local residual vector."""
+    counts = (
+        pair_count * quadrature_count,
+        physical_curve_count * quadrature_count,
+        base_curve_count * quadrature_count,
+        base_curve_count,
+    )
+    if min(base_curve_count, physical_curve_count, quadrature_count, pair_count) < 0:
+        raise ValueError("residual layout dimensions must be nonnegative")
+    offsets = [0]
+    for count in counts:
+        offsets.append(offsets[-1] + count)
+    return {
+        name: {"start": int(offsets[index]), "stop": int(offsets[index + 1])}
+        for index, name in enumerate(LOCAL_RESIDUAL_FAMILIES)
+    }
 
 
 def minimal_coil_objective(
@@ -223,3 +261,115 @@ def minimal_coil_augmented_lagrangian_terms(
         )
     )
     return base_objective, constraints
+
+
+def minimal_coil_local_residual_terms(
+    curve_dofs,
+    base_currents,
+    bases,
+    transforms,
+    current_signs,
+    surface_points,
+    surface_normal,
+    target_normal_field,
+    *,
+    length_weight: float = 1e-6,
+    flux_definition: str = "quadratic flux",
+    target_tile_size: int = 128,
+    source_tile_size: int = 256,
+    vjp_mode: str = "custom",
+    curvature_threshold: float = 5.0,
+    curvature_feasibility_tolerance: float = 1e-3,
+    mean_squared_curvature_threshold: float = 5.0,
+    mean_squared_curvature_feasibility_tolerance: float = 1e-3,
+    coil_coil_pair_indices=None,
+    coil_coil_distance_threshold: float = 0.1,
+    coil_surface_distance_threshold: float = 0.3,
+    distance_feasibility_tolerance: float = 1e-4,
+):
+    """Return the base objective and local, dimensionless hinge residuals.
+
+    Unlike :func:`minimal_coil_augmented_lagrangian_terms`, this function does
+    not aggregate and square engineering violations before the solver sees
+    them.  Each residual is normalized by its physical feasibility allowance,
+    and its zero set matches the benchmark's direct feasibility gate.  The
+    fixed family order is given by :data:`LOCAL_RESIDUAL_FAMILIES`.
+    """
+    if coil_coil_pair_indices is None:
+        raise ValueError("coil_coil_pair_indices is required")
+    if distance_feasibility_tolerance <= 0:
+        raise ValueError("distance_feasibility_tolerance must be positive")
+    if curvature_feasibility_tolerance <= 0:
+        raise ValueError("curvature_feasibility_tolerance must be positive")
+    if mean_squared_curvature_feasibility_tolerance <= 0:
+        raise ValueError(
+            "mean_squared_curvature_feasibility_tolerance must be positive"
+        )
+    if distance_feasibility_tolerance >= min(
+        coil_coil_distance_threshold, coil_surface_distance_threshold
+    ):
+        raise ValueError("distance feasibility tolerance must be below thresholds")
+
+    coefficients = dofs_to_coefficients(curve_dofs)
+    derivatives = evaluate_cartesian_fourier_derivatives(coefficients, bases[:3])
+    base_gamma, base_gammadash, base_gammadashdash = derivatives
+    gamma, gammadash, currents = expand_by_symmetry(
+        base_gamma, base_gammadash, base_currents, transforms, current_signs
+    )
+    if vjp_mode == "autodiff":
+        field_function = biot_savart_field
+    elif vjp_mode == "custom":
+        field_function = biot_savart_field_custom_vjp
+    else:
+        raise ValueError("vjp_mode must be 'autodiff' or 'custom'")
+    field = field_function(
+        surface_points,
+        gamma,
+        gammadash,
+        currents,
+        target_tile_size=target_tile_size,
+        source_tile_size=source_tile_size,
+    )
+    if flux_definition == "quadratic flux":
+        flux = quadratic_flux(field, surface_normal, target_normal_field)
+    elif flux_definition == "normalized":
+        flux = normalized_flux(field, surface_normal, target_normal_field)
+    else:
+        raise ValueError("flux_definition must be 'quadratic flux' or 'normalized'")
+    base_objective = flux + length_weight * jnp.sum(curve_lengths(base_gammadash))
+
+    distance_scale = distance_feasibility_tolerance
+    coil_coil = coil_coil_distance_residuals(
+        gamma,
+        coil_coil_pair_indices,
+        coil_coil_distance_threshold - distance_feasibility_tolerance,
+        distance_scale,
+    )
+    coil_surface = coil_surface_distance_residuals(
+        gamma,
+        surface_points,
+        coil_surface_distance_threshold - distance_feasibility_tolerance,
+        distance_scale,
+        target_tile_size=target_tile_size,
+    )
+    curvature = curve_curvature_residuals(
+        base_gammadash,
+        base_gammadashdash,
+        curvature_threshold + curvature_feasibility_tolerance,
+        curvature_feasibility_tolerance,
+    )
+    mean_curvature = mean_squared_curvature_residuals(
+        base_gammadash,
+        base_gammadashdash,
+        mean_squared_curvature_threshold + mean_squared_curvature_feasibility_tolerance,
+        mean_squared_curvature_feasibility_tolerance,
+    )
+    residuals = jnp.concatenate(
+        (
+            coil_coil.reshape((-1,)),
+            coil_surface.reshape((-1,)),
+            curvature.reshape((-1,)),
+            mean_curvature.reshape((-1,)),
+        )
+    )
+    return base_objective, residuals

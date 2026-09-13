@@ -5,7 +5,9 @@ import pytest
 from simsopt.geo.curveobjectives import cc_distance_pure, cs_distance_pure
 from simsopt.gpu import (
     coil_coil_distance,
+    coil_coil_distance_residuals,
     coil_surface_distance,
+    coil_surface_distance_residuals,
     curve_pair_indices,
 )
 
@@ -92,3 +94,47 @@ def test_tiled_coil_surface_value_and_gradient_match_reference():
     np.testing.assert_allclose(
         gradient[1], reference_gradient[1], rtol=3e-13, atol=3e-13
     )
+
+
+def test_coil_coil_local_residuals_are_normalized_physical_deficits():
+    gamma = np.asarray(
+        [
+            [[0.5, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        ]
+    )
+    pairs = np.asarray([[1, 0]], dtype=np.int32)
+    residuals = coil_coil_distance_residuals(gamma, pairs, 1.0, 0.25)
+
+    np.testing.assert_allclose(residuals, [[2.0, 0.0]])
+    gradient = jax.grad(
+        lambda points: jnp.sum(
+            coil_coil_distance_residuals(points, pairs, 1.0, 0.25) ** 2
+        )
+    )(jnp.asarray(gamma))
+    assert np.all(np.isfinite(gradient))
+
+
+def test_tiled_coil_surface_local_residuals_match_full_nearest_distances():
+    rng = np.random.default_rng(106)
+    gamma = rng.normal(size=(3, 8, 3))
+    surface_points = rng.normal(size=(17, 3))
+    allowed_distance = 1.2
+    scale = 0.03
+    expected_nearest = np.min(
+        np.linalg.norm(
+            gamma[:, :, None, :] - surface_points[None, None, :, :], axis=-1
+        ),
+        axis=-1,
+    )
+    expected = np.maximum(allowed_distance - expected_nearest, 0.0) / scale
+
+    residuals = coil_surface_distance_residuals(
+        gamma,
+        surface_points,
+        allowed_distance,
+        scale,
+        target_tile_size=5,
+    )
+
+    np.testing.assert_allclose(residuals, expected, rtol=2e-14, atol=2e-14)

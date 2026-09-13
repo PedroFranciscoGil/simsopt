@@ -68,6 +68,39 @@ def coil_coil_distance(
     return total / (nquad * nquad)
 
 
+def coil_coil_distance_residuals(
+    gamma,
+    pair_indices,
+    allowed_minimum_distance: float,
+    distance_scale: float,
+):
+    """Return dimensionless nearest-point residuals for every curve pair.
+
+    One residual is retained for each quadrature point on the first curve in
+    each static symmetry-reduced pair.  The zero set is the sampled minimum
+    distance constraint, while positive values are physical distance deficits
+    divided by ``distance_scale``.
+    """
+    gamma = jnp.asarray(gamma)
+    pairs = jnp.asarray(pair_indices, dtype=jnp.int32)
+    if gamma.ndim != 3 or gamma.shape[-1] != 3:
+        raise ValueError("gamma must have shape (ncurves, nquad, 3)")
+    if pairs.ndim != 2 or pairs.shape[1] != 2:
+        raise ValueError("pair_indices must have shape (npairs, 2)")
+    if distance_scale <= 0:
+        raise ValueError("distance_scale must be positive")
+
+    def pair_residual(pair):
+        first = gamma[pair[0]]
+        second = gamma[pair[1]]
+        difference = first[:, None, :] - second[None, :, :]
+        distances = jnp.sqrt(jnp.sum(difference * difference, axis=-1))
+        nearest = jnp.min(distances, axis=1)
+        return jnp.maximum(allowed_minimum_distance - nearest, 0.0) / distance_scale
+
+    return lax.map(pair_residual, pairs)
+
+
 def _surface_tile_contribution(
     gamma,
     curve_speeds,
@@ -141,3 +174,58 @@ def coil_surface_distance(
     ntiles = padded_points.shape[0] // target_tile_size
     total = lax.fori_loop(0, ntiles, add_tile, jnp.zeros((), gamma.dtype))
     return total / (gamma.shape[1] * ntargets)
+
+
+def coil_surface_distance_residuals(
+    gamma,
+    surface_points,
+    allowed_minimum_distance: float,
+    distance_scale: float,
+    *,
+    target_tile_size: int = 512,
+):
+    """Return dimensionless nearest-surface residuals for each curve point.
+
+    The tiled minimum avoids materializing all curve--surface interactions.
+    It is differentiable away from nearest-neighbor ties, which is the same
+    piecewise-smooth contract as a sampled minimum-distance constraint.
+    """
+    gamma = jnp.asarray(gamma)
+    surface_points = jnp.asarray(surface_points)
+    if gamma.ndim != 3 or gamma.shape[-1] != 3:
+        raise ValueError("gamma must have shape (ncurves, nquad, 3)")
+    if surface_points.ndim != 2 or surface_points.shape[1] != 3:
+        raise ValueError("surface_points must have shape (ntargets, 3)")
+    if surface_points.shape[0] < 1:
+        raise ValueError("surface_points must not be empty")
+    if target_tile_size <= 0:
+        raise ValueError("target_tile_size must be positive")
+    if distance_scale <= 0:
+        raise ValueError("distance_scale must be positive")
+
+    ntargets = surface_points.shape[0]
+    padding = (-ntargets) % target_tile_size
+    padded_points = jnp.pad(surface_points, ((0, padding), (0, 0)))
+    active = jnp.arange(padded_points.shape[0]) < ntargets
+
+    def update_minimum(tile_number, nearest):
+        start = tile_number * target_tile_size
+        points = lax.dynamic_slice_in_dim(
+            padded_points, start, target_tile_size, axis=0
+        )
+        tile_active = lax.dynamic_slice_in_dim(active, start, target_tile_size, axis=0)
+        difference = gamma[:, :, None, :] - points[None, None, :, :]
+        squared_distance = jnp.sum(difference * difference, axis=-1)
+        squared_distance = jnp.where(
+            tile_active[None, None, :], squared_distance, jnp.inf
+        )
+        return jnp.minimum(nearest, jnp.min(jnp.sqrt(squared_distance), axis=-1))
+
+    ntiles = padded_points.shape[0] // target_tile_size
+    nearest = lax.fori_loop(
+        0,
+        ntiles,
+        update_minimum,
+        jnp.full(gamma.shape[:2], jnp.inf, dtype=gamma.dtype),
+    )
+    return jnp.maximum(allowed_minimum_distance - nearest, 0.0) / distance_scale

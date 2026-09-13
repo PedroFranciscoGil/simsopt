@@ -39,6 +39,35 @@ def mean_squared_curvature(gammadash, gammadashdash):
     return jnp.mean(curvature**2 * speed, axis=-1) / jnp.mean(speed, axis=-1)
 
 
+def curve_curvature_residuals(
+    gammadash,
+    gammadashdash,
+    allowed_maximum_curvature: float,
+    curvature_scale: float,
+):
+    """Return dimensionless pointwise curvature-excess residuals."""
+    if curvature_scale <= 0:
+        raise ValueError("curvature_scale must be positive")
+    curvature = curve_curvatures(gammadash, gammadashdash)
+    return jnp.maximum(curvature - allowed_maximum_curvature, 0.0) / curvature_scale
+
+
+def mean_squared_curvature_residuals(
+    gammadash,
+    gammadashdash,
+    allowed_maximum_mean_squared_curvature: float,
+    mean_squared_curvature_scale: float,
+):
+    """Return one dimensionless mean-squared-curvature residual per curve."""
+    if mean_squared_curvature_scale <= 0:
+        raise ValueError("mean_squared_curvature_scale must be positive")
+    values = mean_squared_curvature(gammadash, gammadashdash)
+    return (
+        jnp.maximum(values - allowed_maximum_mean_squared_curvature, 0.0)
+        / mean_squared_curvature_scale
+    )
+
+
 def arclength_variation(gammadash):
     """Return full-resolution incremental-arclength variance per curve."""
     gammadash = jnp.asarray(gammadash)

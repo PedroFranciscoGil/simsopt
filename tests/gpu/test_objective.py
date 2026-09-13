@@ -17,7 +17,9 @@ from simsopt.geo import (
 from simsopt.gpu import (
     curve_pair_indices,
     fourier_basis_set,
+    local_engineering_residual_layout,
     minimal_coil_augmented_lagrangian_terms,
+    minimal_coil_local_residual_terms,
     minimal_coil_objective,
     normalized_flux,
     quadratic_flux,
@@ -28,6 +30,21 @@ from simsopt.objectives import QuadraticPenalty, SquaredFlux
 TEST_FILE = (
     Path(__file__).parent / ".." / "test_files" / "input.LandremanPaul2021_QA"
 ).resolve()
+
+
+def test_local_engineering_residual_layout_has_stable_family_slices():
+    layout = local_engineering_residual_layout(
+        base_curve_count=4,
+        physical_curve_count=16,
+        quadrature_count=120,
+        pair_count=54,
+    )
+    assert layout == {
+        "coil_coil_distance": {"start": 0, "stop": 6480},
+        "coil_surface_distance": {"start": 6480, "stop": 8400},
+        "curvature": {"start": 8400, "stop": 8880},
+        "mean_squared_curvature": {"start": 8880, "stop": 8884},
+    }
 
 
 def test_quadratic_flux_matches_definition():
@@ -264,12 +281,43 @@ def test_full_engineering_objective_and_gradients_match_simsopt(vjp_mode):
             vjp_mode=vjp_mode,
         )
     )(curve_dofs, base_currents)
+    local_base_value, local_residuals = jax.jit(
+        lambda dofs, currents: minimal_coil_local_residual_terms(
+            dofs,
+            currents,
+            bases,
+            transforms,
+            current_signs,
+            surface_points,
+            surface_normal,
+            target,
+            length_weight=length_weight,
+            curvature_threshold=curvature_threshold,
+            curvature_feasibility_tolerance=0.1,
+            mean_squared_curvature_threshold=msc_threshold,
+            mean_squared_curvature_feasibility_tolerance=0.1,
+            coil_coil_pair_indices=pairs,
+            coil_coil_distance_threshold=cc_threshold,
+            coil_surface_distance_threshold=cs_threshold,
+            distance_feasibility_tolerance=0.01,
+            target_tile_size=7,
+            source_tile_size=13,
+            vjp_mode=vjp_mode,
+        )
+    )(curve_dofs, base_currents)
+    local_layout = local_engineering_residual_layout(
+        nbase, len(physical_curves), nquad, pairs.shape[0]
+    )
     cpu_derivative = cpu_objective.dJ(partials=True)
 
     np.testing.assert_allclose(value, cpu_objective.J(), rtol=3e-11, atol=3e-11)
     np.testing.assert_allclose(
         base_value, cpu_flux.J() + length_weight * cpu_length.J(), rtol=3e-11
     )
+    np.testing.assert_allclose(local_base_value, base_value, rtol=3e-11)
+    assert local_residuals.shape == (local_layout["mean_squared_curvature"]["stop"],)
+    assert np.all(np.asarray(local_residuals) >= 0.0)
+    assert np.all(np.isfinite(np.asarray(local_residuals)))
     np.testing.assert_allclose(
         constraint_values,
         [

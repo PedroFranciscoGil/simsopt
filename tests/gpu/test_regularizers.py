@@ -9,12 +9,14 @@ from simsopt.geo import (
 )
 from simsopt.gpu import (
     arclength_variation,
+    curve_curvature_residuals,
     curve_curvatures,
     dofs_to_coefficients,
     evaluate_cartesian_fourier_derivatives,
     fourier_basis_set,
     lp_curve_curvature_penalty,
     mean_squared_curvature,
+    mean_squared_curvature_residuals,
 )
 
 
@@ -50,9 +52,7 @@ def test_curve_local_regularizer_values_match_simsopt():
         atol=3e-13,
     )
     np.testing.assert_allclose(
-        lp_curve_curvature_penalty(
-            gammadash, gammadashdash, p=2.0, threshold=0.7
-        ),
+        lp_curve_curvature_penalty(gammadash, gammadashdash, p=2.0, threshold=0.7),
         [LpCurveCurvature(curve, 2.0, 0.7).J() for curve in curves],
         rtol=3e-13,
         atol=3e-13,
@@ -82,9 +82,7 @@ def test_curve_local_regularizer_combined_gradient_matches_simsopt():
         )
         gammadash, gammadashdash = derivatives[1], derivatives[2]
         curvature = jax.numpy.sum(
-            lp_curve_curvature_penalty(
-                gammadash, gammadashdash, p=2.0, threshold=0.7
-            )
+            lp_curve_curvature_penalty(gammadash, gammadashdash, p=2.0, threshold=0.7)
         )
         msc = jax.numpy.sum(mean_squared_curvature(gammadash, gammadashdash))
         arclength = jax.numpy.sum(arclength_variation(gammadash))
@@ -113,16 +111,16 @@ def test_curve_local_regularizer_validation():
     with pytest.raises(ValueError, match="match"):
         curve_curvatures(np.zeros((4, 3)), np.zeros((5, 3)))
     with pytest.raises(ValueError, match="positive"):
-        lp_curve_curvature_penalty(
-            np.ones((4, 3)), np.ones((4, 3)), p=0.0
-        )
+        lp_curve_curvature_penalty(np.ones((4, 3)), np.ones((4, 3)), p=0.0)
 
 
 def test_curvature_threshold_activation_is_exact():
     points = np.linspace(0.0, 1.0, 32, endpoint=False)
     angle = 2 * np.pi * points
-    gammadash = 2 * np.pi * np.stack(
-        (-np.sin(angle), np.cos(angle), np.zeros_like(angle)), axis=-1
+    gammadash = (
+        2
+        * np.pi
+        * np.stack((-np.sin(angle), np.cos(angle), np.zeros_like(angle)), axis=-1)
     )
     gammadashdash = (2 * np.pi) ** 2 * np.stack(
         (-np.cos(angle), -np.sin(angle), np.zeros_like(angle)), axis=-1
@@ -134,6 +132,36 @@ def test_curvature_threshold_activation_is_exact():
     assert lp_curve_curvature_penalty(
         gammadash, gammadashdash, p=2.0, threshold=1.0 + 1e-8
     ) == pytest.approx(0.0, abs=1e-28)
-    assert lp_curve_curvature_penalty(
-        gammadash, gammadashdash, p=2.0, threshold=1.0 - 1e-8
-    ) > 0.0
+    assert (
+        lp_curve_curvature_penalty(
+            gammadash, gammadashdash, p=2.0, threshold=1.0 - 1e-8
+        )
+        > 0.0
+    )
+
+
+def test_local_curvature_residuals_use_physical_allowance_units():
+    points = np.linspace(0.0, 1.0, 32, endpoint=False)
+    angle = 2 * np.pi * points
+    # A radius-0.5 circle has curvature 2 and mean-squared curvature 4.
+    gammadash = np.asarray(
+        [
+            np.pi
+            * np.stack((-np.sin(angle), np.cos(angle), np.zeros_like(angle)), axis=-1)
+        ]
+    )
+    gammadashdash = np.asarray(
+        [
+            2
+            * np.pi**2
+            * np.stack((-np.cos(angle), -np.sin(angle), np.zeros_like(angle)), axis=-1)
+        ]
+    )
+
+    curvature = curve_curvature_residuals(gammadash, gammadashdash, 1.75, 0.25)
+    mean_curvature = mean_squared_curvature_residuals(
+        gammadash, gammadashdash, 3.5, 0.25
+    )
+
+    np.testing.assert_allclose(curvature, 1.0, rtol=2e-14, atol=2e-14)
+    np.testing.assert_allclose(mean_curvature, [2.0], rtol=2e-14, atol=2e-14)

@@ -9,7 +9,9 @@ from .config import GpuConfig
 from .curves import fourier_basis_set, symmetry_transforms
 from .distances import curve_pair_indices
 from .objective import (
+    local_engineering_residual_layout,
     minimal_coil_augmented_lagrangian_terms,
+    minimal_coil_local_residual_terms,
     minimal_coil_objective,
 )
 
@@ -115,6 +117,63 @@ class MinimalCoilData:
             target_tile_size=config.target_tile_size,
             source_tile_size=config.source_tile_size,
             vjp_mode=config.vjp_mode,
+        )
+
+    def local_residual_terms(
+        self,
+        curve_dofs,
+        base_currents,
+        *,
+        length_weight=1e-6,
+        flux_definition="quadratic flux",
+        curvature_threshold=5.0,
+        curvature_feasibility_tolerance=1e-3,
+        mean_squared_curvature_threshold=5.0,
+        mean_squared_curvature_feasibility_tolerance=1e-3,
+        coil_coil_distance_threshold=0.1,
+        coil_surface_distance_threshold=0.3,
+        distance_feasibility_tolerance=1e-4,
+        config: GpuConfig = None,
+    ):
+        """Evaluate the base objective and local engineering residual vector."""
+        if config is None:
+            config = GpuConfig()
+        return minimal_coil_local_residual_terms(
+            curve_dofs,
+            base_currents,
+            self.bases,
+            self.transforms,
+            self.current_signs,
+            self.surface_points,
+            self.surface_normal,
+            self.target_normal_field,
+            length_weight=length_weight,
+            flux_definition=flux_definition,
+            curvature_threshold=curvature_threshold,
+            curvature_feasibility_tolerance=curvature_feasibility_tolerance,
+            mean_squared_curvature_threshold=mean_squared_curvature_threshold,
+            mean_squared_curvature_feasibility_tolerance=(
+                mean_squared_curvature_feasibility_tolerance
+            ),
+            coil_coil_pair_indices=self.coil_coil_pair_indices,
+            coil_coil_distance_threshold=coil_coil_distance_threshold,
+            coil_surface_distance_threshold=coil_surface_distance_threshold,
+            distance_feasibility_tolerance=distance_feasibility_tolerance,
+            target_tile_size=config.target_tile_size,
+            source_tile_size=config.source_tile_size,
+            vjp_mode=config.vjp_mode,
+        )
+
+    def local_residual_layout(self):
+        """Return named slices for :meth:`local_residual_terms`."""
+        base_curve_count = self.curve_dofs.shape[0]
+        quadrature_count = self.bases.shape[-2]
+        physical_curve_count = base_curve_count * self.transforms.shape[0]
+        return local_engineering_residual_layout(
+            base_curve_count,
+            physical_curve_count,
+            quadrature_count,
+            self.coil_coil_pair_indices.shape[0],
         )
 
 

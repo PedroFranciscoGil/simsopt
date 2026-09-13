@@ -32,23 +32,31 @@ from .curves import (
 )
 from .distances import (
     coil_coil_distance,
+    coil_coil_distance_residuals,
     coil_surface_distance,
+    coil_surface_distance_residuals,
     curve_pair_indices,
 )
 from .flux import normalized_flux, quadratic_flux
 from .objective import (
+    LOCAL_RESIDUAL_FAMILIES,
+    local_engineering_residual_layout,
     minimal_coil_augmented_lagrangian_terms,
+    minimal_coil_local_residual_terms,
     minimal_coil_objective,
 )
 from .regularizers import (
     arclength_variation,
+    curve_curvature_residuals,
     curve_curvatures,
     lp_curve_curvature_penalty,
     mean_squared_curvature,
+    mean_squared_curvature_residuals,
 )
 from .scipy import ScipyCoilObjectiveBridge, ScipyObjectiveBridge
 
 __all__ = [
+    "LOCAL_RESIDUAL_FAMILIES",
     "AugmentedLagrangianResult",
     "GpuConfig",
     "MinimalCoilData",
@@ -62,7 +70,10 @@ __all__ = [
     "biot_savart_field_reference",
     "coefficients_to_dofs",
     "coil_coil_distance",
+    "coil_coil_distance_residuals",
     "coil_surface_distance",
+    "coil_surface_distance_residuals",
+    "curve_curvature_residuals",
     "curve_curvatures",
     "curve_lengths",
     "curve_pair_indices",
@@ -73,10 +84,13 @@ __all__ = [
     "expand_by_symmetry",
     "fourier_basis",
     "fourier_basis_set",
+    "local_engineering_residual_layout",
     "lp_curve_curvature_penalty",
     "mean_squared_curvature",
+    "mean_squared_curvature_residuals",
     "minimal_coil_augmented_lagrangian_terms",
     "minimal_coil_data",
+    "minimal_coil_local_residual_terms",
     "minimal_coil_objective",
     "minimize_equality_augmented_lagrangian",
     "normalized_flux",
