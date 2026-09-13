@@ -62,16 +62,16 @@ def test_conditioning_command_records_configuration_and_visualization(tmp_path):
 
 def synthetic_result(*, failed_ratio, success=True):
     violations = {
-        "coil_coil_distance_deficit": failed_ratio * 1e-4,
-        "coil_surface_distance_deficit": 0.0,
-        "maximum_curvature_excess": 0.0,
-        "maximum_mean_squared_curvature_excess": 0.0,
+        "minimum_coil_coil_distance": failed_ratio * 1e-4,
+        "minimum_coil_surface_distance": 0.0,
+        "maximum_curvature": 0.0,
+        "maximum_mean_squared_curvature": 0.0,
     }
     tolerances = {
-        "coil_coil_distance_deficit": 1e-4,
-        "coil_surface_distance_deficit": 1e-4,
-        "maximum_curvature_excess": 1e-3,
-        "maximum_mean_squared_curvature_excess": 1e-3,
+        "minimum_coil_coil_distance": 1e-4,
+        "minimum_coil_surface_distance": 1e-4,
+        "maximum_curvature": 1e-3,
+        "maximum_mean_squared_curvature": 1e-3,
     }
     backend = {
         "optimization": {

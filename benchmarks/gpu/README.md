@@ -315,3 +315,16 @@ winner JSON preserve complete CPU/GPU histories and final objective,
 `(B dot n) / abs(B)`, coil-constraint, raw/scaled AL, timing, and provenance
 metrics. No conditioning choice is accepted until the returned NVIDIA archive
 passes parity, artifact, and direct physical-feasibility validation.
+
+Validate the returned archive and generate the screening, production
+convergence, and surface-field figures with:
+
+```sh
+python benchmarks/gpu/analyze_augmented_lagrangian_conditioning.py \
+  simsopt-al-conditioning.zip docs/gpu_native/figures
+```
+
+The analyzer independently reproduces the candidate ranking, validates every
+schema-6 history, cross-checks the selected production configuration, verifies
+the signed/absolute surface fields, and emits
+`al_conditioning_analysis_summary.json` with all decision metrics.

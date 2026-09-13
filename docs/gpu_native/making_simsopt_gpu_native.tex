@@ -1289,9 +1289,11 @@ Ranking is lexicographic: number of failed direct physical constraints,
 largest and summed tolerance-normalized physical violation, number of
 nonstationary backends, maximum final AL-gradient norm, mean CPU/GPU normalized
 field RMS, then total physics evaluations.  A backend or initial-parity failure
-makes a candidate ineligible.  This ordering prevents a faster but physically
-invalid design from winning.  The reduced screen selects a candidate; it is
-not itself evidence that the same ordering transfers to production scale.
+makes a candidate ineligible.  Speed cannot compensate for a worse rank in
+these quantities.  However, this first policy has no hard feasibility cutoff:
+a candidate failing fewer checks can outrank one with much smaller violation
+magnitudes.  The reduced screen selects a diagnostic candidate; it is not
+itself evidence that the same ordering transfers to production scale.
 
 The new \code{colab\_augmented\_lagrangian\_conditioning.ipynb} runs all GPU
 tests, performs the four engineering screens, reruns the winner on the stress
@@ -1300,6 +1302,135 @@ artifacts, and downloads one archive.  No NVIDIA performance or quality result
 is claimed yet: figures and the decision will be extended from the returned
 archive, preserving the distinction between implemented experiment and
 measured outcome.
+
+\subsection{Measured conditioning-study result}
+
+The returned archive has SHA-256 digest
+\begin{center}
+{\scriptsize\ttfamily
+6298b735d451df4edfbe4c7e1ab8917fc2e24a64fd591498a7fcd87edd7ecc48}
+\end{center}
+and records revision \code{236461f6}.  The analyzer validated all ten members,
+reproduced every candidate rank, checked every raw and scaled history, and
+verified the signed and absolute surface arrays.  The run used a 15,360~MiB
+Tesla T4 with driver 580.82.07; JAX selected \code{cuda:0}.  Production initial
+parity remains excellent: base and AL absolute errors are
+$1.39\times10^{-17}$ and $2.22\times10^{-16}$, the raw and scaled constraints
+agree exactly, and gradient relative error is $4.80\times10^{-16}$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/al_conditioning_screen.png}
+\caption{Engineering screening results.  None of the four candidates is both
+physically feasible and stationary.  The conspicuous speedup of the scaled
+case accompanies much less GPU work and a severely degraded endpoint, so it is
+not evidence of faster equivalent optimization.}
+\label{fig:al-conditioning-screen}
+\end{figure}
+
+\begin{center}
+\scriptsize
+\begin{tabular}{lrrrrrrr}
+\toprule
+Candidate & Failed checks & Worst ratio & CPU grad. & GPU grad. & CPU RMS & GPU RMS & Speedup \\
+\midrule
+Baseline & 2 & 156.54 & $4.69\!\times\!10^{-3}$ & $8.60\!\times\!10^{-4}$ & 0.00318 & 0.00841 & 6.19 \\
+Long inner & 3 & 30.18 & $2.99\!\times\!10^{-4}$ & $2.22\!\times\!10^{-4}$ & 0.00192 & 0.00190 & 4.63 \\
+Gentle growth & 3 & 22.88 & $2.38\!\times\!10^{-4}$ & $2.76\!\times\!10^{-5}$ & 0.00193 & 0.00191 & 4.27 \\
+Scaled gentle & 1 & 368.66 & 0.188 & 0.0937 & 0.0171 & 0.0650 & 15.78 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+``Failed checks'' counts CPU and GPU direct constraints separately, and the
+worst ratio divides a physical violation by its acceptance tolerance.  The
+unscaled long-inner and gentle-growth candidates give the best field and
+stationarity results, but each misses several tight physical tolerances.  The
+scaled CPU endpoint satisfies all four physical allowances, whereas its GPU
+endpoint misses only coil--surface distance---but by 36.866~mm, or
+$368.66$ times the 0.1~mm allowance.  Because the first ranking key is the
+number of failures, scaled-gentle mechanically outranks the baseline's two
+failures despite having the worst violation magnitude and field quality.  This
+is a selection-policy failure: when no candidate passes all hard gates, the
+workflow should report ``no qualified winner'' instead of launching a nominal
+winner as though it were acceptable.
+
+The stress rerun is useful as a failure diagnostic.  CPU and GPU agree through
+the first outer endpoint and remain close through the second.  At GPU outer
+step three, L-BFGS-B consumes all 150 iterations and ends with
+$\lVert\nabla\mathcal L_A\rVert_2=2.27$.  At each of steps four through eight,
+it then returns after one iteration due to relative function reduction while
+the optimizer vector is bitwise unchanged.  Penalties nevertheless grow to
+$1024$, and the reported gradient rises monotonically to 131.36.  CPU continues
+to move in four later stages but also finishes nonstationary with gradient
+0.993.  Thus SciPy's inner \code{success} flag is not a sufficient AL-stage
+acceptance condition; relative function stagnation with a large gradient must
+be treated as failure, not progress.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/al_conditioning_winner_convergence.png}
+\caption{Stress trajectory of the mechanically selected scaled candidate.
+After outer step three the GPU variables no longer move, while multipliers and
+penalties continue changing and the AL gradient explodes.  Raw aggregate
+constraints remaining small do not imply direct physical feasibility.}
+\label{fig:al-conditioning-winner-convergence}
+\end{figure}
+
+The CPU path takes 1410.19~s, 678 inner iterations, and 1350 physics
+evaluations.  GPU takes 99.69~s, 164 iterations, and 334 evaluations; compilation
+adds 7.48~s.  The nominal warm and amortized ratios are $14.15\times$ and
+$13.16\times$, but these compare unequal work and are rejected as optimization
+speedups.  Normalizing only by recorded physics evaluations gives a more
+defensible, though still trajectory-dependent, throughput indication of
+$3.50\times$ (1.045 versus 0.298 seconds per evaluation).  This is consistent
+with earlier objective speedups and does not rescue the failed solve.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Production metric & Limit & CPU & GPU \\
+\midrule
+Final recorded objective & -- & $6.579\!\times\!10^{-4}$ & $2.815\!\times\!10^{-3}$ \\
+Mean $|B\cdot n|/|B|$ & -- & 0.02263 & 0.04790 \\
+RMS $|B\cdot n|/|B|$ & -- & 0.02740 & 0.06107 \\
+Maximum $|B\cdot n|/|B|$ & -- & 0.08081 & 0.19623 \\
+Minimum coil--coil distance (m) & 0.100 & 0.09572 & 0.09542 \\
+Minimum coil--surface distance (m) & 0.300 & 0.30801 & 0.26978 \\
+Maximum curvature & 5.000 & 4.46624 & 4.23661 \\
+Maximum mean-squared curvature & 5.000 & 5.00022 & 5.00106 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+CPU misses coil--coil distance by 4.277~mm but passes the stated allowances for
+the other direct constraints.  GPU misses coil--coil by 4.576~mm,
+coil--surface by 30.219~mm, and mean-squared curvature by 0.001059 (slightly
+beyond its 0.001 allowance).  GPU normalized-field mean, RMS, and maximum are
+$2.12\times$, $2.23\times$, and $2.43\times$ the CPU values.  The final VTS
+maps have signed correlation 0.820, relative $L^2$ difference 1.522, and GPU
+has smaller pointwise absolute error on only 19.9\% of surface points.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/al_conditioning_winner_surface_field.png}
+\caption{Final normalized normal field from the archived VTS files.  The
+stagnated GPU path has much larger coherent error bands and is not an
+equivalent endpoint to the CPU trajectory.}
+\label{fig:al-conditioning-winner-surface}
+\end{figure}
+
+\textbf{Decision.}  Accept the schema-6 raw/scaled accounting, CPU/GPU initial
+parity, NVIDIA provenance, analyzer, and VTK exports.  Reject the tested
+value-normalization scales, the mechanical winner, every final design, and the
+whole-run speedup claim.  The result shows why making the already squared,
+integrated hinge values order unity is not sound preconditioning: it introduces
+effective quadratic penalty factors proportional to $1/s_i^2$ without
+balancing the constraint Jacobians.  The next implementation must (i) require
+hard feasibility and stationarity before declaring a winner, (ii) reject an
+inner stage that stagnates with a large gradient and stop penalty escalation,
+and (iii) derive conditioning from gradient/Jacobian norms or expose local
+unsquared residuals.  Another blind scale or penalty sweep is not justified.
 
 \section{Opportunities to improve coil quality}
 
