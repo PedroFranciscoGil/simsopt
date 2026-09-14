@@ -426,13 +426,22 @@ for the residual implementation itself. Reverse mode forms the required
 Jacobian-transpose products without constructing the dense residual Jacobian.
 
 The default `family_l2` policy applies one attenuation-only scale per family:
-`max(sqrt(family count), initial family L2 norm)`. The schema-2 workflow then
+`max(sqrt(family count), initial family L2 norm)`. The AL workflow then
 uses the zero-preserving transform `sqrt(r**2 + epsilon**2) - epsilon` and can
 reduce family scales after accepted outer stages without recompiling. The
 Colab qualification uses a gentler 0.5 scale reduction, a `sqrt(count)` floor,
 and an absolute-or-relative inner first-order safeguard. Raw residuals remain
 available for strict convergence diagnostics, and outer histories summarize
 large vectors while retaining named final family statistics.
+
+Schema 3 treats the AL endpoint as a feasibility warm start rather than the
+final design. It runs the full direct-penalty objective through separately
+CPU- and GPU-pinned JAX/SciPy bridges. The penalty hinge boundaries are placed
+at the allowed 10% engineering envelope, and every accepted L-BFGS-B iterate is
+checked by a compiled local-residual oracle. The exported state is the
+minimum-quadratic-flux target-feasible checkpoint. This protects the result
+from an infeasible terminal step and makes the required quadratic-flux target
+of `1e-5` explicit.
 
 [Run local-residual AL optimization in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_local_residual_augmented_lagrangian.ipynb)
 
@@ -442,6 +451,9 @@ OMP_NUM_THREADS=1 python \
   --problem engineering --max-outer-iterations 8 \
   --max-inner-iterations 300 --residual-scaling-policy family_l2 \
   --target-relative-tolerance 0.10 \
+  --quadratic-flux-target 1e-5 \
+  --max-refinement-iterations 600 --max-refinement-evaluations 1500 \
+  --refinement-constraint-weight-multiplier 1 \
   --inner-stationarity-relative-tolerance 0.01 \
   --constraint-transform smooth_abs --constraint-transform-epsilon 0.1 \
   --minimum-residual-scaling-policy sqrt_count \
@@ -454,10 +466,12 @@ OMP_NUM_THREADS=1 python \
 The result always records final CPU/GPU objective, normalized
 `abs(B dot n) / abs(B)`, and coil-constraint metrics. Scientific validation
 requires both designs to satisfy one-sided engineering targets within 10% and
-requires all retained CPU/GPU quantities of interest to agree within 10%.
+to have quadratic flux at or below `1e-5` with the same 10% allowance.
 Because the ideal normalized normal field is zero, a percentage-to-target test
 is undefined for it; the benchmark stores mean, RMS, and maximum absolute
-values and applies the 10% CPU/GPU agreement test. Gradient magnitude, strict
+values. CPU/GPU agreement for all retained quantities remains an independent
+technical gate, so different nonconvex paths cannot redefine scientific target
+satisfaction. Gradient magnitude, strict
 local-residual feasibility, and tight physical allowances remain explicit
 diagnostics and do not veto an otherwise physically validated design. With an
 output path, the workflow also exports both surfaces as VTS—including signed
@@ -468,8 +482,10 @@ gates do not suppress these diagnostic artifacts.
 Validate a returned archive and generate convergence, performance, and surface
 figures with the following command. Schema-1 outputs retain the
 `local_residual_al_*` prefix; schema-2 smoothed-continuation outputs use
-`smoothed_local_residual_al_*`, so new measurements do not overwrite the
-historical figures.
+`smoothed_local_residual_al_*`; and schema-3 target-refinement outputs use
+`flux_target_refinement_*`, so new measurements do not overwrite historical
+figures. Schema 3 adds an accepted-checkpoint flux trajectory with the target
+and exported state marked explicitly.
 
 ```sh
 python benchmarks/gpu/analyze_local_residual_augmented_lagrangian.py \

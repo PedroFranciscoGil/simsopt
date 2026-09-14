@@ -34,6 +34,18 @@ def test_scipy_bridge_validates_flat_shape_and_dtype():
         bridge(np.ones(3))
 
 
+def test_scipy_bridge_can_pin_cpu_platform():
+    bridge = ScipyObjectiveBridge(
+        lambda x: 0.5 * jnp.vdot(x, x), np.ones(2), platform="cpu"
+    ).compile(np.ones(2))
+
+    value, gradient = bridge(np.ones(2))
+
+    assert bridge.device_platform == "cpu"
+    assert value == 1.0
+    np.testing.assert_array_equal(gradient, [1.0, 1.0])
+
+
 class ExampleCoilData:
     base_currents = np.asarray([10.0, 20.0, 30.0])
     curve_dofs = np.asarray([[1.0, 2.0], [3.0, 4.0]])

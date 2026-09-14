@@ -1,5 +1,7 @@
 """A narrow host bridge for SciPy optimizers."""
 
+from __future__ import annotations
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -10,7 +12,7 @@ from .config import GpuConfig
 class ScipyObjectiveBridge:
     """Compile a flat JAX objective and expose SciPy's value-gradient protocol."""
 
-    def __init__(self, objective, initial_x):
+    def __init__(self, objective, initial_x, *, platform: str | None = None):
         initial_x = np.asarray(initial_x)
         if initial_x.ndim != 1:
             raise ValueError("initial_x must be one-dimensional")
@@ -21,7 +23,24 @@ class ScipyObjectiveBridge:
         self._compiled = None
         self._shape = initial_x.shape
         self._dtype = initial_x.dtype
+        if platform is None:
+            self._device = None
+        else:
+            try:
+                self._device = jax.devices(platform)[0]
+            except (RuntimeError, IndexError) as error:
+                raise ValueError(f"JAX platform {platform!r} is unavailable") from error
         self.evaluations = 0
+
+    @property
+    def device_platform(self):
+        """Return the explicitly selected platform, or the JAX default."""
+        if self._device is None:
+            return jax.default_backend()
+        return self._device.platform
+
+    def _device_put(self, value):
+        return jax.device_put(value, self._device)
 
     @property
     def is_compiled(self):
@@ -31,7 +50,7 @@ class ScipyObjectiveBridge:
     def compile(self, example_x):
         """Compile for the configured shape and dtype, outside timed regions."""
         x = self._coerce(example_x)
-        device_x = jnp.asarray(x)
+        device_x = self._device_put(x)
         self._compiled = self._value_and_grad.lower(device_x).compile()
         value, gradient = self._compiled(device_x)
         value.block_until_ready()
@@ -49,7 +68,7 @@ class ScipyObjectiveBridge:
         host_x = self._coerce(x)
         if self._compiled is None:
             self.compile(host_x)
-        value, gradient = self._compiled(jnp.asarray(host_x))
+        value, gradient = self._compiled(self._device_put(host_x))
         value.block_until_ready()
         self.evaluations += 1
         return float(value), np.asarray(gradient)
@@ -72,6 +91,7 @@ class ScipyCoilObjectiveBridge:
         objective_kwargs,
         current_scale: float = 1.0,
         config: GpuConfig = None,
+        platform: str | None = None,
     ):
         if config is None:
             config = GpuConfig()
@@ -114,7 +134,9 @@ class ScipyCoilObjectiveBridge:
                 config=config,
             )
 
-        self._bridge = ScipyObjectiveBridge(objective, self.initial_x)
+        self._bridge = ScipyObjectiveBridge(
+            objective, self.initial_x, platform=platform
+        )
 
     @property
     def is_compiled(self):
@@ -123,6 +145,10 @@ class ScipyCoilObjectiveBridge:
     @property
     def evaluations(self):
         return self._bridge.evaluations
+
+    @property
+    def device_platform(self):
+        return self._bridge.device_platform
 
     def unpack(self, x):
         """Return curve dofs and physical currents represented by flat ``x``."""

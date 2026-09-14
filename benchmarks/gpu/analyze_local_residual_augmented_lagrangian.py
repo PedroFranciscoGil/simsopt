@@ -74,7 +74,7 @@ def read_archive(path):
 
 
 def validate_result(result):
-    if result.get("schema_version") not in (1, 2) or result.get("workflow") != (
+    if result.get("schema_version") not in (1, 2, 3) or result.get("workflow") != (
         "local_residual_augmented_lagrangian"
     ):
         raise ValueError("local-residual AL result contract does not match")
@@ -114,11 +114,23 @@ def validate_result(result):
         if relative_tolerance is not None and not 0 < float(relative_tolerance) < 1:
             raise ValueError("schema-2 relative first-order contract is invalid")
         scientific_validation = result.get("scientific_validation", {})
-        scientific_components = (
+        scientific_components = [
             scientific_validation.get("cpu_engineering_targets", {}),
             scientific_validation.get("gpu_engineering_targets", {}),
-            scientific_validation.get("cpu_gpu_quantity_of_interest_agreement", {}),
-        )
+        ]
+        if result["schema_version"] == 2:
+            scientific_components.append(
+                scientific_validation.get(
+                    "cpu_gpu_quantity_of_interest_agreement", {}
+                )
+            )
+        else:
+            scientific_components.extend(
+                (
+                    scientific_validation.get("cpu_quadratic_flux_target", {}),
+                    scientific_validation.get("gpu_quadratic_flux_target", {}),
+                )
+            )
         reproduced_validation = all(
             component.get("passed") is True for component in scientific_components
         )
@@ -137,6 +149,17 @@ def validate_result(result):
             raise ValueError("schema-2 physical target validation policy is invalid")
         if not isinstance(result.get("diagnostic_checks"), dict):
             raise ValueError("schema-2 optimizer diagnostics are missing")
+    if result["schema_version"] >= 3:
+        refinement = result.get("flux_refinement", {})
+        target = refinement.get("quadratic_flux_target")
+        allowed = refinement.get("target_allowed_boundary")
+        if (
+            target is None
+            or allowed is None
+            or not 0 < float(target) <= float(allowed)
+            or refinement.get("method") != "L-BFGS-B"
+        ):
+            raise ValueError("schema-3 flux-refinement contract is invalid")
     for backend in ("cpu", "gpu"):
         optimization = result[backend]["optimization"]
         history = optimization.get("outer_history", [])
@@ -174,6 +197,27 @@ def validate_result(result):
             "coil_constraints",
         } <= set(final_metrics):
             raise ValueError(f"{backend} final metric contract is incomplete")
+        if result["schema_version"] >= 3:
+            flux_refinement = result[backend].get("flux_refinement", {})
+            selection = flux_refinement.get("checkpoint_selection", {})
+            checkpoints = selection.get("checkpoints", [])
+            selected_index = selection.get("selected_index")
+            if (
+                not checkpoints
+                or selected_index not in range(len(checkpoints))
+                or selection.get("candidate_count") != len(checkpoints)
+                or selection.get("selected") != checkpoints[selected_index]
+            ):
+                raise ValueError(f"{backend} flux checkpoint contract is invalid")
+            for index, checkpoint in enumerate(checkpoints):
+                _finite(
+                    checkpoint.get("quadratic_flux"),
+                    f"{backend} refinement checkpoint {index} flux",
+                )
+                _finite(
+                    checkpoint.get("target_envelope_residual_norm_infinity"),
+                    f"{backend} refinement checkpoint {index} residual",
+                )
         for summary_name in (
             "final_residual_families",
             "final_scaled_residual_families",
@@ -277,9 +321,21 @@ def plot_performance(result, output):
     compile_cpu = result["gpu_configuration"]["cpu_compilation_seconds"]
     compile_gpu = result["gpu_configuration"]["gpu_compilation_seconds"]
     figure, axes = plt.subplots(1, 2, figsize=(8.2, 3.2), constrained_layout=True)
+    cpu_seconds = result["comparison"].get(
+        "cpu_total_optimization_seconds", cpu["seconds"]
+    )
+    gpu_seconds = result["comparison"].get(
+        "gpu_total_optimization_seconds", gpu["seconds"]
+    )
+    compile_cpu += result["gpu_configuration"].get(
+        "cpu_refinement_compilation_seconds", 0.0
+    )
+    compile_gpu += result["gpu_configuration"].get(
+        "gpu_refinement_compilation_seconds", 0.0
+    ) + result["gpu_configuration"].get("quality_compilation_seconds", 0.0)
     axes[0].bar(
         ("CPU solve", "GPU solve", "CPU compile", "GPU compile"),
-        (cpu["seconds"], gpu["seconds"], compile_cpu, compile_gpu),
+        (cpu_seconds, gpu_seconds, compile_cpu, compile_gpu),
         color=(COLORS["cpu"], COLORS["gpu"], "#8aa7d3", "#e2a477"),
     )
     axes[0].tick_params(axis="x", rotation=20)
@@ -299,6 +355,67 @@ def plot_performance(result, output):
     axes[1].legend(frameon=False, fontsize=8)
     for axis in axes:
         axis.grid(True, axis="y", color="#d8d8d8", linewidth=0.5)
+    figure.savefig(output, dpi=220)
+    plt.close(figure)
+
+
+def plot_flux_refinement(result, output):
+    """Plot retained accepted-iterate flux and target-envelope feasibility."""
+    target = result["flux_refinement"]["target_allowed_boundary"]
+    figure, axes = plt.subplots(1, 2, figsize=(8.6, 3.25), constrained_layout=True)
+    for axis, backend in zip(axes, ("cpu", "gpu"), strict=True):
+        selection = result[backend]["flux_refinement"]["checkpoint_selection"]
+        checkpoints = selection["checkpoints"]
+        indices = np.arange(len(checkpoints))
+        flux = np.asarray([item["quadratic_flux"] for item in checkpoints])
+        residual = np.asarray(
+            [
+                item["target_envelope_residual_norm_infinity"]
+                for item in checkpoints
+            ]
+        )
+        feasible = np.asarray([item["target_feasible"] for item in checkpoints])
+        axis.semilogy(indices, np.maximum(flux, 1e-30), color=COLORS[backend])
+        axis.scatter(
+            indices[~feasible],
+            np.maximum(flux[~feasible], 1e-30),
+            facecolors="none",
+            edgecolors="#8b8b8b",
+            s=15,
+            label="outside target envelope",
+        )
+        axis.scatter(
+            indices[feasible],
+            np.maximum(flux[feasible], 1e-30),
+            color=COLORS[backend],
+            s=15,
+            label="target-feasible",
+        )
+        selected = selection["selected_index"]
+        axis.scatter(
+            [selected],
+            [max(flux[selected], 1e-30)],
+            marker="*",
+            color="#1b1b1b",
+            s=85,
+            label="exported checkpoint",
+            zorder=4,
+        )
+        axis.axhline(target, color="#7b2f2f", linestyle="--", label="flux target")
+        axis.set_title(f"{backend.upper()} flux refinement")
+        axis.set_xlabel("accepted checkpoint")
+        axis.set_ylabel("quadratic flux")
+        axis.grid(True, axis="y", color="#d8d8d8", linewidth=0.5)
+        axis.legend(frameon=False, fontsize=7)
+        axis.text(
+            0.98,
+            0.03,
+            f"terminal residual $L_\\infty$={residual[-1]:.2g}",
+            transform=axis.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=7,
+        )
     figure.savefig(output, dpi=220)
     plt.close(figure)
 
@@ -342,19 +459,24 @@ def main():
     result, payloads, digest = read_archive(args.archive)
     validate_result(result)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    figure_stem = (
-        "smoothed_local_residual_al"
-        if result["schema_version"] >= 2
-        else "local_residual_al"
-    )
+    if result["schema_version"] >= 3:
+        figure_stem = "flux_target_refinement"
+    elif result["schema_version"] >= 2:
+        figure_stem = "smoothed_local_residual_al"
+    else:
+        figure_stem = "local_residual_al"
     figure_names = [
         f"{figure_stem}_convergence.png",
         f"{figure_stem}_performance.png",
         f"{figure_stem}_surface.png",
     ]
+    if result["schema_version"] >= 3:
+        figure_names.append(f"{figure_stem}_trajectory.png")
     plot_optimization(result, args.output_dir / figure_names[0])
     plot_performance(result, args.output_dir / figure_names[1])
     plot_surface(payloads, args.output_dir / figure_names[2])
+    if result["schema_version"] >= 3:
+        plot_flux_refinement(result, args.output_dir / figure_names[3])
     cpu_surface, gpu_surface = surface_fields(payloads)
     summary = {
         "schema_version": 1,
@@ -363,6 +485,7 @@ def main():
         "revision": result["environment"]["simsopt_revision"],
         "environment": result["environment"],
         "residual_scaling": result["residual_scaling"],
+        "flux_refinement": result.get("flux_refinement"),
         "initial_parity": result["initial_parity"],
         "validation_policy": result.get("validation_policy"),
         "scientific_validation": result.get("scientific_validation"),
@@ -380,6 +503,10 @@ def main():
                 for key, value in result[backend]["optimization"].items()
                 if key != "outer_history" and key != "final_physical_variables"
             }
+            for backend in ("cpu", "gpu")
+        },
+        "final_flux_refinement": {
+            backend: result[backend].get("flux_refinement")
             for backend in ("cpu", "gpu")
         },
         "surface_comparison": {

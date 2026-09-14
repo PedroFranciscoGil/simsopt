@@ -2262,6 +2262,130 @@ GPU trajectory is replayed through the CPU oracle to validate the final design
 without incorrectly requiring two floating-point line searches to follow the
 same basin.
 
+\section{Target-feasible quadratic-flux refinement}
+
+The preceding decision did not yet impose the required absolute magnetic
+quality.  The CPU and GPU \emph{quadratic-flux components} in the schema-2
+archive are $7.26889\times10^{-3}$ and $1.42941\times10^{-2}$, respectively.
+Those are approximately $727\times$ and $1{,}429\times$ the new production
+target $J_{\rm QF}=10^{-5}$.  Agreement with another poor endpoint would not
+make either design acceptable.  Schema 3 therefore replaces cross-backend
+quantity agreement in the scientific rule with the explicit one-sided test
+\[
+ J_{\rm QF}\leq (1+\delta)10^{-5}=1.1\times10^{-5},\qquad \delta=0.10,
+\]
+while retaining CPU/GPU agreement as a separate technical diagnostic.  This
+target requires roughly three orders of magnitude of improvement from the
+measured endpoints.  Large gradients continue to be recorded but cannot veto
+or confer scientific validity.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,ymode=log,width=0.72\textwidth,height=0.31\textwidth,
+  ymin=5e-6,ymax=3e-2,
+  ylabel={quadratic flux},
+  symbolic x coords={CPU schema 2,GPU schema 2,production target},
+  xtick=data,x tick label style={rotate=18,anchor=east},
+  nodes near coords,nodes near coords style={font=\scriptsize,rotate=90,anchor=west},
+  grid=major,bar width=18pt]
+\addplot[fill=blue!55] coordinates {
+  (CPU schema 2,0.0072688939894)
+  (GPU schema 2,0.0142940658131)
+};
+\addplot[fill=green!55!black] coordinates {(production target,0.00001)};
+\end{axis}
+\end{tikzpicture}
+\caption{The missing absolute quality criterion.  The schema-2 quadratic flux,
+not merely its CPU/GPU difference, is about three orders of magnitude above the
+required production level.  The schema-3 pass boundary includes the agreed
+10\% allowance and is $1.1\times10^{-5}$.}
+\label{fig:quadratic-flux-gap}
+\end{figure}
+
+\subsection{Implemented two-phase algorithm}
+
+The local-residual AL is retained only as a mechanism for obtaining candidate
+feasibility warm starts.  Both AL endpoints are evaluated by one compiled
+quality program.  The lower-flux endpoint is selected if it satisfies every
+10\% engineering envelope; otherwise selection minimizes target-envelope
+residual first and flux second.  Both CPU and GPU refinements then start from
+this \emph{same} vector.  This removes the known initial-basin mismatch from the
+timed refinement comparison and isolates execution-device differences.
+
+The refinement objective is the complete GPU-native direct objective:
+quadratic flux, the small length regularizer, coil--coil and coil--surface
+distance penalties, curvature, and mean-squared curvature.  Its hinge
+boundaries are moved to the accepted physical envelope,
+\[
+ d_{cc}\geq0.09\ {\rm m},\quad d_{cs}\geq0.27\ {\rm m},\quad
+ \kappa_{\max}\leq5.5\ {\rm m}^{-1},\quad {\rm MSC}_{\max}\leq5.5\ {\rm m}^{-2}.
+\]
+This gives the optimizer room to trade unused engineering margin for magnetic
+quality without weakening the scientific contract.  L-BFGS-B is allowed 600
+iterations and 1,500 value--gradient evaluations on each backend.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  node distance=5mm and 7mm,
+  box/.style={draw,rounded corners,align=center,minimum height=9mm,
+              inner xsep=4mm,fill=blue!7,font=\scriptsize},
+  check/.style={draw,rounded corners,align=center,minimum height=9mm,
+                inner xsep=4mm,fill=green!10,font=\scriptsize},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (cpu-al) {CPU AL\\endpoint};
+\node[box,below=of cpu-al] (gpu-al) {GPU AL\\endpoint};
+\node[check,right=of cpu-al,yshift=-7mm] (rank) {compiled quality check\\choose common warm start};
+\node[box,right=of rank,yshift=7mm] (cpu-ref) {CPU-pinned\\direct L-BFGS-B};
+\node[box,right=of rank,yshift=-7mm] (gpu-ref) {GPU-pinned\\direct L-BFGS-B};
+\node[check,right=of cpu-ref,yshift=-7mm] (checkpoint) {retain accepted iterates\\minimum flux among feasible};
+\node[box,right=of checkpoint] (artifacts) {CPU oracle metrics\\VTS surface + VTU coils};
+\draw[flow] (cpu-al) -- (rank);
+\draw[flow] (gpu-al) -- (rank);
+\draw[flow] (rank) -- (cpu-ref);
+\draw[flow] (rank) -- (gpu-ref);
+\draw[flow] (cpu-ref) -- (checkpoint);
+\draw[flow] (gpu-ref) -- (checkpoint);
+\draw[flow] (checkpoint) -- (artifacts);
+\end{tikzpicture}
+}
+\caption{Schema-3 optimization and validation flow.  The common warm start
+makes the device comparison matched.  Best-feasible checkpointing prevents a
+late infeasible line-search step from replacing an earlier scientifically
+better state.}
+\label{fig:flux-refinement-flow}
+\end{figure}
+
+Every accepted refinement iterate is assessed with local residuals whose zero
+set exactly matches the 10\% target envelope.  The final state is the minimum
+quadratic-flux feasible checkpoint, not automatically SciPy's terminal state.
+If no accepted state is target-feasible, the least-infeasible state is exported
+for diagnosis and scientific validation fails.  Thus artifact production is
+never suppressed by failure.  The result schema records all compact checkpoint
+metrics, phase-specific iteration/evaluation counts and times, compilation
+times, AL and refinement speedups, the final independent CPU-oracle quantities,
+and the mandatory VTS/VTU files.
+
+Explicit device selection was added to the generic SciPy objective bridge.
+The CPU and GPU direct objectives are now lowered to requested JAX devices in
+one process, matching the existing augmented-Lagrangian bridge behavior.  A
+new analysis figure will plot accepted-checkpoint quadratic flux, distinguish
+target-feasible points, draw the $1.1\times10^{-5}$ boundary, and mark the
+exported checkpoint once the next A100 archive is returned.  No performance or
+convergence claim is made before that measurement.
+
+\textbf{Decision.}  Run the schema-3 Colab qualification with
+\code{--quadratic-flux-target 1e-5}.  Scientific success requires both exported
+designs to pass that flux target and all four engineering envelopes.  CPU/GPU
+QoI agreement, first-order convergence, strict AL residuals, and speedup remain
+visible, independent gates or diagnostics.  The next decision will be based on
+the returned JSON and the spatial $B\cdot n/|B|$ fields, not optimizer status
+alone.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only
