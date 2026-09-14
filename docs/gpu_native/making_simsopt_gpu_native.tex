@@ -2824,6 +2824,102 @@ this executable contract.  This correction changes neither optimizer output
 nor acceptance thresholds; rerunning only the validation and download cells is
 sufficient when the result file remains in the active Colab runtime.
 
+\subsection{Measured A100 replay results}
+
+The replay was executed on an NVIDIA A100-SXM4-40GB with JAX 0.11.1 from
+revision \code{cb4b3964}.  The returned archive has SHA-256
+\code{e5d0b77b2ac744ef671ab3b9d739c9e15d3088d99113024711791225c5fd3d24}.
+All eight configurations pass the scientific rule: quadratic flux is below
+$1.1\times10^{-5}$ and every coil quantity is within the allowed 10\% target
+envelope.  Thus the sweep is scientifically validated even though its separate
+CPU-reference scalar-objective diagnostic does not pass.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.98\textwidth]{figures/device_lbfgs_replay_grid.png}
+  \caption{Device-resident L-BFGS replay grid on the A100.  Patience changes
+  runtime and evaluation count but not the selected state for a fixed history
+  size.  The first $m=10$ compilation includes one-time runtime initialization
+  and is therefore not used to infer history-size compilation scaling.}
+  \label{fig:device-replay-grid}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.95\textwidth]{figures/device_lbfgs_replay_trajectories.png}
+  \caption{Quadratic-flux trajectories and selected feasible checkpoints.
+  Every trajectory crosses the permitted boundary, and continued iterations
+  reduce flux by more than another order of magnitude before target-aware
+  stopping.}
+  \label{fig:device-replay-trajectories}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{A100 device-LBFGS replay measurements.  Time excludes compilation.}
+\label{tab:device-replay-sweep}
+\begin{tabular}{rrrrrr}
+\toprule
+$m$ & Patience & Iterations & Evaluations & Time (s) & Quadratic flux \\
+\midrule
+10  & 15 & 93  & 98  & 0.754 & $7.6781\times10^{-7}$ \\
+10  & 25 & 103 & 110 & 0.866 & $7.6781\times10^{-7}$ \\
+20  & 15 & 79  & 81  & 0.675 & $7.5684\times10^{-7}$ \\
+20  & 25 & 89  & 92  & 0.768 & $7.5684\times10^{-7}$ \\
+50  & 15 & 59  & 60  & 0.559 & $8.0059\times10^{-7}$ \\
+50  & 25 & 69  & 70  & 0.665 & $8.0059\times10^{-7}$ \\
+100 & 15 & 59  & 60  & 0.662 & $8.0059\times10^{-7}$ \\
+100 & 25 & 69  & 70  & 0.752 & $8.0059\times10^{-7}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+History 20, patience 15 is the archive winner because it gives the lowest
+qualified quadratic flux.  Relative to patience 25 it selects the identical
+checkpoint while using 11 fewer evaluations and 12.1\% less warm solve time.
+Its 0.675~s replay is 2.8\% faster than the 0.694~s host-driven GPU SciPy solve
+measured in the preceding qualification.  History 50, patience 15 is a useful
+speed-first alternative: 0.559~s and 60 evaluations, 17.2\% faster than the
+chosen $m=20$ replay, at the cost of 5.8\% higher quadratic flux.  Because both
+are well inside all physical targets, this is an explicit quality--latency
+choice rather than a validity distinction.  The production default remains
+$m=20$ and adopts patience 15; $m=50$ should be exposed as an opt-in throughput
+setting until it is reproduced on additional starting configurations.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Final CPU-reference and device-winner quantities.  Relative
+differences diagnose trajectory agreement and are not target errors.}
+\label{tab:device-replay-qoi}
+\begin{tabular}{lrrr}
+\toprule
+Quantity & CPU SciPy & Device $m=20,p=15$ & Relative difference \\
+\midrule
+Penalty objective & $1.0767\times10^{-4}$ & $2.6945\times10^{-4}$ & 150.25\% \\
+Quadratic flux & $8.6156\times10^{-7}$ & $7.5684\times10^{-7}$ & 12.15\% \\
+Mean $|B\cdot n|/|B|$ & $1.3566\times10^{-3}$ & $1.2896\times10^{-3}$ & 4.94\% \\
+RMS $|B\cdot n|/|B|$ & $1.7413\times10^{-3}$ & $1.6352\times10^{-3}$ & 6.09\% \\
+Maximum $|B\cdot n|/|B|$ & $6.1185\times10^{-3}$ & $5.7371\times10^{-3}$ & 6.23\% \\
+Total base-coil length (m) & 17.8202 & 17.6366 & 1.03\% \\
+Minimum coil--coil distance (m) & 0.13963 & 0.14484 & 3.74\% \\
+Minimum coil--surface distance (m) & 0.28019 & 0.27112 & 3.24\% \\
+Maximum curvature ($\mathrm{m}^{-1}$) & 5.0389 & 4.8198 & 4.35\% \\
+Maximum mean-squared curvature ($\mathrm{m}^{-2}$) & 5.4792 & 5.1541 & 5.93\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The 150\% penalty-objective difference explains why the archive-level
+\code{all\_gates\_passed} field is false, but it does not contradict the user's
+validation rule.  That scalar combines soft penalties whose trade-offs differ
+between valid trajectories; all explicit physical quantities meet their target
+envelopes.  Future result schemas should label this condition as a technical
+trajectory diagnostic rather than an overall scientific failure.  The archive
+also contains the selected surface VTS with $B\cdot n/|B|$ and the corresponding
+coil VTU for visual inspection.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

@@ -78,6 +78,7 @@ def parse_args():
         "--target-minimum-relative-improvement", type=float, default=1e-3
     )
     parser.add_argument("--device-lbfgs-history-size", type=int, default=20)
+    parser.add_argument("--device-lbfgs-checkpoint-patience", type=int, default=15)
     parser.add_argument("--device-lbfgs-line-search-iterations", type=int, default=30)
     parser.add_argument("--target-tile-size", type=int, default=1024)
     parser.add_argument("--source-tile-size", type=int, default=4320)
@@ -102,8 +103,11 @@ def parse_args():
         parser.error("refinement limits must be positive")
     if args.target_checkpoint_patience < 1 or args.target_infeasible_patience < 1:
         parser.error("target-aware patience values must be positive")
-    if args.device_lbfgs_history_size < 1:
-        parser.error("device-lbfgs-history-size must be positive")
+    if (
+        args.device_lbfgs_history_size < 1
+        or args.device_lbfgs_checkpoint_patience < 1
+    ):
+        parser.error("device L-BFGS history and checkpoint patience must be positive")
     if args.device_lbfgs_line_search_iterations < 1:
         parser.error("device-lbfgs-line-search-iterations must be positive")
     if args.maxcor < 1 or args.maxls < 1:
@@ -925,12 +929,16 @@ def main():
             name
         ].selection()
 
+    device_target_policy = replace(
+        target_policy,
+        checkpoint_patience=args.device_lbfgs_checkpoint_patience,
+    )
     device_config = DeviceLBFGSConfig(
         history_size=args.device_lbfgs_history_size,
         max_iterations=args.max_refinement_iterations,
         max_line_search_iterations=args.device_lbfgs_line_search_iterations,
         gradient_tolerance=args.gradient_tolerance,
-        target=target_policy,
+        target=device_target_policy,
     )
     device_solver = DeviceLBFGS(
         refinement_objective,
@@ -1340,12 +1348,12 @@ def main():
             "minimum_step_size": device_config.minimum_step_size,
             "curvature_tolerance": device_config.curvature_tolerance,
             "target_aware_stopping": {
-                "target_flux": target_policy.target_flux,
-                "feasibility_tolerance": target_policy.feasibility_tolerance,
-                "checkpoint_patience": target_policy.checkpoint_patience,
-                "infeasible_patience": target_policy.infeasible_patience,
+                "target_flux": device_target_policy.target_flux,
+                "feasibility_tolerance": device_target_policy.feasibility_tolerance,
+                "checkpoint_patience": device_target_policy.checkpoint_patience,
+                "infeasible_patience": device_target_policy.infeasible_patience,
                 "minimum_relative_improvement": (
-                    target_policy.minimum_relative_improvement
+                    device_target_policy.minimum_relative_improvement
                 ),
             },
         },

@@ -449,10 +449,11 @@ the same direct objective, target envelope, and accepted-checkpoint policy.
 The JAX solver keeps the two-loop recursion, fixed-size history, Armijo line
 search, target checks, and checkpoint selection inside one compiled executable;
 it performs zero per-iteration host callbacks. Once a target-feasible point is
-known, all solvers stop after 25 accepted checkpoints without a relative flux
-improvement of at least `1e-3`, or after 15 consecutive infeasible checkpoints.
-The full iteration allowance remains available when no target-feasible point
-has yet been found.
+known, the host solvers stop after 25 accepted checkpoints without a relative
+flux improvement of at least `1e-3`, or after 15 consecutive infeasible
+checkpoints. Following the replay study below, the device solver uses a
+separately configurable patience of 15. The full iteration allowance remains
+available when no target-feasible point has yet been found.
 
 The A100 schema-4 qualification passes the scientific target policy for all
 three designs. Target-aware SciPy stops at iteration 66 and preserves the
@@ -477,6 +478,7 @@ OMP_NUM_THREADS=1 python \
   --target-checkpoint-patience 25 --target-infeasible-patience 15 \
   --target-minimum-relative-improvement 1e-3 \
   --device-lbfgs-history-size 20 \
+  --device-lbfgs-checkpoint-patience 15 \
   --device-lbfgs-line-search-iterations 30 \
   --refinement-constraint-weight-multiplier 1 \
   --inner-stationarity-relative-tolerance 0.01 \
@@ -547,3 +549,13 @@ figures with:
 python benchmarks/gpu/analyze_device_lbfgs_replay.py \
   simsopt-device-lbfgs-replay.zip docs/gpu_native/figures
 ```
+
+The A100 replay archive with SHA-256
+`e5d0b77b2ac744ef671ab3b9d739c9e15d3088d99113024711791225c5fd3d24`
+qualified all eight candidates under the 10% physical-target policy. History
+20 with patience 15 was the minimum-flux candidate (`7.56845e-7`) and completed
+in 0.675 s with 81 evaluations. It reproduces the patience-25 endpoint with 11
+fewer evaluations. History 50 with patience 15 was the speed-first alternative
+at 0.559 s and 60 evaluations, with quadratic flux `8.00589e-7`. The aggregate
+scalar-objective comparison remains a trajectory diagnostic: it does not
+override scientific validation based on the explicit flux and coil targets.

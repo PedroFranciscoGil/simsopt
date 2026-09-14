@@ -21,6 +21,15 @@ def load_benchmark_module():
     return module
 
 
+def test_device_checkpoint_patience_has_independent_measured_default():
+    module = load_benchmark_module()
+    with patch.object(sys, "argv", ["benchmark"]):
+        args = module.parse_args()
+
+    assert args.target_checkpoint_patience == 25
+    assert args.device_lbfgs_checkpoint_patience == 15
+
+
 def test_family_l2_scaling_is_attenuation_only_and_controls_each_family():
     module = load_benchmark_module()
     residuals = np.asarray([3.0, 4.0, 0.0, 0.0, 0.0, 0.0])
@@ -299,6 +308,7 @@ def test_colab_runs_gpu_workflow_and_resolves_only_artifact_fields():
     assert 'result["device_gpu"]["execution_platform"] == "gpu"' in source
     assert '"--target-checkpoint-patience", "25"' in source
     assert '"--device-lbfgs-history-size", "20"' in source
+    assert '"--device-lbfgs-checkpoint-patience", "15"' in source
     assert 'tests/gpu/test_lbfgs.py' in source
     assert "math.isclose" in source
     assert 'target_allowed_boundary"] == 1.1e-5' not in source
