@@ -1,0 +1,813 @@
+{
+  "archive_sha256": "96021611e05c1945d184184169be4edb1fbee4ea4775c834731f9bc4bded422a",
+  "comparison": {
+    "cold_end_to_end_speedup": 39.876226412702785,
+    "cpu_to_gpu_evaluation_ratio": 0.5217748562037798,
+    "qoi_backend_agreement": {
+      "comparisons": {
+        "maximum_curvature": {
+          "cpu": 4.775027226524078,
+          "gpu": 4.574149470109472,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 0.042068400217444034
+        },
+        "maximum_mean_squared_curvature": {
+          "cpu": 5.001126878784673,
+          "gpu": 5.001020141010569,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 2.1342744683511684e-05
+        },
+        "minimum_coil_coil_distance": {
+          "cpu": 0.14247036274981942,
+          "gpu": 0.16967289326296045,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.19093466169458118
+        },
+        "minimum_coil_surface_distance": {
+          "cpu": 0.1829141422499606,
+          "gpu": 0.29600183936767566,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.6182556237952093
+        },
+        "normalized_normal_field_maximum": {
+          "cpu": 0.44839915447784306,
+          "gpu": 0.2304223041093012,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.48612234923229064
+        },
+        "normalized_normal_field_mean": {
+          "cpu": 0.192088060800399,
+          "gpu": 0.08064075943113502,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.5801885911330543
+        },
+        "normalized_normal_field_rms": {
+          "cpu": 0.2227427093197729,
+          "gpu": 0.10108229842783135,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.5461925611997651
+        },
+        "objective": {
+          "cpu": 0.051447437299245995,
+          "gpu": 0.0036831736404755754,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.9284089969525158
+        },
+        "total_base_coil_length": {
+          "cpu": 13.141253095058573,
+          "gpu": 14.831562702393736,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.12862621205969768
+        }
+      },
+      "passed": false,
+      "relative_tolerance": 0.1
+    },
+    "warm_optimization_speedup": 69.57303275184302
+  },
+  "cpu": {
+    "active_bounds": {
+      "lower": 0,
+      "upper": 0
+    },
+    "compilation_seconds": 1.8774122899999384,
+    "end_to_end_seconds": 465.059904621,
+    "execution_platform": "cpu",
+    "final_metrics": {
+      "base_current_values_amperes": [
+        100000.0,
+        99955.62282705949,
+        99964.75469636932,
+        99969.20693433462
+      ],
+      "coil_coil_distance_penalty": 0.0,
+      "coil_constraints": {
+        "limits": {
+          "coil_coil_distance_threshold": 0.1,
+          "coil_surface_distance_threshold": 0.3,
+          "curvature_threshold": 5.0,
+          "mean_squared_curvature_threshold": 5.0
+        },
+        "margins": {
+          "maximum_curvature": 0.2249727734759217,
+          "maximum_mean_squared_curvature": -0.001126878784672769,
+          "minimum_coil_coil_distance": 0.04247036274981941,
+          "minimum_coil_surface_distance": -0.11708585775003938
+        },
+        "measurements": {
+          "base_coil_lengths": [
+            3.3341898720282686,
+            3.2930399217436137,
+            3.2546361678287314,
+            3.2593871334579605
+          ],
+          "base_coil_maximum_curvatures": [
+            4.645355399112553,
+            3.061705794671108,
+            3.3324816284862138,
+            4.775027226524078
+          ],
+          "base_coil_mean_squared_curvatures": [
+            5.001126878784673,
+            4.962784238285409,
+            4.67920387331797,
+            5.001116198109106
+          ],
+          "maximum_curvature": 4.775027226524078,
+          "maximum_mean_squared_curvature": 5.001126878784673,
+          "minimum_coil_coil_distance": 0.14247036274981942,
+          "minimum_coil_surface_distance": 0.1829141422499606,
+          "total_base_coil_length": 13.141253095058573
+        },
+        "violations": {
+          "maximum_curvature": 0.0,
+          "maximum_mean_squared_curvature": 0.001126878784672769,
+          "minimum_coil_coil_distance": 0.0,
+          "minimum_coil_surface_distance": 0.11708585775003938
+        }
+      },
+      "coil_surface_distance_penalty": 0.0028399444347587404,
+      "curvature_penalty": 0.0,
+      "curve_length_sum": 13.141253095058573,
+      "gradient_norm": 0.7456555342779553,
+      "maximum_absolute_normal_field": 0.18775038709959313,
+      "maximum_curvature": 4.775027226524078,
+      "mean_absolute_normal_field": 0.06648607387114155,
+      "mean_squared_curvature_penalty": 1.2578770070583286e-06,
+      "minimum_coil_coil_distance": 0.14247036274981942,
+      "minimum_coil_surface_distance": 0.1829141422499606,
+      "normalized_normal_field": {
+        "definition": "abs(B dot n) / norm(B)",
+        "maximum_absolute": 0.44839915447784306,
+        "mean_absolute": 0.192088060800399,
+        "root_mean_square": 0.2227427093197729,
+        "valid_surface_points": 4096,
+        "zero_field_surface_points": 0
+      },
+      "objective": 0.051447437299245995,
+      "quadratic_flux": 0.023034851697305656
+    },
+    "implementation": "Python AL outer loop with SciPy L-BFGS-B inner solves",
+    "optimization": {
+      "base_objective": 0.0230479929504007,
+      "final_augmented_lagrangian": 1.4931174251083943,
+      "final_constraint_norm_infinity": 1169.858577500394,
+      "final_gradient_norm_infinity": 14262.95428550488,
+      "final_projected_gradient_norm_infinity": 14262.95428550488,
+      "final_scaled_constraint_norm_infinity": 0.0632367716819066,
+      "history": [
+        {
+          "absolute_stationarity_threshold": 0.10000000000000023,
+          "applied_stationarity_threshold": 0.14252019376028843,
+          "augmented_lagrangian": 1.4931174251083943,
+          "base_objective": 0.0230479929504007,
+          "constraint_norm_infinity": 1169.858577500394,
+          "eta_after": 0.7943282347242815,
+          "gradient_infinity_reduction_ratio": 1000.7672533405637,
+          "gradient_norm": 36263.0603390415,
+          "gradient_norm_infinity": 14262.95428550488,
+          "inner_evaluations": 635,
+          "inner_iterations": 300,
+          "inner_message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+          "inner_seconds": 463.0125279480003,
+          "inner_stage_accepted": false,
+          "inner_stationary": false,
+          "inner_status": 1,
+          "inner_success": false,
+          "omega_after": 0.1,
+          "optimizer_variables": [
+            0.9995562282705949,
+            0.9996475469636932,
+            0.9996920693433462,
+            0.9981612362057318,
+            0.004193016150896228,
+            0.5140324590827202,
+            -0.006087475595378921,
+            0.02312441022474149,
+            0.007054068649464123,
+            -0.004151302632552532,
+            0.009205389501336767,
+            -0.013062333937190699,
+            0.004430172787969929,
+            -0.0041448893122969215,
+            -0.007568421177075627,
+            0.002077434834352717,
+            -0.0054815148389287275,
+            0.001949741764018996,
+            0.0035828648107083883,
+            0.0007063479426847197,
+            0.20241614700910368,
+            0.0027167444468087472,
+            0.1031232559297581,
+            -0.014304570634645386,
+            -0.0005315731956852468,
+            -0.010588557509368882,
+            -0.01171468192535744,
+            0.0036439486835552776,
+            -0.001809106937997988,
+            -0.0003430333178864592,
+            0.008436174545531947,
+            -0.008779978971035014,
+            0.0023596137269903286,
+            -5.818642968749567e-05,
+            -0.0028637243742413105,
+            0.0021640577203436476,
+            -0.0003203697321226392,
+            0.010156619649309114,
+            -0.5232703007114058,
+            -0.006071448924343517,
+            -0.016746052917315752,
+            -0.009801622337915407,
+            0.008793305515246565,
+            0.004807355819674093,
+            0.010789615588372641,
+            0.006679460292237136,
+            -0.002796443372007737,
+            -0.003802911978931942,
+            -0.0012901906471325427,
+            -0.0018300663383797073,
+            -0.0009047028268167337,
+            -0.0034720429438265866,
+            0.002101050817990153,
+            0.004392121334742856,
+            0.8394221687512291,
+            0.006610577649852191,
+            0.42729833998557476,
+            -0.009481329132454384,
+            0.008027463813002561,
+            0.005500661717639916,
+            -0.0063871047000384745,
+            0.005558168094354831,
+            0.0044312747233945715,
+            -0.0027766274032910367,
+            0.0014952346836205575,
+            0.0052441158823342306,
+            -0.003366250570006947,
+            0.003500348887518796,
+            0.0011650197477005954,
+            -0.0036228726112049496,
+            -0.0016633260343857975,
+            0.5610972440473683,
+            0.007494152434137765,
+            0.29387546316371566,
+            -0.0142949298534766,
+            -0.005945610453568563,
+            0.009063338804972948,
+            -0.007347144584198075,
+            0.004450492806784913,
+            0.008018002861150765,
+            -0.003782566106128806,
+            -0.005870848925416865,
+            0.003985672020630487,
+            -0.0027189314374273105,
+            -0.004308884040679622,
+            0.002439678356609868,
+            -0.0032134551277465105,
+            -0.002191862590793146,
+            0.01714750178662831,
+            -0.5182595337386874,
+            -0.004561397913861502,
+            0.0017604070212481353,
+            -0.015836020605219273,
+            0.012144735586660682,
+            0.006045068634932539,
+            -0.007161675526784626,
+            0.0107234233230141,
+            0.002972725776680747,
+            -0.006106541160780728,
+            0.00554147731241626,
+            0.00250997959511499,
+            -0.002645913990791125,
+            0.0003775904280250809,
+            0.004276906846861259,
+            -0.0034068055658020998,
+            0.550987025083453,
+            0.005493738859800601,
+            0.28253700658126807,
+            -0.004621406147378151,
+            0.0030377783205780364,
+            0.003920779007497332,
+            -0.005674732481857853,
+            -0.004210250780630578,
+            0.003664059384706998,
+            -0.005087708028386596,
+            -0.0021636358004880575,
+            0.0016077676595803935,
+            0.0020486261929994302,
+            -0.0008113293710913708,
+            -0.0012131071928415426,
+            0.001000869244100172,
+            0.0009526271228011998,
+            0.8207895088777509,
+            0.005885560246028181,
+            0.4274183879745441,
+            -0.0076004609009647905,
+            -0.011726471367943324,
+            0.008747207977010509,
+            0.009458308668149612,
+            -0.00701210892766609,
+            0.0047714040233563125,
+            0.00469608985599121,
+            -0.004340078813037675,
+            -0.004517880632414024,
+            0.002399917604572487,
+            0.001200701430793434,
+            -0.0017608757477714555,
+            0.0035066434108006724,
+            0.0012863754259557578,
+            0.011873051229181808,
+            -0.5133020698710266,
+            -0.0071864772412606834,
+            0.011418346720178853,
+            -0.012401363663210574,
+            -0.005064706641698059,
+            0.013238817488634732,
+            -0.009655346927617917,
+            -0.008926971809140007,
+            0.007635975215548614,
+            0.005319845688352936,
+            -0.005658557873105746,
+            -0.004139240284358205,
+            0.0038232759043607947,
+            0.0002941284198297317,
+            -0.004069532662488859,
+            0.002753758507607896,
+            0.20157048565843227,
+            0.008032940171603047,
+            0.09164762384359486,
+            -0.009338021112922446,
+            0.00436999696415292,
+            0.009421594972728254,
+            -0.0027737296427160995,
+            -0.00797529281944132,
+            0.0016695025444044061,
+            0.005609947864339725,
+            -0.001217279698438187,
+            -0.0036818569005599975,
+            0.0013773791882159573,
+            0.0030441240830988794,
+            -0.0021831419920240987,
+            -0.0024847679452410735,
+            0.0023882835007550465,
+            0.9619504973527185,
+            0.0032464786852508813,
+            0.5077018332171913,
+            -0.0010590257304804744,
+            -0.01376317920229108,
+            1.9041370556333803e-05,
+            0.008823403601001313,
+            -0.00023563767544694265,
+            -0.004084602164336905,
+            0.0012809011049463171,
+            0.000784340253528664,
+            -0.002386033020505036,
+            0.000560853154526388,
+            0.0026777771859516535,
+            -0.0008686061365789551,
+            -0.0034212301317618787,
+            -0.0008705245629164429,
+            0.003333466927151524,
+            -0.5118424499881664,
+            -0.004435674774306978,
+            0.016407471403690442,
+            -0.005197971679463269,
+            -0.017539702467661258,
+            0.0025565928929071166,
+            0.014361455681064714,
+            -0.0006876918663734937,
+            -0.008251215919246734,
+            -0.0003995726486601001,
+            0.002727072868922152,
+            0.0006496750550821749,
+            -0.0011989604944609756,
+            0.0008409601998640995,
+            0.0015569829928263835,
+            -0.0006612735387215996
+          ],
+          "outer_iteration": 1,
+          "outer_update_applied": false,
+          "progress_accepted": false,
+          "projected_gradient_norm": 36263.0603390415,
+          "projected_gradient_norm_infinity": 14262.95428550488,
+          "relative_stationarity_threshold": 0.14252019376028843,
+          "requested_inner_gradient_tolerance": 0.1,
+          "scaled_constraint_norm_infinity": 0.0632367716819066,
+          "scaled_constraint_norm_infinity_after_scale_update": 0.0632367716819066,
+          "stage_initial_gradient_norm_infinity": 14.252019376028844,
+          "step_norm_infinity": 0.023639818881105,
+          "vector_summaries": {
+            "constraint_scales_after": {
+              "l2_norm": 810571.1053746792,
+              "maximum": 18498.075576320225,
+              "minimum": 2.0,
+              "nonzero_count": 8884,
+              "norm_infinity": 18498.075576320225,
+              "size": 8884
+            },
+            "constraint_scales_before": {
+              "l2_norm": 810571.1053746792,
+              "maximum": 18498.075576320225,
+              "minimum": 2.0,
+              "nonzero_count": 8884,
+              "norm_infinity": 18498.075576320225,
+              "size": 8884
+            },
+            "constraints": {
+              "l2_norm": 10003.303136615932,
+              "maximum": 1169.858577500394,
+              "minimum": 0.0,
+              "nonzero_count": 254,
+              "norm_infinity": 1169.858577500394,
+              "size": 8884
+            },
+            "multipliers_after": {
+              "l2_norm": 0.0,
+              "maximum": 0.0,
+              "minimum": 0.0,
+              "nonzero_count": 0,
+              "norm_infinity": 0.0,
+              "size": 8884
+            },
+            "multipliers_before": {
+              "l2_norm": 0.0,
+              "maximum": 0.0,
+              "minimum": 0.0,
+              "nonzero_count": 0,
+              "norm_infinity": 0.0,
+              "size": 8884
+            },
+            "penalties_after": {
+              "l2_norm": 942.5497334358543,
+              "maximum": 10.0,
+              "minimum": 10.0,
+              "nonzero_count": 8884,
+              "norm_infinity": 10.0,
+              "size": 8884
+            },
+            "penalties_before": {
+              "l2_norm": 942.5497334358543,
+              "maximum": 10.0,
+              "minimum": 10.0,
+              "nonzero_count": 8884,
+              "norm_infinity": 10.0,
+              "size": 8884
+            },
+            "scaled_constraints": {
+              "l2_norm": 0.5422304735364831,
+              "maximum": 0.0632367716819066,
+              "minimum": 0.0,
+              "nonzero_count": 254,
+              "norm_infinity": 0.0632367716819066,
+              "size": 8884
+            }
+          }
+        }
+      ],
+      "message": "inner stationarity safeguard stopped outer updates before penalty or multiplier escalation",
+      "outer_iterations": 1,
+      "seconds": 463.18249233100005,
+      "success": false,
+      "terminated_by_inner_safeguard": true,
+      "total_evaluations": 635,
+      "total_inner_iterations": 300
+    },
+    "scientific_validation": {
+      "engineering": {
+        "comparisons": {
+          "maximum_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.0,
+            "measured": 4.775027226524078,
+            "passed": true,
+            "target": 5.0
+          },
+          "maximum_mean_squared_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.00022537575693455382,
+            "measured": 5.001126878784673,
+            "passed": true,
+            "target": 5.0
+          },
+          "minimum_coil_coil_distance": {
+            "allowed_boundary": 0.09000000000000001,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.0,
+            "measured": 0.14247036274981942,
+            "passed": true,
+            "target": 0.1
+          },
+          "minimum_coil_surface_distance": {
+            "allowed_boundary": 0.27,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.3902861925001313,
+            "measured": 0.1829141422499606,
+            "passed": false,
+            "target": 0.3
+          }
+        },
+        "passed": false,
+        "relative_tolerance": 0.1
+      },
+      "passed": false,
+      "quadratic_flux": {
+        "allowed_boundary": 1.1000000000000001e-05,
+        "measured": 0.023034851697305656,
+        "passed": false,
+        "target": 1e-05
+      }
+    }
+  },
+  "design_envelope": {
+    "coordinate_system": "current-scaled SIMSOPT optimizer coordinates",
+    "curve_coefficient_bound_radius_m": 0.25,
+    "curve_coefficient_count": 204,
+    "free_current_count": 3,
+    "maximum_current_ratio": 1.5,
+    "minimum_current_ratio": 0.5
+  },
+  "environment": {
+    "jax": "0.11.1",
+    "jax_backend": "gpu",
+    "jax_device_details": [
+      {
+        "device_kind": "NVIDIA A100-SXM4-40GB",
+        "id": "0",
+        "platform": "gpu"
+      }
+    ],
+    "jax_devices": [
+      "cuda:0"
+    ],
+    "numpy": "2.1.3",
+    "omp_num_threads": "1",
+    "platform": "Linux-6.6.122+-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+    "scipy": "1.16.3",
+    "simsopt": "0.1.dev2+gca7487273",
+    "simsopt_revision": "ca7487273ebb1f12fe3feb13d36d0d5e6394a008"
+  },
+  "figures": [
+    "end_to_end_al_schema_2_performance.png",
+    "end_to_end_al_schema_2_convergence.png",
+    "end_to_end_al_schema_2_final_metrics.png"
+  ],
+  "gpu_native": {
+    "active_bounds": {
+      "lower": 0,
+      "upper": 0
+    },
+    "cold_end_to_end_seconds": 11.662585616999422,
+    "compilation_seconds": 4.993896067999685,
+    "device_resident": true,
+    "execution_platform": "gpu",
+    "execution_samples_seconds": [
+      6.668689548999737,
+      6.657500384999821,
+      6.594434464999722
+    ],
+    "final_metrics": {
+      "base_current_values_amperes": [
+        100000.0,
+        97138.04606889971,
+        98102.13951596813,
+        98750.41367771728
+      ],
+      "coil_coil_distance_penalty": 0.0,
+      "coil_constraints": {
+        "limits": {
+          "coil_coil_distance_threshold": 0.1,
+          "coil_surface_distance_threshold": 0.3,
+          "curvature_threshold": 5.0,
+          "mean_squared_curvature_threshold": 5.0
+        },
+        "margins": {
+          "maximum_curvature": 0.4258505298905284,
+          "maximum_mean_squared_curvature": -0.00102014101056902,
+          "minimum_coil_coil_distance": 0.06967289326296044,
+          "minimum_coil_surface_distance": -0.003998160632324332
+        },
+        "measurements": {
+          "base_coil_lengths": [
+            3.8458292492976924,
+            3.7101130544858765,
+            3.563062713143729,
+            3.7125576854664377
+          ],
+          "base_coil_maximum_curvatures": [
+            4.574149470109472,
+            4.559575120583409,
+            2.8915361096545715,
+            3.0269187310185934
+          ],
+          "base_coil_mean_squared_curvatures": [
+            5.001020141010569,
+            5.001011685467455,
+            4.549024289534511,
+            4.85730302845102
+          ],
+          "maximum_curvature": 4.574149470109472,
+          "maximum_mean_squared_curvature": 5.001020141010569,
+          "minimum_coil_coil_distance": 0.16967289326296045,
+          "minimum_coil_surface_distance": 0.29600183936767566,
+          "total_base_coil_length": 14.831562702393736
+        },
+        "violations": {
+          "maximum_curvature": 0.0,
+          "maximum_mean_squared_curvature": 0.00102014101056902,
+          "minimum_coil_coil_distance": 0.0,
+          "minimum_coil_surface_distance": 0.003998160632324332
+        }
+      },
+      "coil_surface_distance_penalty": 3.4437913691160763e-09,
+      "curvature_penalty": 0.0,
+      "curve_length_sum": 14.831562702393736,
+      "gradient_norm": 0.03062989386946861,
+      "maximum_absolute_normal_field": 0.06781809155328991,
+      "maximum_curvature": 4.574149470109472,
+      "mean_absolute_normal_field": 0.02583949708072299,
+      "mean_squared_curvature_penalty": 1.0320975832525522e-06,
+      "minimum_coil_coil_distance": 0.16967289326296045,
+      "minimum_coil_surface_distance": 0.29600183936767566,
+      "normalized_normal_field": {
+        "definition": "abs(B dot n) / norm(B)",
+        "maximum_absolute": 0.2304223041093012,
+        "mean_absolute": 0.08064075943113502,
+        "root_mean_square": 0.10108229842783135,
+        "valid_surface_points": 4096,
+        "zero_field_surface_points": 0
+      },
+      "objective": 0.0036831736404755754,
+      "quadratic_flux": 0.003668307638827393
+    },
+    "host_callbacks": 0,
+    "implementation": "single compiled AL outer/inner executable",
+    "optimization": {
+      "base_objective": 0.003683139201529784,
+      "final_augmented_lagrangian": 0.00418819420806731,
+      "final_constraint_norm_infinity": 38.98160632324454,
+      "final_gradient_norm_infinity": 236.25150956681443,
+      "final_projected_gradient_norm_infinity": 236.25150956681443,
+      "final_scaled_constraint_norm_infinity": 0.004203868064895281,
+      "history": [
+        {
+          "augmented_lagrangian": 0.01791620696279601,
+          "base_objective": 0.01762324915951183,
+          "constraint_norm_infinity": 36.115065957961214,
+          "gradient_norm_infinity": 0.07870001256395374,
+          "inner_evaluations": 9,
+          "inner_iterations": 3,
+          "inner_stationary": true,
+          "inner_status": 1,
+          "maximum_penalty_after": 20.0,
+          "outer_iteration": 1,
+          "outer_update_applied": true,
+          "progress_accepted": true,
+          "scaled_constraint_norm_infinity": 0.0019469703351291117,
+          "stage_initial_gradient_norm_infinity": 14.252019376028844,
+          "step_norm_infinity": 0.07529412302141669
+        },
+        {
+          "augmented_lagrangian": 0.00418819420806731,
+          "base_objective": 0.003683139201529784,
+          "constraint_norm_infinity": 38.98160632324454,
+          "gradient_norm_infinity": 236.25150956681443,
+          "inner_evaluations": 1208,
+          "inner_iterations": 300,
+          "inner_stationary": false,
+          "inner_status": 5,
+          "maximum_penalty_after": 20.0,
+          "outer_iteration": 2,
+          "outer_update_applied": false,
+          "progress_accepted": false,
+          "scaled_constraint_norm_infinity": 0.004203868064895281,
+          "stage_initial_gradient_norm_infinity": 0.7956910456482308,
+          "step_norm_infinity": 0.08283459151950263
+        }
+      ],
+      "message": "inner stationarity safeguard stopped outer updates",
+      "outer_iterations": 2,
+      "seconds": 6.668689548999737,
+      "success": false,
+      "terminated_by_inner_safeguard": true,
+      "total_evaluations": 1217,
+      "total_inner_iterations": 303
+    },
+    "scientific_validation": {
+      "engineering": {
+        "comparisons": {
+          "maximum_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.0,
+            "measured": 4.574149470109472,
+            "passed": true,
+            "target": 5.0
+          },
+          "maximum_mean_squared_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.00020402820211380402,
+            "measured": 5.001020141010569,
+            "passed": true,
+            "target": 5.0
+          },
+          "minimum_coil_coil_distance": {
+            "allowed_boundary": 0.09000000000000001,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.0,
+            "measured": 0.16967289326296045,
+            "passed": true,
+            "target": 0.1
+          },
+          "minimum_coil_surface_distance": {
+            "allowed_boundary": 0.27,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.013327202107747776,
+            "measured": 0.29600183936767566,
+            "passed": true,
+            "target": 0.3
+          }
+        },
+        "passed": true,
+        "relative_tolerance": 0.1
+      },
+      "passed": false,
+      "quadratic_flux": {
+        "allowed_boundary": 1.1000000000000001e-05,
+        "measured": 0.003668307638827393,
+        "passed": false,
+        "target": 1e-05
+      }
+    },
+    "warm_median_seconds": 6.657500384999821
+  },
+  "method": {
+    "cpu_inner_solver": "SciPy L-BFGS-B",
+    "gpu_host_callbacks": 0,
+    "gpu_inner_solver": "compiled device-resident projected L-BFGS",
+    "gpu_outer_loop_device_resident": true,
+    "matched_design_envelope_bounds": true,
+    "matched_outer_update": true,
+    "name": "local_residual_equality_augmented_lagrangian",
+    "refinement_performed": false
+  },
+  "problem": {
+    "description": "Stage-two objective with engineering regularizers",
+    "name": "engineering",
+    "ncoils": 4,
+    "nphi": 64,
+    "nquad": 120,
+    "ntheta": 64,
+    "order": 8,
+    "regularized": true
+  },
+  "result_schema_version": 2,
+  "schema_version": 1,
+  "scientifically_validated": false,
+  "solver": {
+    "constraint_scale_reduction_factor": 0.5,
+    "constraint_tolerance": 1e-06,
+    "constraint_transform": "smooth_abs",
+    "constraint_transform_epsilon": 0.1,
+    "cpu_maxcor": 100,
+    "gradient_tolerance": 1e-08,
+    "history_size": 20,
+    "inner_stationarity_relative_tolerance": 0.01,
+    "max_inner_iterations": 300,
+    "max_line_search_iterations": 50,
+    "max_outer_iterations": 8,
+    "minimum_residual_scaling_policy": "sqrt_count",
+    "mu_init": 10.0,
+    "mu_max": 1000000000000.0,
+    "penalty_update_mode": "global",
+    "residual_scaling_policy": "family_l2",
+    "tau": 2.0
+  },
+  "technical_trajectory_agreement": false,
+  "validation_policy": {
+    "quadratic_flux_allowed_boundary": 1.1000000000000001e-05,
+    "quadratic_flux_target": 1e-05,
+    "scientific_rule": "each endpoint independently passes quadratic flux and all engineering target envelopes; gradient size is diagnostic",
+    "target_relative_tolerance": 0.1,
+    "trajectory_agreement_is_diagnostic": true
+  },
+  "visualization_files": [
+    "end-to-end-al-cpu_coils.vtu",
+    "end-to-end-al-cpu_surface.vts",
+    "end-to-end-al-gpu-native_coils.vtu",
+    "end-to-end-al-gpu-native_surface.vts"
+  ],
+  "workflow": "end_to_end_device_augmented_lagrangian_analysis"
+}

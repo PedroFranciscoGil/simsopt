@@ -28,6 +28,7 @@ class DeviceAugmentedLagrangianConfig:
     tau: float = 2.0
     mu_max: float = 1e12
     max_outer_iterations: int = 8
+    minimum_outer_iterations: int = 1
     max_inner_iterations: int = 300
     history_size: int = 20
     max_line_search_iterations: int = 50
@@ -69,6 +70,11 @@ class DeviceAugmentedLagrangianConfig:
             raise ValueError("tau must be greater than one")
         if self.max_outer_iterations < 1 or self.max_inner_iterations < 1:
             raise ValueError("iteration limits must be positive")
+        if not 1 <= self.minimum_outer_iterations <= self.max_outer_iterations:
+            raise ValueError(
+                "minimum_outer_iterations must be between one and "
+                "max_outer_iterations"
+            )
         if self.history_size < 1 or self.max_line_search_iterations < 1:
             raise ValueError("history and line-search limits must be positive")
         if self.armijo_coefficient >= 1 or self.backtracking_factor >= 1:
@@ -680,6 +686,8 @@ class DeviceAugmentedLagrangian:
                     stationary_convergence = inner_stationary
                 converged = stationary_convergence & (
                     raw_norm <= config.constraint_tolerance
+                ) & (
+                    state.outer_iterations + 1 >= config.minimum_outer_iterations
                 )
                 apply_update = (~converged) & inner_accepted
                 violation = jnp.abs(raw) > config.constraint_tolerance

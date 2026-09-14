@@ -49,7 +49,7 @@ def optimization():
 def result_contract():
     validation = {"passed": True}
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "refinement_performed": False,
@@ -57,7 +57,9 @@ def result_contract():
             "matched_design_envelope_bounds": True,
             "inner_stationarity_is_diagnostic": True,
             "target_aware_outer_checkpoint_selection": True,
+            "minimum_continuation_depth_enforced": True,
         },
+        "solver": {"minimum_outer_iterations": 8, "max_outer_iterations": 8},
         "design_envelope": {"curve_coefficient_bound_radius_m": 0.25},
         "cpu": {
             "execution_platform": "cpu",
@@ -100,6 +102,7 @@ def test_benchmark_defaults_match_production_comparison():
         args = module.parse_args()
 
     assert args.max_outer_iterations == 8
+    assert args.minimum_outer_iterations == 8
     assert args.max_inner_iterations == 300
     assert args.history_size == 20
     assert args.cpu_maxcor == 100
@@ -108,6 +111,25 @@ def test_benchmark_defaults_match_production_comparison():
     assert args.maximum_current_ratio == 1.5
     assert args.curve_coefficient_bound_radius == 0.25
     assert args.inner_acceptance_mode == "budgeted"
+
+
+def test_benchmark_requires_the_complete_outer_continuation():
+    module = load_module(
+        "benchmark_end_to_end_device_augmented_lagrangian.py",
+        "end_to_end_device_al_benchmark_invalid_depth",
+    )
+    with patch.object(
+        sys,
+        "argv",
+        [
+            "benchmark",
+            "--max-outer-iterations",
+            "8",
+            "--minimum-outer-iterations",
+            "4",
+        ],
+    ), pytest.raises(SystemExit, match="2"):
+        module.parse_args()
 
 
 def test_analyzer_validates_device_placement_and_no_refinement():
@@ -139,6 +161,7 @@ def test_colab_runs_matched_no_refinement_comparison_and_downloads_archive():
     assert "benchmark_end_to_end_device_augmented_lagrangian.py" in source
     assert 'jax.default_backend() == "gpu"' in source
     assert '"--max-outer-iterations", "8"' in source
+    assert '"--minimum-outer-iterations", "8"' in source
     assert '"--max-inner-iterations", "300"' in source
     assert '"--history-size", "20"' in source
     assert '"--curve-coefficient-bound-radius", "0.25"' in source
@@ -146,6 +169,7 @@ def test_colab_runs_matched_no_refinement_comparison_and_downloads_archive():
     assert 'result["method"]["refinement_performed"] is False' in source
     assert 'result["method"]["matched_design_envelope_bounds"]' in source
     assert 'result["method"]["inner_stationarity_is_diagnostic"]' in source
+    assert 'result["method"]["minimum_continuation_depth_enforced"]' in source
     assert 'result["gpu_native"]["host_callbacks"] == 0' in source
     assert "path.is_absolute()" in source
     assert "files.download(archive)" in source

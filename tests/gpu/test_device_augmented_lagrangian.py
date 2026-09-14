@@ -80,6 +80,7 @@ def test_device_augmented_lagrangian_compile_is_reusable():
     initial = np.asarray([3.0])
     config = DeviceAugmentedLagrangianConfig(
         max_outer_iterations=2,
+        minimum_outer_iterations=2,
         max_inner_iterations=3,
         history_size=2,
         require_inner_stationarity=False,
@@ -104,6 +105,7 @@ def test_device_augmented_lagrangian_matches_bounded_host_stationarity():
     upper = np.asarray([1.5])
     config = DeviceAugmentedLagrangianConfig(
         max_outer_iterations=2,
+        minimum_outer_iterations=2,
         max_inner_iterations=30,
         history_size=5,
         gradient_tolerance=1e-10,
@@ -132,6 +134,7 @@ def test_device_augmented_lagrangian_matches_bounded_host_stationarity():
         bridge,
         initial,
         max_outer_iterations=2,
+        minimum_outer_iterations=2,
         max_inner_iterations=30,
         gradient_tolerance=1e-10,
         constraint_tolerance=1e-8,
@@ -142,6 +145,8 @@ def test_device_augmented_lagrangian_matches_bounded_host_stationarity():
 
     assert device_result.success
     assert host_result.success
+    assert device_result.outer_iterations == 2
+    assert host_result.outer_iterations == 2
     assert device_result.x[0] == pytest.approx(1.5, abs=1e-10)
     assert device_result.x[0] == pytest.approx(host_result.x[0], abs=1e-10)
     assert device_result.history[-1]["gradient_norm_infinity"] == pytest.approx(0.0)
@@ -156,6 +161,10 @@ def test_device_augmented_lagrangian_validates_static_contract():
         DeviceAugmentedLagrangianConfig(mu_init=1.0)
     with pytest.raises(ValueError, match="constraint_transform"):
         DeviceAugmentedLagrangianConfig(constraint_transform="bad")
+    with pytest.raises(ValueError, match="minimum_outer_iterations"):
+        DeviceAugmentedLagrangianConfig(
+            max_outer_iterations=2, minimum_outer_iterations=3
+        )
     with pytest.raises(ValueError, match="must not exceed"):
         DeviceAugmentedLagrangian(
             equality_terms,

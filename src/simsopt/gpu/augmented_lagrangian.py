@@ -325,6 +325,7 @@ def minimize_equality_augmented_lagrangian(
     lagrange_multiplier_init=None,
     tau: float = 10.0,
     max_outer_iterations: int = 8,
+    minimum_outer_iterations: int = 1,
     max_inner_iterations: int = 50,
     gradient_tolerance: float = 1e-8,
     constraint_tolerance: float = 1e-8,
@@ -365,7 +366,9 @@ def minimize_equality_augmented_lagrangian(
     linear coefficient when this continuation step changes coordinates. Optional
     box ``bounds`` are passed to every L-BFGS-B stage; stationarity is then
     evaluated with the projected gradient, while the raw gradient remains in
-    the diagnostic history.
+    the diagnostic history. ``minimum_outer_iterations`` can require a fixed
+    continuation depth before stationarity and feasibility may terminate the
+    solve; the best iterate can then be selected by the caller.
     """
     x = np.asarray(initial_x, dtype=float).copy()
     if x.ndim != 1 or not np.all(np.isfinite(x)):
@@ -383,6 +386,10 @@ def minimize_equality_augmented_lagrangian(
         raise ValueError("mu_max must be greater than one")
     if max_outer_iterations < 1 or max_inner_iterations < 1:
         raise ValueError("iteration limits must be positive")
+    if not 1 <= minimum_outer_iterations <= max_outer_iterations:
+        raise ValueError(
+            "minimum_outer_iterations must be between one and max_outer_iterations"
+        )
     if maxcor < 1 or maxls < 1:
         raise ValueError("maxcor and maxls must be positive")
     if not np.isfinite(inner_stationarity_factor) or inner_stationarity_factor < 1:
@@ -638,7 +645,12 @@ def minimize_equality_augmented_lagrangian(
             stationary_convergence = projected_gradient_norm <= gradient_tolerance
         else:
             stationary_convergence = inner_stationary
-        converged = stationary_convergence and constraint_norm <= constraint_tolerance
+        minimum_outer_reached = outer_iteration >= minimum_outer_iterations
+        converged = (
+            minimum_outer_reached
+            and stationary_convergence
+            and constraint_norm <= constraint_tolerance
+        )
         # Keep a converged result internally consistent: its reported AL value
         # and gradient correspond to the returned multipliers and penalties.
         outer_update_applied = not converged and inner_stage_accepted

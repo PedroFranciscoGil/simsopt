@@ -38,6 +38,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", choices=sorted(PROBLEMS), default="engineering")
     parser.add_argument("--max-outer-iterations", type=int, default=8)
+    parser.add_argument("--minimum-outer-iterations", type=int)
     parser.add_argument("--max-inner-iterations", type=int, default=300)
     parser.add_argument("--mu-init", type=float, default=10.0)
     parser.add_argument("--mu-max", type=float, default=1e12)
@@ -71,8 +72,11 @@ def parse_args():
     parser.add_argument("--no-visualization", action="store_true")
     parser.add_argument("--allow-non-gpu", action="store_true")
     args = parser.parse_args()
+    if args.minimum_outer_iterations is None:
+        args.minimum_outer_iterations = args.max_outer_iterations
     for name in (
         "max_outer_iterations",
+        "minimum_outer_iterations",
         "max_inner_iterations",
         "history_size",
         "cpu_maxcor",
@@ -104,6 +108,10 @@ def parse_args():
             parser.error(f"{name.replace('_', '-')} must be finite and positive")
     if args.mu_init <= 1 or args.mu_init > args.mu_max or args.tau <= 1:
         parser.error("penalty configuration is invalid")
+    if args.minimum_outer_iterations != args.max_outer_iterations:
+        parser.error(
+            "this qualification requires minimum outer iterations to equal the maximum"
+        )
     if not 0 < args.inner_stationarity_relative_tolerance < 1:
         parser.error("inner stationarity relative tolerance must be below one")
     if not 0 < args.constraint_scale_reduction_factor <= 1:
@@ -361,6 +369,7 @@ def main():
         mu_init=args.mu_init,
         tau=args.tau,
         max_outer_iterations=args.max_outer_iterations,
+        minimum_outer_iterations=args.minimum_outer_iterations,
         max_inner_iterations=args.max_inner_iterations,
         gradient_tolerance=args.gradient_tolerance,
         constraint_tolerance=args.constraint_tolerance,
@@ -386,6 +395,7 @@ def main():
         tau=args.tau,
         mu_max=args.mu_max,
         max_outer_iterations=args.max_outer_iterations,
+        minimum_outer_iterations=args.minimum_outer_iterations,
         max_inner_iterations=args.max_inner_iterations,
         history_size=args.history_size,
         max_line_search_iterations=args.max_line_search_iterations,
@@ -498,7 +508,7 @@ def main():
     cpu_end_to_end = cpu_compile_seconds + cpu_result.seconds
     gpu_cold_end_to_end = device_compile_seconds + execution_samples[0]
     output = {
-        "schema_version": 3,
+        "schema_version": 4,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "name": "local_residual_equality_augmented_lagrangian",
@@ -511,10 +521,12 @@ def main():
             "matched_design_envelope_bounds": True,
             "inner_stationarity_is_diagnostic": not require_inner_stationarity,
             "target_aware_outer_checkpoint_selection": True,
+            "minimum_continuation_depth_enforced": True,
         },
         "problem": spec.as_dict(),
         "solver": {
             "max_outer_iterations": args.max_outer_iterations,
+            "minimum_outer_iterations": args.minimum_outer_iterations,
             "max_inner_iterations": args.max_inner_iterations,
             "mu_init": args.mu_init,
             "mu_max": args.mu_max,

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import shutil
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
@@ -56,7 +57,7 @@ def read_archive(path):
 
 
 def validate_result(result):
-    if result.get("schema_version") not in (1, 2, 3) or result.get("workflow") != (
+    if result.get("schema_version") not in (1, 2, 3, 4) or result.get("workflow") != (
         "end_to_end_device_augmented_lagrangian"
     ):
         raise ValueError("end-to-end AL result contract does not match")
@@ -73,6 +74,13 @@ def validate_result(result):
         or method.get("target_aware_outer_checkpoint_selection") is not True
     ):
         raise ValueError("budgeted checkpoint-selection policy is missing")
+    if result["schema_version"] >= 4 and (
+        method.get("minimum_continuation_depth_enforced") is not True
+        or result.get("solver", {}).get("minimum_outer_iterations") != result.get(
+            "solver", {}
+        ).get("max_outer_iterations")
+    ):
+        raise ValueError("fixed continuation-depth policy is missing")
     if (
         result.get("cpu", {}).get("execution_platform") != "cpu"
         or result.get("gpu_native", {}).get("execution_platform") != "gpu"
@@ -227,7 +235,13 @@ def main():
     result, payload_names, digest = read_archive(args.archive)
     validate_result(result)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"end_to_end_al_schema_{result['schema_version']}"
     figures = [
+        f"{prefix}_performance.png",
+        f"{prefix}_convergence.png",
+        f"{prefix}_final_metrics.png",
+    ]
+    latest_figures = [
         "end_to_end_al_performance.png",
         "end_to_end_al_convergence.png",
         "end_to_end_al_final_metrics.png",
@@ -235,8 +249,11 @@ def main():
     plot_performance(result, args.output_dir / figures[0])
     plot_convergence(result, args.output_dir / figures[1])
     plot_final_metrics(result, args.output_dir / figures[2])
+    for versioned, latest in zip(figures, latest_figures):
+        shutil.copyfile(args.output_dir / versioned, args.output_dir / latest)
     summary = {
         "schema_version": 1,
+        "result_schema_version": result["schema_version"],
         "workflow": "end_to_end_device_augmented_lagrangian_analysis",
         "archive_sha256": digest,
         "environment": result["environment"],
@@ -263,8 +280,12 @@ def main():
         "visualization_files": payload_names,
         "figures": figures,
     }
-    output = args.output_dir / "end_to_end_al_analysis_summary.json"
+    output = args.output_dir / f"{prefix}_analysis_summary.json"
     output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    latest_summary = {**summary, "figures": latest_figures}
+    (args.output_dir / "end_to_end_al_analysis_summary.json").write_text(
+        json.dumps(latest_summary, indent=2, sort_keys=True) + "\n"
+    )
     print(output)
 
 

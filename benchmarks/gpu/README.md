@@ -576,6 +576,7 @@ circular engineering coils and performs no post-AL refinement.
 OMP_NUM_THREADS=1 python \
   benchmarks/gpu/benchmark_end_to_end_device_augmented_lagrangian.py \
   --problem engineering --max-outer-iterations 8 \
+  --minimum-outer-iterations 8 \
   --max-inner-iterations 300 --mu-init 10 --tau 2 --mu-max 1e12 \
   --inner-acceptance-mode budgeted \
   --history-size 20 --cpu-maxcor 100 \
@@ -639,3 +640,20 @@ iterates, not a refinement solve. CPU-oracle checkpoint-selection time is
 stored separately; solver end-to-end time remains compile plus optimization so
 the benchmark does not charge first-use oracle compilation to whichever
 backend is validated first.
+
+The schema-3 A100 archive (SHA-256
+`d25186f5620581ba98fef0ad5b636c46bdb41cf86ec9848738ef8818714f1fdd`)
+measured 3191.359 s CPU cold end-to-end, 24.151 s GPU cold end-to-end,
+and a 19.137 s GPU warm median: nominal 132.14x cold and 166.67x warm
+acceleration. Both selected checkpoints pass all engineering envelopes and
+agree within 6.24% on every reported coil quantity. GPU quadratic flux is
+`1.75677e-3`, however, still 159.7 times the allowed boundary; CPU flux is
+`1.50531e-2`. The run therefore remains scientifically unqualified.
+
+Schema 4 requires `minimum_outer_iterations == max_outer_iterations` in the
+production notebook. Relative stationarity and zero strict residuals cannot
+terminate either solver before all eight continuation stages have run.
+Target-aware selection still considers every outer state, protecting an
+earlier scientifically valid design from later degradation. Analyzer outputs
+are now schema-versioned so evidence from successive decisions is not
+overwritten.

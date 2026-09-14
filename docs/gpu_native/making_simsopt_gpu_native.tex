@@ -3071,8 +3071,10 @@ the stated engineering problem merely to improve this benchmark.
 
 \subsection{Bounded A100 rerun: geometry fixed, stationarity blocks progress}
 
-The matched-bound archive from revision \code{ca748727} has SHA-256
-\nolinkurl{96021611e05c1945d184184169be4edb1fbee4ea4775c834731f9bc4bded422a}.
+The matched-bound archive from revision \code{ca748727} has the SHA-256 digest
+\begin{center}
+\small\nolinkurl{96021611e05c1945d184184169be4edb1fbee4ea4775c834731f9bc4bded422a}
+\end{center}
 It uses the same A100, software stack, initial circles, problem resolution and
 no-refinement rule as the first run.  All 207 optimizer variables are bounded
 identically on CPU and GPU.  Neither selected endpoint is active at a bound,
@@ -3081,7 +3083,7 @@ scale coils.  The GPU endpoint now has 14.832~m total base-coil length.
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_performance.png}
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_schema_2_performance.png}
 \caption{Bounded A100 time and work.  CPU cold time is 465.060~s; GPU cold
 time is 11.663~s and its warm median is 6.658~s.  The nominal $39.88\times$
 cold and $69.57\times$ warm ratios remain diagnostic because neither endpoint
@@ -3100,7 +3102,7 @@ in the warm optimization measurement.  Compilation is 1.877~s on CPU and
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_convergence.png}
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_schema_2_convergence.png}
 \caption{Bounded outer histories.  The GPU reduces the base objective from
 $1.762\times10^{-2}$ to $3.683\times10^{-3}$ in its two stages.  Its strict
 local-residual norm grows slightly in the second stage, although all final
@@ -3134,7 +3136,7 @@ Maximum mean-squared curvature ($\mathrm{m}^{-2}$) & 5.00113 & 5.00102 \\
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.88\textwidth]{figures/end_to_end_al_final_metrics.png}
+\includegraphics[width=0.88\textwidth]{figures/end_to_end_al_schema_2_final_metrics.png}
 \caption{Bounded direct-AL magnetic quantities.  The GPU is consistently
 better than CPU in this stopped run, but its quadratic flux is still about
 333 times the allowed $1.1\times10^{-5}$ boundary.}
@@ -3163,6 +3165,99 @@ CPU-oracle selection cost is stored separately; solver cold end-to-end remains
 compilation plus optimization, avoiding an order-dependent charge for the
 oracle's first compilation.  The next A100 archive must still pass the
 explicit flux and engineering gates before any speedup is accepted.
+
+\subsection{Budgeted A100 result: strong timing, premature success}
+
+The schema~3 archive from revision \code{fcd53d61} has the SHA-256 digest
+\begin{center}
+\small\nolinkurl{d25186f5620581ba98fef0ad5b636c46bdb41cf86ec9848738ef8818714f1fdd}
+\end{center}
+It reproduces the same A100 float64 environment and matched 207-variable
+design envelope.  Stationarity is diagnostic for accepting budget-limited
+inner stages, and each solver retains every completed outer design for the
+same target-aware CPU-oracle selection.  The archive and selection contracts
+reproduce, and all VTS/VTU payloads are nonempty with the required surface
+normal-field arrays.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_schema_3_performance.png}
+\caption{Schema~3 solver time and work.  CPU cold end-to-end is 3191.359~s;
+GPU cold is 24.151~s and the synchronized warm median is 19.137~s.  The GPU
+uses 3,536 evaluations versus 4,422 on CPU.}
+\label{fig:end-to-end-al-schema3-performance}
+\end{figure}
+
+The resulting nominal acceleration is $132.14\times$ cold and $166.67\times$
+warm.  CPU compilation takes 1.839~s and optimization 3189.519~s; GPU
+compilation takes 5.014~s, followed by execution samples of 19.137, 19.249 and
+19.079~s.  CPU performs 1,223 inner iterations across five outer stages; GPU
+performs 903 across four.  Target-aware validation/selection costs are stored
+separately (5.805~s CPU and 0.956~s GPU), so first-use CPU-oracle compilation
+does not contaminate solver timing.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_schema_3_convergence.png}
+\caption{Budgeted outer trajectories.  Allowing finite nonstationary stages
+produces continued engineering-feasibility progress, but both solvers stop
+before the configured eight-stage maximum once strict residuals vanish and
+the relative stationarity test passes.}
+\label{fig:end-to-end-al-schema3-convergence}
+\end{figure}
+
+The selector chooses CPU outer stage~5 and GPU stage~4.  In both cases this is
+the terminal state and the first-class checkpoint machinery does not disguise
+a degraded endpoint.  Both selected designs pass every engineering target
+under the 10\% rule, and their physical constraints agree well: coil--coil
+distance differs by 2.08\%, coil--surface distance by 0.064\%, maximum
+curvature by 2.16\%, maximum mean-squared curvature by $2.24\times10^{-6}$\%,
+and total base-coil length by 6.24\%.  No variable is active at its design-
+envelope bound.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Schema~3 target-aware direct-AL designs.}
+\label{tab:end-to-end-al-schema3-qoi}
+\begin{tabular}{lrr}
+\toprule
+Quantity & CPU outer 5 & GPU outer 4 \\
+\midrule
+Scalar objective & $1.50673\times10^{-2}$ & $1.77181\times10^{-3}$ \\
+Quadratic flux & $1.50531\times10^{-2}$ & $1.75677\times10^{-3}$ \\
+Mean $|B\cdot n|/|B|$ & 0.158445 & 0.0578919 \\
+RMS $|B\cdot n|/|B|$ & 0.184964 & 0.0732176 \\
+Maximum $|B\cdot n|/|B|$ & 0.375966 & 0.203306 \\
+Total base-coil length (m) & 14.1582 & 15.0416 \\
+Minimum coil--coil distance (m) & 0.159805 & 0.163126 \\
+Minimum coil--surface distance (m) & 0.300166 & 0.299973 \\
+Maximum curvature ($\mathrm{m}^{-1}$) & 4.81122 & 4.70748 \\
+Maximum mean-squared curvature ($\mathrm{m}^{-2}$) & 5.0009934 & 5.0009935 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\textwidth]{figures/end_to_end_al_schema_3_final_metrics.png}
+\caption{Schema~3 magnetic metrics.  The GPU endpoint is substantially better
+than CPU, but its quadratic flux remains 159.7 times the allowed
+$1.1\times10^{-5}$ boundary; CPU is 1368.5 times above it.}
+\label{fig:end-to-end-al-schema3-final-metrics}
+\end{figure}
+
+\textbf{Decision.}  The budgeted acceptance and checkpoint mechanisms are
+retained: they improve progress without weakening the user's physical
+validation rule.  The remaining premature termination is caused by applying
+the relative-stationarity convergence rule after the strict engineering
+residual becomes zero.  Schema~4 adds a minimum continuation depth of eight
+outer stages to both host and device AL solvers.  Before stage~8, a stationary,
+strictly feasible inner result is allowed to update continuation state but not
+terminate the solve.  The best of all outer states is still selected, so later
+stages cannot erase an earlier target-valid design.  This directly tests
+whether continued AL minimization can close the remaining flux gap without a
+separate refinement phase.
 
 \section{Opportunities to improve coil quality}
 
