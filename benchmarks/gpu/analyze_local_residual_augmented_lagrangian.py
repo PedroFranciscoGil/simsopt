@@ -642,14 +642,30 @@ def main():
                 gpu_per_evaluation / device_per_evaluation
             ),
         }
+    selected_warm_backend = (
+        result.get("flux_refinement", {})
+        .get("common_warm_start", {})
+        .get("selected_backend")
+    )
+    qualified_warm_start = None
+    if selected_warm_backend in ("cpu", "gpu"):
+        qualified_warm_start = {
+            "source_backend": selected_warm_backend,
+            "physical_variables": result[selected_warm_backend]["optimization"][
+                "final_physical_variables"
+            ],
+        }
     summary = {
         "schema_version": 2 if result["schema_version"] >= 4 else 1,
         "workflow": "local_residual_augmented_lagrangian_analysis",
         "archive_sha256": digest,
         "revision": result["environment"]["simsopt_revision"],
         "environment": result["environment"],
+        "problem": result.get("problem"),
+        "objective": result.get("objective"),
         "residual_scaling": result["residual_scaling"],
         "flux_refinement": result.get("flux_refinement"),
+        "qualified_warm_start": qualified_warm_start,
         "initial_parity": result["initial_parity"],
         "validation_policy": result.get("validation_policy"),
         "scientific_validation": result.get("scientific_validation"),

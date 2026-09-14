@@ -2757,6 +2757,65 @@ objective trade-off does not improve.  The optimization target remains the
 actual flux and coil quantities, while the scalar objective and full surface
 map remain mandatory diagnostics against accidental trade-off degradation.
 
+\paragraph{Iteration and geometry clarification.}
+The engineering qualification configures at most eight augmented-Lagrangian
+outer stages and 300 L-BFGS-B iterations per inner solve.  The measured CPU and
+GPU AL runs actually terminate after only two outer stages because the second
+inner solve reaches its 300-iteration cap without satisfying the stationarity
+safeguard.  CPU inner stages use 121 and 300 iterations (421 total); GPU stages
+use 24 and 300 (324 total).  The subsequent direct-flux refinement is a separate
+optimization, not another AL outer stage: target awareness stops SciPy at 66
+iterations and device L-BFGS at 89 from a nominal 600-iteration allowance.
+
+The problem begins with four unique \code{CurveXYZFourier} base coils of order
+eight and 120 quadrature points per coil.  Each Cartesian coordinate has
+$2(8)+1=17$ Fourier coefficients, giving 51 geometric degrees of freedom per
+coil, 204 curve variables, and three free currents: 207 optimization variables.
+The initial curves are equally spaced circles with major radius 1.0~m and coil
+radius 0.5~m.  Only their first harmonic is initially nonzero; the unused modes
+through order eight allow the optimizer to deform them.  Field-period and
+stellarator symmetry expand the four independent curves to sixteen physical
+coils.
+
+\subsection{Implemented warm-start replay study}
+
+The next qualification code now removes the AL phase from solver-parameter
+experiments.  The schema-4 analyzer preserves the selected AL endpoint as a
+207-entry physical-coordinate warm start together with its archive hash and
+CPU/GPU reference metrics.  A dedicated replay benchmark reconstructs the
+same engineering problem, verifies the saved dimension and scientific
+provenance, and evaluates the Cartesian product
+
+\[
+  m\in\{10,20,50,100\},\qquad
+  p\in\{15,25\},
+\]
+
+where $m$ is L-BFGS history size and $p$ is significant-improvement checkpoint
+patience.  All eight candidates use the same infeasible patience 15, maximum
+150 iterations, Armijo line-search budget 30, float64 objective, target oracle,
+and physical warm start.  Each solver is compiled independently so history-
+shape compilation is included explicitly, while warm solve time remains
+separate.
+
+Every candidate records its complete accepted-checkpoint trajectory and final
+CPU-oracle objective, quadratic flux, normalized-normal-field metrics, currents,
+coil lengths, distances, curvature, and mean-squared curvature.  Scientific
+qualification still requires flux and all physical engineering envelopes.
+Ranking first prefers scientifically valid candidates whose recorded objective
+is within 10\% of the CPU SciPy reference, then chooses minimum quadratic flux,
+warm time, and stable configuration name.  The winner alone is exported as VTS
+and VTU.  This hierarchy prevents a history-size sweep from winning merely by
+following the schema-4 device trajectory to a substantially different scalar
+trade-off.
+
+The Colab workflow runs only this replay grid and should therefore finish much
+faster than a complete AL qualification.  Its archive is named
+\code{simsopt-device-lbfgs-replay.zip}.  The analyzer will produce a four-panel
+history/patience grid and overlaid flux trajectories.  No configuration choice
+is promoted until those NVIDIA measurements and final physical targets are
+returned and added to this report.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

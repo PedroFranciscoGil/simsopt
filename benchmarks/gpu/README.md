@@ -518,3 +518,32 @@ surface comparison to the device-resident solver.
 python benchmarks/gpu/analyze_local_residual_augmented_lagrangian.py \
   simsopt-device-lbfgs.zip docs/gpu_native/figures
 ```
+
+## Device-LBFGS warm-start replay sweep
+
+The replay benchmark loads the committed 207-variable, scientifically
+qualified AL warm start rather than rerunning the expensive AL phase. It
+compares device-resident L-BFGS history sizes 10, 20, 50, and 100 at checkpoint
+patience 15 and 25. Every candidate retains its final objective, quadratic
+flux, normalized normal field, coil constraints, compact optimization history,
+compile time, and warm solve time. The SIMSOPT CPU oracle validates every final
+state. Ranking first prefers target-valid candidates whose scalar objective is
+within 10% of the CPU SciPy reference, then minimizes quadratic flux.
+
+[Run the device-LBFGS replay sweep in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_device_lbfgs_replay.ipynb)
+
+```sh
+OMP_NUM_THREADS=1 python benchmarks/gpu/benchmark_device_lbfgs_replay.py \
+  --history-sizes 10 20 50 100 \
+  --checkpoint-patiences 15 25 \
+  --infeasible-patience 15 --max-iterations 150 \
+  --output device-lbfgs-replay-sweep.json
+```
+
+Validate the returned archive and generate the parameter-grid and trajectory
+figures with:
+
+```sh
+python benchmarks/gpu/analyze_device_lbfgs_replay.py \
+  simsopt-device-lbfgs-replay.zip docs/gpu_native/figures
+```
