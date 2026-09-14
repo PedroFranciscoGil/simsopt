@@ -2397,6 +2397,138 @@ failure.  The assertion now uses \code{math.isclose} with relative tolerance
 $10^{-14}$ and zero absolute tolerance; the result JSON and previously
 generated VTK artifacts require no repair.
 
+\subsection{Measured schema-3 A100 qualification}
+
+The returned schema-3 archive has SHA-256
+\code{284c392276e0d0ac\allowbreak{}5729a67e55c626d0\allowbreak{}%
+7b76b49950a9443d\allowbreak{}b13fdc32cbcf5f50}
+and was produced from commit \code{cf21da23}.  It contains the result JSON and
+four nonempty visualization files: CPU/GPU surfaces in VTS format and
+CPU/GPU symmetry-expanded coils in VTU format.  The surface files contain
+signed and absolute $B\cdot n/|B|$, $B\cdot n$, and $|B|$.  The run used an
+NVIDIA A100-SXM4-40GB, JAX 0.11.1 in float64, SciPy 1.16.3, and the schema-3
+settings specified above.
+
+The common-warm-start policy selected the CPU AL endpoint because both
+candidates were target-feasible and its quadratic flux,
+$7.26889\times10^{-3}$, was lower than the GPU candidate's
+$1.58035\times10^{-2}$.  Starting from that identical vector, both direct
+refinements select accepted checkpoint 44.  The independent SIMSOPT CPU oracle
+measures quadratic flux $8.61564\times10^{-7}$ for both designs.  This is
+$11.61\times$ below the nominal $10^{-5}$ target, $12.77\times$ below the
+allowed $1.1\times10^{-5}$ boundary, and $8{,}437\times$ below the preceding
+CPU endpoint.  The requested three-order reduction is therefore exceeded.
+
+\begin{table}[htbp]
+\centering
+\caption{Final schema-3 quantities measured by the independent SIMSOPT CPU
+oracle.  Both designs pass every one-sided 10\% engineering envelope and the
+explicit quadratic-flux target.}
+\label{tab:flux-refinement-result}
+\begin{tabular}{lrrl}
+\toprule
+Quantity & CPU & GPU & Scientific boundary \\
+\midrule
+Quadratic flux & $8.615638\times10^{-7}$ & $8.615638\times10^{-7}$
+  & $\leq1.1\times10^{-5}$ \\
+$|B\cdot n|/|B|$ mean & 0.00135658 & 0.00135658 & retained QoI \\
+$|B\cdot n|/|B|$ RMS & 0.00174133 & 0.00174133 & retained QoI \\
+$|B\cdot n|/|B|$ maximum & 0.00611851 & 0.00611851 & retained QoI \\
+Minimum coil--coil distance (m) & 0.139627 & 0.139627 & $\geq0.090$ \\
+Minimum coil--surface distance (m) & 0.280193 & 0.280193 & $\geq0.270$ \\
+Maximum curvature (m$^{-1}$) & 5.03888 & 5.03888 & $\leq5.50$ \\
+Maximum MSC (m$^{-2}$) & 5.47919 & 5.47919 & $\leq5.50$ \\
+Total base-coil length (m) & 17.8202 & 17.8202 & retained QoI \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The CPU/GPU match is much stronger than the required 10\%.  Quadratic flux
+differs by $7.0\times10^{-11}$ relatively; normalized-normal-field statistics
+by at most $7.9\times10^{-11}$; engineering measurements by at most
+$3.9\times10^{-9}$; and the largest relative difference anywhere in the
+flattened oracle metrics is $1.12\times10^{-6}$, arising in a very small
+curvature-penalty component.  All six acceptance gates pass and
+\code{scientifically\_validated} is true.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/flux_target_refinement_trajectory.png}
+\caption{Accepted-checkpoint quadratic flux for the matched CPU and GPU
+refinements.  Filled markers satisfy every engineering target envelope; open
+markers do not.  Both backends select checkpoint 44 (star) at
+$8.61564\times10^{-7}$.  Later iterates remain low-flux but leave the allowed
+engineering envelope, demonstrating why terminal-state export would be
+incorrect.}
+\label{fig:flux-target-refinement-trajectory}
+\end{figure}
+
+Both L-BFGS-B refinements reach their 600-iteration cap rather than report
+stationary convergence.  The CPU retains 22 feasible candidates and the GPU
+18; their selected checkpoint is nevertheless the same physical design to
+roundoff.  At iteration 600 the target-envelope residual infinity norms are
+128.98 and 135.46, so those terminal states are correctly rejected.  This
+provides direct experimental validation of best-feasible checkpointing.  It
+also shows that optimizer success flags and terminal gradients cannot replace
+physical target evaluation in this nonconvex problem.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.94\textwidth]{figures/flux_target_refinement_performance.png}
+\caption{Schema-3 A100 timing.  The combined AL and refinement phases require
+1,318.25~s on CPU and 11.688~s on GPU, giving $112.78\times$ warm end-to-end
+speedup.  Including all GPU compilation and quality-program costs leaves
+$57.37\times$ amortized speedup.}
+\label{fig:flux-target-refinement-performance}
+\end{figure}
+
+Phase-specific speedups are $142.89\times$ for AL and $83.98\times$ for direct
+refinement.  CPU AL/refinement times are 816.56/501.69~s; GPU times are
+5.715/5.974~s.  GPU compilation takes 3.545~s for AL, 5.555~s for refinement,
+and 2.190~s for the checkpoint-quality program.  The GPU performs 752 AL and
+761 refinement evaluations, compared with 1,114 and 754 on CPU.  Because the
+reported designs meet the same absolute targets and agree numerically, these
+are now valid equivalent-quality speedups rather than throughput-only figures.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/flux_target_refinement_surface.png}
+\caption{Signed $(B\cdot n)/|B|$ read from the exported schema-3 surface VTS
+files.  The fields have correlation 1.0, relative $L^2$ difference
+$4.88\times10^{-10}$, and maximum pointwise difference
+$3.19\times10^{-12}$.}
+\label{fig:flux-target-refinement-surface}
+\end{figure}
+
+The normalized-normal-field RMS falls from 0.1350/0.1808 in the preceding
+independent CPU/GPU endpoints to 0.001741 in the matched refined design,
+improvements of approximately $77.5\times$ and $103.8\times$.  The surface
+maps confirm that this improvement is spatially consistent rather than a
+scalar-reporting artifact.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.94\textwidth]{figures/flux_target_refinement_convergence.png}
+\caption{The retained AL warm-start diagnostics.  Strict original-threshold
+residual and first-order tests remain failed, as expected, but do not affect
+the subsequent target-envelope refinement or its independently measured
+scientific result.}
+\label{fig:flux-target-refinement-al}
+\end{figure}
+
+\textbf{Decision.}  Promote the GPU-native direct coil objective, its float64
+gradient, matched-start SciPy bridge, target-envelope validation, and VTK
+artifact contract as scientifically and numerically qualified on the
+engineering problem.  Accept the measured $112.78\times$ warm and
+$57.37\times$ amortized end-to-end speedups.  Retain AL stationarity and strict
+original-threshold violations only as diagnostics: the explicit project rule
+permits 10\% target deviation, and every actual quantity of interest passes.
+For the next implementation, avoid spending hundreds of iterations after the
+best feasible design has already been found: add target-aware feasible
+checkpoint patience and then compare that reduced host-driven baseline with a
+device-resident L-BFGS implementation.  The production criterion remains the
+same independent CPU-oracle metrics, not the solver status.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only
