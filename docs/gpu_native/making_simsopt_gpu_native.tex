@@ -2645,6 +2645,118 @@ still preserved as diagnostic data rather than hidden.  No schema-4 performance
 or convergence claim is made in this report until the NVIDIA archive is
 analyzed.
 
+\subsection{Measured schema-4 A100 qualification}
+
+The returned archive has SHA-256
+\code{476c1a08761dd92f3a50a16bdf126bd210c2226cdabdd6ad5e86b750498c53f8}
+and was produced from commit \code{c502c1630f8f10fe805c801cc6ffb4c50f419aa2}.
+The analyzer validated the schema and all six VTS/VTU files.  The run used an
+NVIDIA A100-SXM4-40GB, JAX~0.11.1 in float64, SciPy~1.16.3, target/source tile
+sizes 1024/1920, and the custom Biot--Savart VJP.  All three exported designs
+pass the quadratic-flux target and every one-sided 10\% engineering envelope;
+hence the result is scientifically validated under the project rule.
+
+\begin{table}[htbp]
+\centering
+\caption{Independent SIMSOPT CPU-oracle metrics for the three schema-4
+checkpoints.  All values pass their physical target envelopes.}
+\label{tab:device-lbfgs-qoi}
+\small
+\begin{tabular}{lrrr}
+\toprule
+Quantity & CPU SciPy & GPU SciPy & device GPU \\
+\midrule
+Quadratic flux & $8.61564\times10^{-7}$ & $8.61564\times10^{-7}$ & $7.56845\times10^{-7}$ \\
+Normalized field mean & 0.00135658 & 0.00135658 & 0.00128958 \\
+Normalized field RMS & 0.00174133 & 0.00174133 & 0.00163524 \\
+Normalized field maximum & 0.00611851 & 0.00611851 & 0.00573712 \\
+Minimum coil--coil distance (m) & 0.139627 & 0.139627 & 0.144844 \\
+Minimum coil--surface distance (m) & 0.280193 & 0.280193 & 0.271117 \\
+Maximum curvature (m$^{-1}$) & 5.03888 & 5.03888 & 4.81980 \\
+Maximum MSC (m$^{-2}$) & 5.47919 & 5.47919 & 5.15408 \\
+Total base-coil length (m) & 17.8202 & 17.8202 & 17.6366 \\
+Recorded objective & $1.07673\times10^{-4}$ & $1.07673\times10^{-4}$ & $2.69450\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The device result is not merely a numerically perturbed copy of the SciPy
+checkpoint.  Relative to CPU SciPy it lowers quadratic flux by 12.2\%, field
+RMS by 6.09\%, maximum curvature by 4.35\%, maximum MSC by 5.93\%, and length
+by 1.03\%.  Its minimum coil--surface distance is 3.24\% lower, at 0.271117~m,
+but remains just inside the allowed 0.27~m boundary.  The scalar recorded
+objective is 150.25\% higher, so the independent device-versus-CPU objective
+agreement gate fails.  It is the only failed acceptance gate.  This does not
+invalidate the design under the explicit target-based scientific policy, but
+it proves that Armijo L-BFGS and strong-Wolfe L-BFGS-B reached different valid
+trade-offs in the nonconvex envelope.  Therefore the device solver is qualified
+for scientific feasibility, not yet as a trajectory-equivalent drop-in
+replacement.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/device_lbfgs_comparison_trajectory.png}
+\caption{Accepted-checkpoint trajectories for the matched CPU SciPy, GPU SciPy,
+and device-GPU refinements.  Filled points satisfy the engineering envelope;
+stars mark the exported states.  SciPy selects checkpoint~44, while device
+L-BFGS follows a distinct path and selects checkpoint~64.}
+\label{fig:device-lbfgs-trajectory}
+\end{figure}
+
+Target-aware stopping preserves the schema-3 SciPy design exactly while
+eliminating 534 of 600 iterations.  Both SciPy runs first satisfy the flux and
+engineering targets at checkpoint~32, select their minimum-flux feasible state
+at checkpoint~44, and stop at iteration~66 after 15 consecutive infeasible
+accepted states.  Their 75 objective/gradient evaluations take 58.428~s on CPU
+and 0.6940~s on GPU.  Compared with the preceding 600-iteration measurements
+of 501.69~s and 5.974~s, target awareness reduces refinement time by about
+$8.59\times$ and $8.61\times$, respectively, without changing the exported
+quality.
+
+Device L-BFGS first reaches the joint target at checkpoint~28, selects
+checkpoint~64, and stops at iteration~89 after its 25-checkpoint significant-
+improvement patience expires.  It performs 92 objective/gradient evaluations
+in 0.7468~s.  Warm execution is therefore 0.929$\times$ the speed of host-driven
+GPU SciPy---7.59\% slower overall---because it performs 22.7\% more evaluations.
+Per physics evaluation it is 1.140$\times$ faster, direct evidence that removing
+host callbacks reduces steady-state overhead.  Compilation changes the
+first-call result: GPU SciPy objective plus quality compilation takes 7.583~s,
+whereas the fused device solver compiles in 3.931~s.  Including solve time, the
+device first call takes 4.677~s versus 8.277~s for GPU SciPy, a
+1.770$\times$ speedup; it is 13.289$\times$ faster than the analogous CPU first
+call.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/device_lbfgs_comparison_performance.png}
+\caption{Matched refinement performance.  Warm solve time, compilation-inclusive
+first-call time, and solver-to-solver speedups are separated.  Device residency
+wins per evaluation and on first call, but its longer Armijo trajectory loses
+slightly to warm GPU SciPy.}
+\label{fig:device-lbfgs-performance}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/device_lbfgs_comparison_surface.png}
+\caption{Signed $(B\cdot n)/|B|$ from the three exported surface VTS files.
+CPU/GPU SciPy remain identical to plotting accuracy.  The device design has
+signed-field correlation 0.9234 with CPU, relative $L^2$ difference 0.3844,
+and maximum pointwise difference 0.002891, consistent with a different valid
+optimization basin rather than a backend-parity error.}
+\label{fig:device-lbfgs-surface}
+\end{figure}
+
+\textbf{Decision.}  Accept target-aware stopping immediately: it gives an
+order-of-magnitude refinement reduction with no loss of the selected SciPy
+design.  Retain device L-BFGS as an experimental qualified solver, but do not
+replace GPU SciPy for repeated warm solves yet.  The next solver study should
+replay the qualified common warm start across history sizes and target-patience
+values, then add a device strong-Wolfe line search if trajectory length or
+objective trade-off does not improve.  The optimization target remains the
+actual flux and coil quantities, while the scalar objective and full surface
+map remain mandatory diagnostics against accidental trade-off degradation.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

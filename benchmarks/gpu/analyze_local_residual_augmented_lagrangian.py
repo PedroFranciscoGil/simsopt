@@ -375,7 +375,10 @@ def plot_performance(result, output):
     gpu = result["gpu"]["optimization"]
     compile_cpu = result["gpu_configuration"]["cpu_compilation_seconds"]
     compile_gpu = result["gpu_configuration"]["gpu_compilation_seconds"]
-    figure, axes = plt.subplots(1, 2, figsize=(9.0, 3.2), constrained_layout=True)
+    panel_count = 3 if result["schema_version"] >= 4 else 2
+    figure, axes = plt.subplots(
+        1, panel_count, figsize=(4.25 * panel_count, 3.2), constrained_layout=True
+    )
     cpu_seconds = result["comparison"].get(
         "cpu_total_optimization_seconds", cpu["seconds"]
     )
@@ -396,7 +399,7 @@ def plot_performance(result, output):
             result["comparison"]["device_gpu_refinement_seconds"],
         ]
         colors = [COLORS["cpu"], COLORS["gpu"], COLORS["device_gpu"]]
-        timing_title = "Matched refinement timing"
+        timing_title = "Warm refinement timing"
     else:
         labels = ["CPU solve", "GPU solve", "CPU compile", "GPU compile"]
         timings = [cpu_seconds, gpu_seconds, compile_cpu, compile_gpu]
@@ -407,6 +410,23 @@ def plot_performance(result, output):
     axes[0].set_ylabel("seconds")
     axes[0].set_title(timing_title)
     if result["schema_version"] >= 4:
+        axes[0].set_yscale("log")
+        configuration = result["gpu_configuration"]
+        cold_timings = [
+            timings[0]
+            + configuration["cpu_refinement_compilation_seconds"]
+            + configuration["cpu_quality_compilation_seconds"],
+            timings[1]
+            + configuration["gpu_refinement_compilation_seconds"]
+            + configuration["gpu_quality_compilation_seconds"],
+            timings[2] + configuration["device_lbfgs_compilation_seconds"],
+        ]
+        axes[1].bar(labels, cold_timings, color=colors)
+        axes[1].tick_params(axis="x", rotation=20)
+        axes[1].set_ylabel("seconds")
+        axes[1].set_title("First-call refinement timing")
+        axes[1].set_yscale("log")
+        speed_axis = axes[2]
         speed_labels = ["host GPU\nvs CPU", "device vs\nhost GPU", "device vs\nCPU"]
         speedups = [
             result["comparison"]["refinement_speedup"],
@@ -418,6 +438,7 @@ def plot_performance(result, output):
         reference_label = "1x parity"
         speed_title = "Refinement speedup"
     else:
+        speed_axis = axes[1]
         speed_labels = ["warm solve", "amortized"]
         speedups = [
             result["comparison"]["optimization_speedup"],
@@ -427,11 +448,15 @@ def plot_performance(result, output):
         reference = 3.0
         reference_label = "3x gate"
         speed_title = "Optimization speedup"
-    axes[1].bar(speed_labels, speedups, color=speed_colors)
-    axes[1].axhline(reference, color="#7b2f2f", linestyle="--", label=reference_label)
-    axes[1].set_ylabel("reference time / candidate time")
-    axes[1].set_title(speed_title)
-    axes[1].legend(frameon=False, fontsize=8)
+    speed_axis.bar(speed_labels, speedups, color=speed_colors)
+    speed_axis.axhline(
+        reference, color="#7b2f2f", linestyle="--", label=reference_label
+    )
+    speed_axis.set_ylabel("reference time / candidate time")
+    speed_axis.set_title(speed_title)
+    if result["schema_version"] >= 4:
+        speed_axis.set_yscale("log")
+    speed_axis.legend(frameon=False, fontsize=8)
     for axis in axes:
         axis.grid(True, axis="y", color="#d8d8d8", linewidth=0.5)
     figure.savefig(output, dpi=220)
@@ -493,12 +518,12 @@ def plot_flux_refinement(result, output):
         axis.grid(True, axis="y", color="#d8d8d8", linewidth=0.5)
         axis.legend(frameon=False, fontsize=7)
         axis.text(
-            0.98,
-            0.03,
+            0.02,
+            0.96,
             f"terminal residual $L_\\infty$={residual[-1]:.2g}",
             transform=axis.transAxes,
-            ha="right",
-            va="bottom",
+            ha="left",
+            va="top",
             fontsize=7,
         )
     figure.savefig(output, dpi=220)
@@ -581,6 +606,42 @@ def main():
     final_backends = ["cpu", "gpu"]
     if result["schema_version"] >= 4:
         final_backends.append("device_gpu")
+    derived_comparison = None
+    if result["schema_version"] >= 4:
+        configuration = result["gpu_configuration"]
+        cpu_refinement = result["cpu"]["flux_refinement"]
+        gpu_refinement = result["gpu"]["flux_refinement"]
+        device_refinement = result["device_gpu"]["optimization"]
+        cpu_cold = (
+            cpu_refinement["seconds"]
+            + configuration["cpu_refinement_compilation_seconds"]
+            + configuration["cpu_quality_compilation_seconds"]
+        )
+        gpu_cold = (
+            gpu_refinement["seconds"]
+            + configuration["gpu_refinement_compilation_seconds"]
+            + configuration["gpu_quality_compilation_seconds"]
+        )
+        device_cold = (
+            device_refinement["seconds"]
+            + configuration["device_lbfgs_compilation_seconds"]
+        )
+        gpu_per_evaluation = gpu_refinement["seconds"] / gpu_refinement["evaluations"]
+        device_per_evaluation = (
+            device_refinement["seconds"] / device_refinement["evaluations"]
+        )
+        derived_comparison = {
+            "cpu_refinement_first_call_seconds": cpu_cold,
+            "gpu_scipy_refinement_first_call_seconds": gpu_cold,
+            "device_gpu_refinement_first_call_seconds": device_cold,
+            "device_vs_gpu_scipy_first_call_speedup": gpu_cold / device_cold,
+            "device_vs_cpu_first_call_speedup": cpu_cold / device_cold,
+            "gpu_scipy_seconds_per_evaluation": gpu_per_evaluation,
+            "device_gpu_seconds_per_evaluation": device_per_evaluation,
+            "device_vs_gpu_scipy_per_evaluation_speedup": (
+                gpu_per_evaluation / device_per_evaluation
+            ),
+        }
     summary = {
         "schema_version": 2 if result["schema_version"] >= 4 else 1,
         "workflow": "local_residual_augmented_lagrangian_analysis",
@@ -597,6 +658,8 @@ def main():
         "diagnostic_checks": result.get("diagnostic_checks", {}),
         "all_gates_passed": result["all_gates_passed"],
         "comparison": result["comparison"],
+        "derived_comparison": derived_comparison,
+        "gpu_configuration": result.get("gpu_configuration"),
         "device_lbfgs": result.get("device_lbfgs"),
         "final_metrics": {
             backend: result[backend]["final_metrics"] for backend in final_backends

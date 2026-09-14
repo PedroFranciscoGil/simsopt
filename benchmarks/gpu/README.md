@@ -454,6 +454,16 @@ improvement of at least `1e-3`, or after 15 consecutive infeasible checkpoints.
 The full iteration allowance remains available when no target-feasible point
 has yet been found.
 
+The A100 schema-4 qualification passes the scientific target policy for all
+three designs. Target-aware SciPy stops at iteration 66 and preserves the
+schema-3 checkpoint exactly, reducing CPU/GPU refinement time to 58.43/0.694 s.
+Device L-BFGS selects checkpoint 64 after 89 iterations and reaches quadratic
+flux `7.568e-7` in 0.747 s. It is 1.14x faster per evaluation and 1.77x faster
+than GPU SciPy when compilation is included, but 7.6% slower as a warm solve
+because its Armijo trajectory requires more evaluations. Its physical targets
+all pass; its scalar objective differs from CPU SciPy by 150%, documenting a
+different valid nonconvex trade-off rather than trajectory equivalence.
+
 [Run local-residual AL optimization in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_local_residual_augmented_lagrangian.ipynb)
 
 ```sh
@@ -480,7 +490,7 @@ OMP_NUM_THREADS=1 python \
 
 The result always records final CPU/GPU SciPy and device-GPU objective, normalized
 `abs(B dot n) / abs(B)`, and coil-constraint metrics. Scientific validation
-requires both designs to satisfy one-sided engineering targets within 10% and
+requires all three designs to satisfy one-sided engineering targets within 10% and
 to have quadratic flux at or below `1e-5` with the same 10% allowance.
 Because the ideal normalized normal field is zero, a percentage-to-target test
 is undefined for it; the benchmark stores mean, RMS, and maximum absolute
