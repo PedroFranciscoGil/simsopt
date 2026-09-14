@@ -2386,6 +2386,17 @@ visible, independent gates or diagnostics.  The next decision will be based on
 the returned JSON and the spatial $B\cdot n/|B|$ fields, not optimizer status
 alone.
 
+\paragraph{Notebook validation correction.}
+The first schema-3 Colab run completed its optimization but stopped in the
+artifact-validation cell because the notebook compared
+\code{target\_allowed\_boundary} with $1.1\times10^{-5}$ using exact
+floating-point equality.  The stored value is computed as
+$10^{-5}(1+0.10)$ and can differ from the decimal literal by one binary
+rounding unit.  This is a test-harness defect, not a numerical or optimization
+failure.  The assertion now uses \code{math.isclose} with relative tolerance
+$10^{-14}$ and zero absolute tolerance; the result JSON and previously
+generated VTK artifacts require no repair.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

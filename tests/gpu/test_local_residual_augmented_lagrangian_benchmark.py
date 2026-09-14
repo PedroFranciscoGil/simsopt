@@ -295,6 +295,8 @@ def test_colab_runs_gpu_workflow_and_resolves_only_artifact_fields():
     assert 'jax.default_backend() == "gpu"' in source
     assert '"--quadratic-flux-target", "1e-5"' in source
     assert 'result["schema_version"] == 3' in source
+    assert "math.isclose" in source
+    assert 'target_allowed_boundary"] == 1.1e-5' not in source
     assert "path = artifact_root / artifact" in source
     assert 'metrics = result[backend]["final_metrics"]' in source
     assert "files.download(archive)" in source
