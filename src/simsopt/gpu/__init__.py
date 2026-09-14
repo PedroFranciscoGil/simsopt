@@ -39,6 +39,13 @@ from .distances import (
     curve_pair_indices,
 )
 from .flux import normalized_flux, quadratic_flux
+from .lbfgs import (
+    DeviceLBFGS,
+    DeviceLBFGSConfig,
+    DeviceLBFGSResult,
+    TargetAwareCheckpointRecorder,
+    TargetAwareConfig,
+)
 from .objective import (
     LOCAL_RESIDUAL_FAMILIES,
     local_engineering_residual_layout,
@@ -59,11 +66,16 @@ from .scipy import ScipyCoilObjectiveBridge, ScipyObjectiveBridge
 __all__ = [
     "LOCAL_RESIDUAL_FAMILIES",
     "AugmentedLagrangianResult",
+    "DeviceLBFGS",
+    "DeviceLBFGSConfig",
+    "DeviceLBFGSResult",
     "GpuConfig",
     "MinimalCoilData",
     "ScipyAugmentedLagrangianBridge",
     "ScipyCoilObjectiveBridge",
     "ScipyObjectiveBridge",
+    "TargetAwareCheckpointRecorder",
+    "TargetAwareConfig",
     "arclength_variation",
     "backend_report",
     "biot_savart_field",

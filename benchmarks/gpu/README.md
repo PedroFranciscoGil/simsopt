@@ -443,6 +443,17 @@ minimum-quadratic-flux target-feasible checkpoint. This protects the result
 from an infeasible terminal step and makes the required quadratic-flux target
 of `1e-5` explicit.
 
+Schema 4 adds a matched, fully device-resident L-BFGS experiment. CPU SciPy,
+GPU SciPy, and device JAX solvers receive the same physical warm start and use
+the same direct objective, target envelope, and accepted-checkpoint policy.
+The JAX solver keeps the two-loop recursion, fixed-size history, Armijo line
+search, target checks, and checkpoint selection inside one compiled executable;
+it performs zero per-iteration host callbacks. Once a target-feasible point is
+known, all solvers stop after 25 accepted checkpoints without a relative flux
+improvement of at least `1e-3`, or after 15 consecutive infeasible checkpoints.
+The full iteration allowance remains available when no target-feasible point
+has yet been found.
+
 [Run local-residual AL optimization in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_local_residual_augmented_lagrangian.ipynb)
 
 ```sh
@@ -453,6 +464,10 @@ OMP_NUM_THREADS=1 python \
   --target-relative-tolerance 0.10 \
   --quadratic-flux-target 1e-5 \
   --max-refinement-iterations 600 --max-refinement-evaluations 1500 \
+  --target-checkpoint-patience 25 --target-infeasible-patience 15 \
+  --target-minimum-relative-improvement 1e-3 \
+  --device-lbfgs-history-size 20 \
+  --device-lbfgs-line-search-iterations 30 \
   --refinement-constraint-weight-multiplier 1 \
   --inner-stationarity-relative-tolerance 0.01 \
   --constraint-transform smooth_abs --constraint-transform-epsilon 0.1 \
@@ -463,7 +478,7 @@ OMP_NUM_THREADS=1 python \
   --output local-residual-augmented-lagrangian.json
 ```
 
-The result always records final CPU/GPU objective, normalized
+The result always records final CPU/GPU SciPy and device-GPU objective, normalized
 `abs(B dot n) / abs(B)`, and coil-constraint metrics. Scientific validation
 requires both designs to satisfy one-sided engineering targets within 10% and
 to have quadratic flux at or below `1e-5` with the same 10% allowance.
@@ -474,20 +489,22 @@ technical gate, so different nonconvex paths cannot redefine scientific target
 satisfaction. Gradient magnitude, strict
 local-residual feasibility, and tight physical allowances remain explicit
 diagnostics and do not veto an otherwise physically validated design. With an
-output path, the workflow also exports both surfaces as VTS—including signed
+output path, the workflow also exports all three surfaces as VTS—including signed
 and absolute normalized
-normal field—and both symmetry-expanded coil sets as VTU. Failed scientific
+normal field—and all three symmetry-expanded coil sets as VTU. Failed scientific
 gates do not suppress these diagnostic artifacts.
 
 Validate a returned archive and generate convergence, performance, and surface
 figures with the following command. Schema-1 outputs retain the
 `local_residual_al_*` prefix; schema-2 smoothed-continuation outputs use
 `smoothed_local_residual_al_*`; and schema-3 target-refinement outputs use
-`flux_target_refinement_*`, so new measurements do not overwrite historical
+`flux_target_refinement_*`; schema-4 device comparisons use
+`device_lbfgs_comparison_*`, so new measurements do not overwrite historical
 figures. Schema 3 adds an accepted-checkpoint flux trajectory with the target
-and exported state marked explicitly.
+and exported state marked explicitly. Schema 4 expands the trajectory and
+surface comparison to the device-resident solver.
 
 ```sh
 python benchmarks/gpu/analyze_local_residual_augmented_lagrangian.py \
-  simsopt-local-residual-al.zip docs/gpu_native/figures
+  simsopt-device-lbfgs.zip docs/gpu_native/figures
 ```

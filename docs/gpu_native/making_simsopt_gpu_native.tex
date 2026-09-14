@@ -2529,6 +2529,122 @@ checkpoint patience and then compare that reduced host-driven baseline with a
 device-resident L-BFGS implementation.  The production criterion remains the
 same independent CPU-oracle metrics, not the solver status.
 
+\section{Target-aware and fully device-resident L-BFGS}
+
+The next implementation is now complete in code and emits schema~4.  It makes
+two controlled changes while retaining the schema-3 physical contract.  First,
+both SciPy L-BFGS-B baselines stop when further accepted iterates no longer add
+useful target-feasible information.  Second, a new JAX L-BFGS implementation
+places the optimizer state transition itself on the accelerator.  The three
+refinements use the same physical warm start, float64 direct objective,
+target-envelope residual oracle, quadratic-flux boundary, and final checkpoint
+selection.  This design separates the effect of target-aware stopping from the
+effect of removing Python and SciPy from the iteration loop.
+
+\subsection{Target-aware accepted-checkpoint policy}
+
+Let $F_k$ be quadratic flux and $r_k$ the infinity norm of the four-family
+engineering target-envelope residual at accepted checkpoint $k$.  A checkpoint
+is engineering-feasible when $r_k\leq10^{-12}$ and meets the flux target when
+
+\[
+  F_k \leq (1+0.10)10^{-5}=1.1\times10^{-5}.
+\]
+
+After the first checkpoint satisfying both conditions, the recorder resets its
+patience only when flux improves by at least $10^{-3}$ relative to the last
+significant target-feasible value.  It terminates after 25 accepted checkpoints
+without such improvement or after 15 consecutive engineering-infeasible
+checkpoints.  Before a target-qualified checkpoint exists, neither rule can
+terminate the refinement.  The exported design remains the minimum-flux
+engineering-feasible accepted checkpoint; if none exists, the deterministic
+fallback minimizes $(r_k,F_k)$ lexicographically.  Thus early termination can
+reduce wasted work but cannot silently promote a terminal infeasible iterate.
+
+This policy deliberately does not use gradient magnitude as a scientific veto.
+Large coil-optimization gradients remain recorded diagnostics, consistent with
+the project validation rule.  The independent SIMSOPT CPU oracle still decides
+whether each exported design meets the actual flux and engineering targets.
+The schema-3 A100 trajectory suggests that patience would remove many of the
+600 accepted iterations after checkpoint~44, but this is only a retrospective
+hypothesis until the schema-4 NVIDIA archive is returned.
+
+\subsection{Device-resident solver architecture}
+
+The new \code{DeviceLBFGS} solver compiles one JAX function containing the
+objective and reverse-mode gradient, limited-memory two-loop recursion, Armijo
+backtracking line search, curvature-pair update, target checks, best-checkpoint
+state, and termination logic.  Its history arrays have static shape
+$m\times n$, with default memory $m=20$; loops use JAX control-flow primitives,
+so iteration does not require Python callbacks or scalar transfers.  One host
+transfer occurs after termination to serialize compact histories, final
+metrics, and visualization inputs.
+To accommodate the large gradients that are normal in coil optimization, the
+first trial step is scaled by
+$\min(1,1/\lVert\nabla f(x_0)\rVert_\infty)$; subsequent quasi-Newton trial
+steps start at one and backtrack when Armijo decrease is not satisfied.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=5mm and 7mm,
+  box/.style={draw,rounded corners,align=center,minimum height=8mm,
+              inner xsep=4mm,fill=blue!7,font=\scriptsize},
+  gpu/.style={box,fill=orange!14},
+  check/.style={box,fill=green!10},
+  flow/.style={-{Latex[length=2mm]},thick}
+]
+\node[box] (warm) {common physical\\warm start $x_0$};
+\node[gpu,right=of warm] (state) {device state\\$x,f,g,S,Y,\rho$};
+\node[gpu,right=of state] (loop) {two-loop recursion\\search direction};
+\node[gpu,below=of loop] (line) {Armijo \code{while\_loop}\\$f,\nabla f$ trials};
+\node[check,left=of line] (target) {device target oracle\\$F_k,r_k$};
+\node[gpu,left=of target] (select) {best feasible state\\and patience counters};
+\node[box,below=of target] (host) {single final host transfer\\metrics + VTS/VTU};
+\draw[flow] (warm) -- (state);
+\draw[flow] (state) -- (loop);
+\draw[flow] (loop) -- (line);
+\draw[flow] (line) -- (target);
+\draw[flow] (target) -- (select);
+\draw[flow] (select) -- (state);
+\draw[flow] (target) -- (host);
+\end{tikzpicture}
+\caption{Schema-4 device solver boundary.  The orange and green iteration path
+is one compiled accelerator executable; it has zero per-iteration host
+callbacks.  CPU/GPU SciPy baselines use the same warm start and target policy.}
+\label{fig:device-lbfgs-architecture}
+\end{figure}
+
+The device implementation is L-BFGS rather than a general replacement for
+bounded L-BFGS-B.  The current coil refinement supplies no active variable
+bounds, so this is a matched comparison for the present experiment; future
+bounded problems require a projected-gradient and generalized-Cauchy-point
+extension.  The line search enforces sufficient decrease but not SciPy's strong
+Wolfe condition.  Consequently the iteration trajectory and evaluation count
+may differ even with an identical start.  That difference is acceptable only
+when the exported quantities of interest independently pass the 10\% target
+contract and remain within 10\% of the CPU reference.
+
+\subsection{Schema-4 qualification contract and decision}
+
+The result now stores three complete final metric sets: CPU SciPy, GPU SciPy,
+and device GPU.  Each contains objective, quadratic flux, mean/RMS/maximum
+$|B\cdot n|/|B|$, and all coil-constraint measurements.  Each final surface is
+exported as VTS with signed and absolute normalized normal field, and each
+symmetry-expanded coil set as VTU.  The analyzer validates device residency and
+zero host callbacks, plots all three accepted-checkpoint trajectories and solve
+times, and compares the device surface to the CPU-oracle surface.  Compilation
+time remains separate from warm execution time.
+
+\textbf{Decision.}  Run the updated engineering Colab notebook and return
+\code{simsopt-device-lbfgs.zip}.  Qualification requires the three exported
+designs to satisfy the $1.1\times10^{-5}$ flux boundary and every one-sided
+engineering envelope.  Device-versus-CPU quantities of interest must agree
+within 10\%.  Speedup is reported only after these scientific gates; failure is
+still preserved as diagnostic data rather than hidden.  No schema-4 performance
+or convergence claim is made in this report until the NVIDIA archive is
+analyzed.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

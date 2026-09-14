@@ -21,9 +21,13 @@ from optimization_metrics import (
 from problems import PROBLEMS, get_problem, objective_call_kwargs, objective_metadata
 from scipy.optimize import minimize
 from simsopt.gpu import (
+    DeviceLBFGS,
+    DeviceLBFGSConfig,
     GpuConfig,
     ScipyAugmentedLagrangianBridge,
     ScipyCoilObjectiveBridge,
+    TargetAwareCheckpointRecorder,
+    TargetAwareConfig,
     minimal_coil_data,
     minimize_equality_augmented_lagrangian,
 )
@@ -68,6 +72,13 @@ def parse_args():
     parser.add_argument(
         "--refinement-constraint-weight-multiplier", type=float, default=1.0
     )
+    parser.add_argument("--target-checkpoint-patience", type=int, default=25)
+    parser.add_argument("--target-infeasible-patience", type=int, default=15)
+    parser.add_argument(
+        "--target-minimum-relative-improvement", type=float, default=1e-3
+    )
+    parser.add_argument("--device-lbfgs-history-size", type=int, default=20)
+    parser.add_argument("--device-lbfgs-line-search-iterations", type=int, default=30)
     parser.add_argument("--target-tile-size", type=int, default=1024)
     parser.add_argument("--source-tile-size", type=int, default=4320)
     parser.add_argument("--vjp-mode", choices=("autodiff", "custom"), default="custom")
@@ -89,6 +100,12 @@ def parse_args():
         parser.error("iteration limits must be positive")
     if args.max_refinement_iterations < 1 or args.max_refinement_evaluations < 1:
         parser.error("refinement limits must be positive")
+    if args.target_checkpoint_patience < 1 or args.target_infeasible_patience < 1:
+        parser.error("target-aware patience values must be positive")
+    if args.device_lbfgs_history_size < 1:
+        parser.error("device-lbfgs-history-size must be positive")
+    if args.device_lbfgs_line_search_iterations < 1:
+        parser.error("device-lbfgs-line-search-iterations must be positive")
     if args.maxcor < 1 or args.maxls < 1:
         parser.error("maxcor and maxls must be positive")
     if args.target_tile_size < 1 or args.source_tile_size < 1:
@@ -119,6 +136,8 @@ def parse_args():
         parser.error("inner-stationarity-factor must be at least one")
     if args.target_relative_tolerance >= 1:
         parser.error("target-relative-tolerance must be below one")
+    if not 0 <= args.target_minimum_relative_improvement < 1:
+        parser.error("target-minimum-relative-improvement must be in [0, 1)")
     if not 0 < args.constraint_scale_reduction_factor <= 1:
         parser.error("constraint-scale-reduction-factor must be in (0, 1]")
     if args.inner_stationarity_relative_tolerance is not None and (
@@ -268,13 +287,11 @@ def target_envelope_residual_kwargs(settings, relative_tolerance, tolerances):
     return {
         "length_weight": 0.0,
         "coil_coil_distance_threshold": (
-            settings["coil_coil_distance_threshold"]
-            * (1.0 - relative_tolerance)
+            settings["coil_coil_distance_threshold"] * (1.0 - relative_tolerance)
             + distance_tolerance
         ),
         "coil_surface_distance_threshold": (
-            settings["coil_surface_distance_threshold"]
-            * (1.0 - relative_tolerance)
+            settings["coil_surface_distance_threshold"] * (1.0 - relative_tolerance)
             + distance_tolerance
         ),
         "curvature_threshold": (
@@ -282,8 +299,7 @@ def target_envelope_residual_kwargs(settings, relative_tolerance, tolerances):
             - curvature_tolerance
         ),
         "mean_squared_curvature_threshold": (
-            settings["mean_squared_curvature_threshold"]
-            * (1.0 + relative_tolerance)
+            settings["mean_squared_curvature_threshold"] * (1.0 + relative_tolerance)
             - mean_squared_tolerance
         ),
         "distance_feasibility_tolerance": distance_tolerance,
@@ -379,6 +395,50 @@ def refinement_summary(result, recorder, seconds, selection):
             np.linalg.norm(result.jac, ord=np.inf)
         ),
         "checkpoint_selection": selection,
+    }
+
+
+def device_refinement_summary(result, seconds):
+    checkpoints = [
+        {
+            "index": index,
+            "quadratic_flux": float(result.quadratic_flux_history[index]),
+            "target_envelope_residual_norm_infinity": float(
+                result.target_residual_norm_infinity_history[index]
+            ),
+            "target_feasible": bool(result.target_feasible_history[index]),
+        }
+        for index in range(result.iterations + 1)
+    ]
+    selected = int(result.selected_iteration)
+    return {
+        "success": result.success,
+        "status": result.status,
+        "message": result.message,
+        "seconds": seconds,
+        "iterations": result.iterations,
+        "evaluations": result.evaluations,
+        "terminal_objective": result.fun,
+        "terminal_gradient_norm_infinity": float(
+            np.linalg.norm(result.jac, ord=np.inf)
+        ),
+        "device_resident": True,
+        "host_callbacks": 0,
+        "checkpoint_selection": {
+            "candidate_count": len(checkpoints),
+            "feasible_candidate_count": sum(
+                item["target_feasible"] for item in checkpoints
+            ),
+            "selected_index": selected,
+            "selected": checkpoints[selected],
+            "stop_reason": result.message,
+            "checkpoints": checkpoints,
+        },
+        "step_size_history": result.step_size_history.tolist(),
+        "objective_history": result.objective_history.tolist(),
+        "gradient_norm_infinity_history": (
+            result.gradient_norm_infinity_history.tolist()
+        ),
     }
 
 
@@ -485,9 +545,7 @@ def qoi_backend_agreement(gpu_metrics, cpu_metrics, relative_tolerance):
     for name, (cpu_value, gpu_value) in values.items():
         cpu_value = float(cpu_value)
         gpu_value = float(gpu_value)
-        relative_difference = abs(gpu_value - cpu_value) / max(
-            abs(cpu_value), 1e-14
-        )
+        relative_difference = abs(gpu_value - cpu_value) / max(abs(cpu_value), 1e-14)
         passed = relative_difference <= relative_tolerance or np.isclose(
             relative_difference, relative_tolerance, rtol=1e-14, atol=0.0
         )
@@ -755,11 +813,22 @@ def main():
         args.target_relative_tolerance,
         args.refinement_constraint_weight_multiplier,
     )
+    refinement_objective_kwargs = objective_call_kwargs(refinement_settings)
+
+    def refinement_objective(x):
+        curve_dofs, currents = coordinate_bridge.unpack(x)
+        return data.objective(
+            curve_dofs,
+            currents,
+            **refinement_objective_kwargs,
+            config=config,
+        )
+
     refinement_bridges = {
         name: ScipyCoilObjectiveBridge(
             data,
             free_current_indices=free_current_indices,
-            objective_kwargs=objective_call_kwargs(refinement_settings),
+            objective_kwargs=refinement_objective_kwargs,
             current_scale=args.current_scale,
             config=config,
             platform=platform,
@@ -790,18 +859,33 @@ def main():
             curve_dofs, currents, **quality_kwargs, config=config
         )
 
-    quality_bridge = ScipyAugmentedLagrangianBridge(
-        quality_terms,
-        initial_x,
-        residual_count,
-        platform=accelerator_platform,
-    )
-    start = time.perf_counter()
-    quality_bridge.compile(initial_x)
-    quality_compile_seconds = time.perf_counter() - start
+    quality_bridges = {
+        name: ScipyAugmentedLagrangianBridge(
+            quality_terms,
+            initial_x,
+            residual_count,
+            platform=platform,
+        )
+        for name, platform in (("cpu", "cpu"), ("gpu", accelerator_platform))
+    }
+    quality_compile_times = {}
+    for name, bridge in quality_bridges.items():
+        start = time.perf_counter()
+        bridge.compile(initial_x)
+        quality_compile_times[name] = time.perf_counter() - start
 
     common_warm_x, common_warm_start = select_common_flux_warm_start(
-        {"cpu": cpu_result.x, "gpu": gpu_result.x}, quality_bridge
+        {"cpu": cpu_result.x, "gpu": gpu_result.x}, quality_bridges["gpu"]
+    )
+
+    target_policy = TargetAwareConfig(
+        target_flux=(
+            args.quadratic_flux_target * (1.0 + args.target_relative_tolerance)
+        ),
+        feasibility_tolerance=1e-12,
+        checkpoint_patience=args.target_checkpoint_patience,
+        infeasible_patience=args.target_infeasible_patience,
+        minimum_relative_improvement=(args.target_minimum_relative_improvement),
     )
 
     refinement_options = {
@@ -816,7 +900,11 @@ def main():
     refinement_recorders = {}
     refinement_seconds = {}
     for name in ("cpu", "gpu"):
-        recorder = RefinementRecorder(refinement_bridges[name])
+        recorder = TargetAwareCheckpointRecorder(
+            refinement_bridges[name],
+            quality_bridges[name].evaluate_terms,
+            target_policy,
+        ).initialize(common_warm_x)
         start = time.perf_counter()
         result = minimize(
             recorder,
@@ -833,15 +921,37 @@ def main():
     selected_states = {}
     refinement_selections = {}
     for name in ("cpu", "gpu"):
-        selected_states[name], refinement_selections[name] = select_flux_checkpoint(
-            common_warm_x,
-            refinement_results[name],
-            refinement_recorders[name],
-            quality_bridge,
-        )
+        selected_states[name], refinement_selections[name] = refinement_recorders[
+            name
+        ].selection()
+
+    device_config = DeviceLBFGSConfig(
+        history_size=args.device_lbfgs_history_size,
+        max_iterations=args.max_refinement_iterations,
+        max_line_search_iterations=args.device_lbfgs_line_search_iterations,
+        gradient_tolerance=args.gradient_tolerance,
+        target=target_policy,
+    )
+    device_solver = DeviceLBFGS(
+        refinement_objective,
+        quality_terms,
+        common_warm_x,
+        config=device_config,
+        platform=accelerator_platform,
+    )
+    start = time.perf_counter()
+    device_solver.compile(common_warm_x)
+    device_compile_seconds = time.perf_counter() - start
+    start = time.perf_counter()
+    device_result = device_solver.run(common_warm_x)
+    device_seconds = time.perf_counter() - start
+    selected_states["device_gpu"] = device_result.x
 
     cpu_physical_x = coordinate_bridge.to_physical_variables(selected_states["cpu"])
     gpu_physical_x = coordinate_bridge.to_physical_variables(selected_states["gpu"])
+    device_gpu_physical_x = coordinate_bridge.to_physical_variables(
+        selected_states["device_gpu"]
+    )
     cpu_metrics = final_coil_metrics(
         cpu_penalty_objective,
         components,
@@ -858,6 +968,15 @@ def main():
         field,
         surface,
         gpu_physical_x,
+        settings,
+    )
+    device_gpu_metrics = final_coil_metrics(
+        cpu_penalty_objective,
+        components,
+        base_curves,
+        field,
+        surface,
+        device_gpu_physical_x,
         settings,
     )
 
@@ -888,6 +1007,13 @@ def main():
                 gpu_physical_x,
                 visualization_dir / f"{visualization_stem}gpu_final",
             ),
+            "device_gpu_final": export_final_design_visualization(
+                cpu_penalty_objective,
+                field,
+                surface,
+                device_gpu_physical_x,
+                visualization_dir / f"{visualization_stem}device_gpu_final",
+            ),
         }
 
     normal_names = ("mean_absolute", "root_mean_square", "maximum_absolute")
@@ -917,6 +1043,7 @@ def main():
     total_gpu_seconds = gpu_result.seconds + refinement_seconds["gpu"]
     speedup = total_cpu_seconds / total_gpu_seconds
     metric_errors = metric_relative_errors(gpu_metrics, cpu_metrics)
+    device_metric_errors = metric_relative_errors(device_gpu_metrics, cpu_metrics)
     parity_passed = (
         initial_parity["base_objective_absolute_error"] <= 1e-9
         and initial_parity["residual_relative_l2_error"] <= 1e-9
@@ -934,8 +1061,19 @@ def main():
     gpu_flux_validation = quadratic_flux_target_validation(
         gpu_metrics, args.quadratic_flux_target, args.target_relative_tolerance
     )
+    device_gpu_target_validation = engineering_target_validation(
+        device_gpu_metrics, args.target_relative_tolerance
+    )
+    device_gpu_flux_validation = quadratic_flux_target_validation(
+        device_gpu_metrics,
+        args.quadratic_flux_target,
+        args.target_relative_tolerance,
+    )
     backend_qoi_agreement = qoi_backend_agreement(
         gpu_metrics, cpu_metrics, args.target_relative_tolerance
+    )
+    device_qoi_agreement = qoi_backend_agreement(
+        device_gpu_metrics, cpu_metrics, args.target_relative_tolerance
     )
     scientific_validation = {
         "target_relative_tolerance": args.target_relative_tolerance,
@@ -943,15 +1081,27 @@ def main():
         "gpu_engineering_targets": gpu_target_validation,
         "cpu_quadratic_flux_target": cpu_flux_validation,
         "gpu_quadratic_flux_target": gpu_flux_validation,
+        "device_gpu_engineering_targets": device_gpu_target_validation,
+        "device_gpu_quadratic_flux_target": device_gpu_flux_validation,
         "passed": bool(
             cpu_target_validation["passed"]
             and gpu_target_validation["passed"]
             and cpu_flux_validation["passed"]
             and gpu_flux_validation["passed"]
+            and device_gpu_target_validation["passed"]
+            and device_gpu_flux_validation["passed"]
         ),
     }
     acceptance_gates = {
         "gpu_backend": gate(backend, "gpu", backend == "gpu"),
+        "device_lbfgs_execution": gate(
+            {
+                "execution_platform": device_solver.device_platform,
+                "host_callbacks_per_iteration": 0,
+            },
+            {"execution_platform": "gpu", "host_callbacks_per_iteration": 0},
+            device_solver.device_platform == "gpu",
+        ),
         "initial_float64_parity": gate(
             initial_parity,
             {
@@ -987,6 +1137,22 @@ def main():
             backend_qoi_agreement["comparisons"],
             f"relative difference <= {args.target_relative_tolerance:.0%}",
             backend_qoi_agreement["passed"],
+        ),
+        "device_lbfgs_scientific_targets": gate(
+            {
+                "engineering": device_gpu_target_validation["comparisons"],
+                "quadratic_flux": device_gpu_flux_validation,
+            },
+            "device-resident result satisfies flux and engineering targets",
+            (
+                device_gpu_target_validation["passed"]
+                and device_gpu_flux_validation["passed"]
+            ),
+        ),
+        "device_lbfgs_cpu_qoi_agreement": gate(
+            device_qoi_agreement["comparisons"],
+            f"relative difference <= {args.target_relative_tolerance:.0%}",
+            device_qoi_agreement["passed"],
         ),
         "end_to_end_optimization_speedup": gate(speedup, 3.0, speedup >= 3.0),
     }
@@ -1050,7 +1216,7 @@ def main():
         ),
     }
     output = {
-        "schema_version": 3,
+        "schema_version": 4,
         "workflow": "local_residual_augmented_lagrangian",
         "method": {
             "name": "local_residual_equality_augmented_lagrangian",
@@ -1064,7 +1230,12 @@ def main():
             "constraint_transform_epsilon": args.constraint_transform_epsilon,
             "refinement": (
                 "full direct-penalty objective with target-envelope hinge "
-                "boundaries and best feasible accepted-iterate checkpointing"
+                "boundaries, target-aware early stopping, and best feasible "
+                "accepted-iterate checkpointing"
+            ),
+            "device_solver": (
+                "single compiled device-resident L-BFGS program with Armijo "
+                "backtracking and inline target-aware checkpointing"
             ),
         },
         "problem": spec.as_dict(),
@@ -1092,13 +1263,12 @@ def main():
             "vjp_mode": config.vjp_mode,
             "cpu_compilation_seconds": compile_times["cpu"],
             "gpu_compilation_seconds": compile_times["gpu"],
-            "cpu_refinement_compilation_seconds": (
-                refinement_compile_times["cpu"]
-            ),
-            "gpu_refinement_compilation_seconds": (
-                refinement_compile_times["gpu"]
-            ),
-            "quality_compilation_seconds": quality_compile_seconds,
+            "cpu_refinement_compilation_seconds": (refinement_compile_times["cpu"]),
+            "gpu_refinement_compilation_seconds": (refinement_compile_times["gpu"]),
+            "cpu_quality_compilation_seconds": quality_compile_times["cpu"],
+            "gpu_quality_compilation_seconds": quality_compile_times["gpu"],
+            "quality_compilation_seconds": quality_compile_times["gpu"],
+            "device_lbfgs_compilation_seconds": device_compile_seconds,
             "accelerator_platform": accelerator_platform,
         },
         "coordinate_scaling": {
@@ -1142,12 +1312,42 @@ def main():
             "target_envelope_objective": refinement_settings,
             "target_envelope_residual_kwargs": quality_kwargs,
             "options": refinement_options,
+            "target_aware_stopping": {
+                "checkpoint_patience": args.target_checkpoint_patience,
+                "infeasible_patience": args.target_infeasible_patience,
+                "minimum_relative_improvement": (
+                    args.target_minimum_relative_improvement
+                ),
+                "feasibility_tolerance": target_policy.feasibility_tolerance,
+            },
             "checkpoint_policy": (
                 "minimum quadratic flux among accepted iterates satisfying all "
                 "engineering target-envelope residuals; otherwise minimum "
                 "residual infinity norm then flux"
             ),
             "common_warm_start": common_warm_start,
+        },
+        "device_lbfgs": {
+            "method": "limited-memory BFGS with Armijo backtracking",
+            "device_resident": True,
+            "host_callbacks_per_iteration": 0,
+            "history_size": device_config.history_size,
+            "max_iterations": device_config.max_iterations,
+            "max_line_search_iterations": (device_config.max_line_search_iterations),
+            "gradient_tolerance": device_config.gradient_tolerance,
+            "armijo_coefficient": device_config.armijo_coefficient,
+            "backtracking_factor": device_config.backtracking_factor,
+            "minimum_step_size": device_config.minimum_step_size,
+            "curvature_tolerance": device_config.curvature_tolerance,
+            "target_aware_stopping": {
+                "target_flux": target_policy.target_flux,
+                "feasibility_tolerance": target_policy.feasibility_tolerance,
+                "checkpoint_patience": target_policy.checkpoint_patience,
+                "infeasible_patience": target_policy.infeasible_patience,
+                "minimum_relative_improvement": (
+                    target_policy.minimum_relative_improvement
+                ),
+            },
         },
         "initial_state": {
             "source": "canonical_problem"
@@ -1162,8 +1362,8 @@ def main():
             "scientific_validation_rule": (
                 "scientifically_validated is determined exclusively by the "
                 "physical engineering target envelope and explicit quadratic-"
-                "flux target, not by raw gradient magnitude or CPU/GPU path "
-                "agreement"
+                "flux target for CPU SciPy, GPU SciPy, and device-resident GPU "
+                "L-BFGS, not by raw gradient magnitude"
             ),
             "engineering_target_semantics": (
                 "minimum-distance measurements may be at most the stated "
@@ -1212,12 +1412,24 @@ def main():
             ),
             "final_metrics": gpu_metrics,
         },
+        "device_gpu": {
+            "execution_platform": device_solver.device_platform,
+            "optimization": device_refinement_summary(device_result, device_seconds),
+            "final_metrics": device_gpu_metrics,
+        },
         "comparison": {
             "optimization_speedup": speedup,
             "al_speedup": cpu_result.seconds / gpu_result.seconds,
             "refinement_speedup": (
                 refinement_seconds["cpu"] / refinement_seconds["gpu"]
             ),
+            "device_vs_host_gpu_refinement_speedup": (
+                refinement_seconds["gpu"] / device_seconds
+            ),
+            "device_vs_cpu_refinement_speedup": (
+                refinement_seconds["cpu"] / device_seconds
+            ),
+            "device_gpu_refinement_seconds": device_seconds,
             "cpu_total_optimization_seconds": total_cpu_seconds,
             "gpu_total_optimization_seconds": total_gpu_seconds,
             "amortized_speedup": total_cpu_seconds
@@ -1225,16 +1437,18 @@ def main():
                 total_gpu_seconds
                 + compile_times["gpu"]
                 + refinement_compile_times["gpu"]
-                + quality_compile_seconds
+                + quality_compile_times["gpu"]
             ),
             "maximum_oracle_metric_relative_error": max(metric_errors.values()),
             "oracle_metric_relative_errors": metric_errors,
+            "device_maximum_oracle_metric_relative_error": max(
+                device_metric_errors.values()
+            ),
+            "device_oracle_metric_relative_errors": device_metric_errors,
         },
         "acceptance_gates": acceptance_gates,
         "diagnostic_checks": diagnostic_checks,
-        "all_gates_passed": all(
-            item["passed"] for item in acceptance_gates.values()
-        ),
+        "all_gates_passed": all(item["passed"] for item in acceptance_gates.values()),
         "visualizations": visualizations,
         "environment": environment(),
         "nvidia_smi": nvidia_smi(),

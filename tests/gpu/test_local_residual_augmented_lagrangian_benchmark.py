@@ -294,7 +294,12 @@ def test_colab_runs_gpu_workflow_and_resolves_only_artifact_fields():
     assert "benchmark_local_residual_augmented_lagrangian.py" in source
     assert 'jax.default_backend() == "gpu"' in source
     assert '"--quadratic-flux-target", "1e-5"' in source
-    assert 'result["schema_version"] == 3' in source
+    assert 'result["schema_version"] == 4' in source
+    assert 'result["device_lbfgs"]["device_resident"]' in source
+    assert 'result["device_gpu"]["execution_platform"] == "gpu"' in source
+    assert '"--target-checkpoint-patience", "25"' in source
+    assert '"--device-lbfgs-history-size", "20"' in source
+    assert 'tests/gpu/test_lbfgs.py' in source
     assert "math.isclose" in source
     assert 'target_allowed_boundary"] == 1.1e-5' not in source
     assert "path = artifact_root / artifact" in source

@@ -21,7 +21,7 @@ FAMILIES = (
     "curvature",
     "mean_squared_curvature",
 )
-COLORS = {"cpu": "#2456a6", "gpu": "#d46715"}
+COLORS = {"cpu": "#2456a6", "gpu": "#d46715", "device_gpu": "#5b3f94"}
 
 
 def parse_args():
@@ -55,7 +55,10 @@ def read_archive(path):
         if not isinstance(visualizations, dict):
             raise TypeError("final visualization contract is missing")
         payloads = {}
-        for backend in ("cpu_final", "gpu_final"):
+        visualization_backends = ["cpu_final", "gpu_final"]
+        if "device_gpu_final" in visualizations:
+            visualization_backends.append("device_gpu_final")
+        for backend in visualization_backends:
             files = visualizations.get(backend, {})
             if set(files) < {"surface_vts", "coils_vtu"}:
                 raise ValueError(f"{backend} visualization contract is incomplete")
@@ -74,7 +77,7 @@ def read_archive(path):
 
 
 def validate_result(result):
-    if result.get("schema_version") not in (1, 2, 3) or result.get("workflow") != (
+    if result.get("schema_version") not in (1, 2, 3, 4) or result.get("workflow") != (
         "local_residual_augmented_lagrangian"
     ):
         raise ValueError("local-residual AL result contract does not match")
@@ -120,9 +123,7 @@ def validate_result(result):
         ]
         if result["schema_version"] == 2:
             scientific_components.append(
-                scientific_validation.get(
-                    "cpu_gpu_quantity_of_interest_agreement", {}
-                )
+                scientific_validation.get("cpu_gpu_quantity_of_interest_agreement", {})
             )
         else:
             scientific_components.extend(
@@ -131,6 +132,15 @@ def validate_result(result):
                     scientific_validation.get("gpu_quadratic_flux_target", {}),
                 )
             )
+            if result["schema_version"] >= 4:
+                scientific_components.extend(
+                    (
+                        scientific_validation.get("device_gpu_engineering_targets", {}),
+                        scientific_validation.get(
+                            "device_gpu_quadratic_flux_target", {}
+                        ),
+                    )
+                )
         reproduced_validation = all(
             component.get("passed") is True for component in scientific_components
         )
@@ -160,6 +170,14 @@ def validate_result(result):
             or refinement.get("method") != "L-BFGS-B"
         ):
             raise ValueError("schema-3 flux-refinement contract is invalid")
+    if result["schema_version"] >= 4:
+        device = result.get("device_lbfgs", {})
+        if (
+            device.get("device_resident") is not True
+            or device.get("host_callbacks_per_iteration") != 0
+            or int(device.get("history_size", 0)) < 1
+        ):
+            raise ValueError("schema-4 device-LBFGS contract is invalid")
     for backend in ("cpu", "gpu"):
         optimization = result[backend]["optimization"]
         history = optimization.get("outer_history", [])
@@ -232,6 +250,29 @@ def validate_result(result):
             != FAMILIES
         ):
             raise ValueError(f"{backend} final constraint scales are incomplete")
+    if result["schema_version"] >= 4:
+        device_backend = result.get("device_gpu", {})
+        if device_backend.get("execution_platform") != "gpu":
+            raise ValueError("device L-BFGS did not execute on GPU")
+        final_metrics = device_backend.get("final_metrics", {})
+        if not {
+            "objective",
+            "normalized_normal_field",
+            "coil_constraints",
+        } <= set(final_metrics):
+            raise ValueError("device-GPU final metric contract is incomplete")
+        optimization = device_backend.get("optimization", {})
+        selection = optimization.get("checkpoint_selection", {})
+        checkpoints = selection.get("checkpoints", [])
+        selected_index = selection.get("selected_index")
+        if (
+            optimization.get("device_resident") is not True
+            or optimization.get("host_callbacks") != 0
+            or not checkpoints
+            or selected_index not in range(len(checkpoints))
+            or selection.get("selected") != checkpoints[selected_index]
+        ):
+            raise ValueError("device-GPU checkpoint contract is invalid")
     gates = result.get("acceptance_gates", {})
     if result.get("all_gates_passed") is not all(
         item.get("passed") is True for item in gates.values()
@@ -247,6 +288,20 @@ def surface_fields(payloads):
         values = appended_vtk_array(payload, "B_dot_n_over_abs_B")
         fields.append(values.reshape(surface_shape(payload), order="F").squeeze().T)
     return fields
+
+
+def device_surface_field(payloads):
+    """Return the fully device-resident result, when present."""
+    key = ("device_gpu_final", "surface_vts")
+    if key not in payloads:
+        return None
+    payload = payloads[key]
+    return (
+        appended_vtk_array(payload, "B_dot_n_over_abs_B")
+        .reshape(surface_shape(payload), order="F")
+        .squeeze()
+        .T
+    )
 
 
 def plot_optimization(result, output):
@@ -320,7 +375,7 @@ def plot_performance(result, output):
     gpu = result["gpu"]["optimization"]
     compile_cpu = result["gpu_configuration"]["cpu_compilation_seconds"]
     compile_gpu = result["gpu_configuration"]["gpu_compilation_seconds"]
-    figure, axes = plt.subplots(1, 2, figsize=(8.2, 3.2), constrained_layout=True)
+    figure, axes = plt.subplots(1, 2, figsize=(9.0, 3.2), constrained_layout=True)
     cpu_seconds = result["comparison"].get(
         "cpu_total_optimization_seconds", cpu["seconds"]
     )
@@ -333,25 +388,49 @@ def plot_performance(result, output):
     compile_gpu += result["gpu_configuration"].get(
         "gpu_refinement_compilation_seconds", 0.0
     ) + result["gpu_configuration"].get("quality_compilation_seconds", 0.0)
-    axes[0].bar(
-        ("CPU solve", "GPU solve", "CPU compile", "GPU compile"),
-        (cpu_seconds, gpu_seconds, compile_cpu, compile_gpu),
-        color=(COLORS["cpu"], COLORS["gpu"], "#8aa7d3", "#e2a477"),
-    )
+    if result["schema_version"] >= 4:
+        labels = ["CPU SciPy", "GPU SciPy", "device GPU"]
+        timings = [
+            result["cpu"]["flux_refinement"]["seconds"],
+            result["gpu"]["flux_refinement"]["seconds"],
+            result["comparison"]["device_gpu_refinement_seconds"],
+        ]
+        colors = [COLORS["cpu"], COLORS["gpu"], COLORS["device_gpu"]]
+        timing_title = "Matched refinement timing"
+    else:
+        labels = ["CPU solve", "GPU solve", "CPU compile", "GPU compile"]
+        timings = [cpu_seconds, gpu_seconds, compile_cpu, compile_gpu]
+        colors = [COLORS["cpu"], COLORS["gpu"], "#8aa7d3", "#e2a477"]
+        timing_title = "Whole-run timing"
+    axes[0].bar(labels, timings, color=colors)
     axes[0].tick_params(axis="x", rotation=20)
     axes[0].set_ylabel("seconds")
-    axes[0].set_title("Whole-run timing")
-    axes[1].bar(
-        ("warm solve", "amortized"),
-        (
+    axes[0].set_title(timing_title)
+    if result["schema_version"] >= 4:
+        speed_labels = ["host GPU\nvs CPU", "device vs\nhost GPU", "device vs\nCPU"]
+        speedups = [
+            result["comparison"]["refinement_speedup"],
+            result["comparison"]["device_vs_host_gpu_refinement_speedup"],
+            result["comparison"]["device_vs_cpu_refinement_speedup"],
+        ]
+        speed_colors = ["#4a9d62", COLORS["device_gpu"], "#8d6bb1"]
+        reference = 1.0
+        reference_label = "1x parity"
+        speed_title = "Refinement speedup"
+    else:
+        speed_labels = ["warm solve", "amortized"]
+        speedups = [
             result["comparison"]["optimization_speedup"],
             result["comparison"]["amortized_speedup"],
-        ),
-        color=("#4a9d62", "#8d6bb1"),
-    )
-    axes[1].axhline(3.0, color="#7b2f2f", linestyle="--", label="3x gate")
-    axes[1].set_ylabel("CPU time / GPU time")
-    axes[1].set_title("Optimization speedup")
+        ]
+        speed_colors = ["#4a9d62", "#8d6bb1"]
+        reference = 3.0
+        reference_label = "3x gate"
+        speed_title = "Optimization speedup"
+    axes[1].bar(speed_labels, speedups, color=speed_colors)
+    axes[1].axhline(reference, color="#7b2f2f", linestyle="--", label=reference_label)
+    axes[1].set_ylabel("reference time / candidate time")
+    axes[1].set_title(speed_title)
     axes[1].legend(frameon=False, fontsize=8)
     for axis in axes:
         axis.grid(True, axis="y", color="#d8d8d8", linewidth=0.5)
@@ -362,17 +441,23 @@ def plot_performance(result, output):
 def plot_flux_refinement(result, output):
     """Plot retained accepted-iterate flux and target-envelope feasibility."""
     target = result["flux_refinement"]["target_allowed_boundary"]
-    figure, axes = plt.subplots(1, 2, figsize=(8.6, 3.25), constrained_layout=True)
-    for axis, backend in zip(axes, ("cpu", "gpu"), strict=True):
-        selection = result[backend]["flux_refinement"]["checkpoint_selection"]
+    backends = [
+        ("cpu", "flux_refinement", "CPU SciPy"),
+        ("gpu", "flux_refinement", "GPU SciPy"),
+    ]
+    if result["schema_version"] >= 4:
+        backends.append(("device_gpu", "optimization", "device GPU"))
+    figure, axes = plt.subplots(
+        1, len(backends), figsize=(4.3 * len(backends), 3.25), constrained_layout=True
+    )
+    axes = np.atleast_1d(axes)
+    for axis, (backend, section, title) in zip(axes, backends, strict=True):
+        selection = result[backend][section]["checkpoint_selection"]
         checkpoints = selection["checkpoints"]
         indices = np.arange(len(checkpoints))
         flux = np.asarray([item["quadratic_flux"] for item in checkpoints])
         residual = np.asarray(
-            [
-                item["target_envelope_residual_norm_infinity"]
-                for item in checkpoints
-            ]
+            [item["target_envelope_residual_norm_infinity"] for item in checkpoints]
         )
         feasible = np.asarray([item["target_feasible"] for item in checkpoints])
         axis.semilogy(indices, np.maximum(flux, 1e-30), color=COLORS[backend])
@@ -402,7 +487,7 @@ def plot_flux_refinement(result, output):
             zorder=4,
         )
         axis.axhline(target, color="#7b2f2f", linestyle="--", label="flux target")
-        axis.set_title(f"{backend.upper()} flux refinement")
+        axis.set_title(f"{title} flux refinement")
         axis.set_xlabel("accepted checkpoint")
         axis.set_ylabel("quadratic flux")
         axis.grid(True, axis="y", color="#d8d8d8", linewidth=0.5)
@@ -422,18 +507,30 @@ def plot_flux_refinement(result, output):
 
 def plot_surface(payloads, output):
     cpu, gpu = surface_fields(payloads)
-    difference = gpu - cpu
-    field_limit = max(float(np.max(np.abs(cpu))), float(np.max(np.abs(gpu))), 1e-30)
+    device = device_surface_field(payloads)
+    fields = [cpu, gpu]
+    titles = ["CPU SciPy", "GPU SciPy"]
+    if device is None:
+        difference = gpu - cpu
+        fields.append(difference)
+        titles.append("GPU minus CPU")
+    else:
+        difference = device - cpu
+        fields.extend((device, difference))
+        titles.extend(("device GPU", "device minus CPU"))
+    field_limit = max(*(float(np.max(np.abs(values))) for values in fields[:-1]), 1e-30)
     difference_limit = max(float(np.max(np.abs(difference))), 1e-30)
-    figure, axes = plt.subplots(1, 3, figsize=(10.2, 3.15), constrained_layout=True)
+    figure, axes = plt.subplots(
+        1, len(fields), figsize=(3.4 * len(fields), 3.15), constrained_layout=True
+    )
     images = []
     for axis, values, title in zip(
         axes,
-        (cpu, gpu, difference),
-        ("CPU final", "GPU final", "GPU minus CPU"),
+        fields,
+        titles,
         strict=True,
     ):
-        limit = difference_limit if title == "GPU minus CPU" else field_limit
+        limit = difference_limit if "minus CPU" in title else field_limit
         images.append(
             axis.imshow(
                 values,
@@ -448,8 +545,8 @@ def plot_surface(payloads, output):
         axis.set_title(title)
         axis.set_xlabel(r"poloidal index $\theta$")
     axes[0].set_ylabel(r"toroidal index $\phi$")
-    figure.colorbar(images[1], ax=axes[:2], shrink=0.86, label=r"$(B\cdot n)/|B|$")
-    figure.colorbar(images[2], ax=axes[2], shrink=0.86, label="difference")
+    figure.colorbar(images[1], ax=axes[:-1], shrink=0.86, label=r"$(B\cdot n)/|B|$")
+    figure.colorbar(images[-1], ax=axes[-1], shrink=0.86, label="difference")
     figure.savefig(output, dpi=220)
     plt.close(figure)
 
@@ -459,7 +556,9 @@ def main():
     result, payloads, digest = read_archive(args.archive)
     validate_result(result)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    if result["schema_version"] >= 3:
+    if result["schema_version"] >= 4:
+        figure_stem = "device_lbfgs_comparison"
+    elif result["schema_version"] >= 3:
         figure_stem = "flux_target_refinement"
     elif result["schema_version"] >= 2:
         figure_stem = "smoothed_local_residual_al"
@@ -478,8 +577,12 @@ def main():
     if result["schema_version"] >= 3:
         plot_flux_refinement(result, args.output_dir / figure_names[3])
     cpu_surface, gpu_surface = surface_fields(payloads)
+    device_surface = device_surface_field(payloads)
+    final_backends = ["cpu", "gpu"]
+    if result["schema_version"] >= 4:
+        final_backends.append("device_gpu")
     summary = {
-        "schema_version": 1,
+        "schema_version": 2 if result["schema_version"] >= 4 else 1,
         "workflow": "local_residual_augmented_lagrangian_analysis",
         "archive_sha256": digest,
         "revision": result["environment"]["simsopt_revision"],
@@ -494,8 +597,9 @@ def main():
         "diagnostic_checks": result.get("diagnostic_checks", {}),
         "all_gates_passed": result["all_gates_passed"],
         "comparison": result["comparison"],
+        "device_lbfgs": result.get("device_lbfgs"),
         "final_metrics": {
-            backend: result[backend]["final_metrics"] for backend in ("cpu", "gpu")
+            backend: result[backend]["final_metrics"] for backend in final_backends
         },
         "final_optimization": {
             backend: {
@@ -509,6 +613,7 @@ def main():
             backend: result[backend].get("flux_refinement")
             for backend in ("cpu", "gpu")
         },
+        "device_optimization": result.get("device_gpu", {}).get("optimization"),
         "surface_comparison": {
             "signed_correlation": float(
                 np.corrcoef(cpu_surface.ravel(), gpu_surface.ravel())[0, 1]
@@ -523,6 +628,19 @@ def main():
         },
         "figures": figure_names,
     }
+    if device_surface is not None:
+        summary["surface_comparison"]["device_vs_cpu"] = {
+            "signed_correlation": float(
+                np.corrcoef(cpu_surface.ravel(), device_surface.ravel())[0, 1]
+            ),
+            "relative_l2_difference": float(
+                np.linalg.norm(device_surface - cpu_surface)
+                / max(np.linalg.norm(cpu_surface), 1e-30)
+            ),
+            "maximum_absolute_difference": float(
+                np.max(np.abs(device_surface - cpu_surface))
+            ),
+        }
     summary_path = args.output_dir / f"{figure_stem}_analysis_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     print(summary_path)
