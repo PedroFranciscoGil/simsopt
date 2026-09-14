@@ -2156,6 +2156,112 @@ next A100 run will test the new smoothed scale continuation and emit both
 along with the mandatory final JSON metrics, surface VTS files carrying
 $B\cdot n/|B|$, and coil VTU files.
 
+\subsection{Measured smoothed-continuation A100 run}
+
+The schema-2 archive was returned from commit \code{9859d577} with SHA-256
+prefix \code{397b14a264372498}.  It contains the result JSON and nonempty CPU
+and GPU surface VTS and coil VTU files.  The run used an NVIDIA A100-SXM4-40GB,
+JAX 0.11.1 in float64, SciPy 1.16.3, $\epsilon=0.1$, $\rho=0.5$, eight allowed
+outer stages, and 300 inner iterations per stage.  Its initial CPU/GPU base
+objective, residual vector, and gradient agree respectively to
+$6.94\times10^{-18}$ absolute, $1.20\times10^{-16}$ relative, and
+$1.14\times10^{-16}$ relative error.  The numerical kernels therefore remain
+qualified at the common initial state.
+
+The two optimizations nevertheless separate during the first inner solve.
+SciPy requires 121 CPU iterations and 333 evaluations but only 24 GPU
+iterations and 104 evaluations before each endpoint satisfies the deliberately
+loose first-stage criterion.  Their base objectives are already 0.0143662 and
+0.0164681.  Both then accept the AL update and halve the coil--surface scale
+from 18,498.1 to 9,249.0.  The second inner solves exhaust 300 iterations; the
+CPU and GPU gradient infinity norms increase to 182.75 and 49.21, so the
+safeguard correctly prevents another AL state update.  Large gradients remain
+diagnostic rather than a scientific veto, but this history identifies the
+point at which the two nonconvex trajectories diverge.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/smoothed_local_residual_al_convergence.png}
+\caption{Measured schema-2 optimization histories.  Both backends accept the
+first smoothed-continuation stage.  The CPU obtains a substantially lower base
+objective in stage two, while both gradients grow and both strict residual
+diagnostics remain nonzero.}
+\label{fig:smoothed-local-residual-al-convergence}
+\end{figure}
+
+Table~\ref{tab:smoothed-local-residual-al-result} separates target satisfaction
+from cross-backend agreement.  Every direct engineering measurement for both
+designs lies within its one-sided 10\% target envelope.  Total base-coil length
+and coil--surface distance also agree within 10\%.  Scientific validation still
+fails because the GPU objective is 96.44\% above the CPU reference and the
+three normalized-normal-field statistics differ by 33.92--37.38\%.  The
+coil--coil and maximum-curvature measurements differ by 18.20\% and 12.34\%,
+respectively, although both are on the acceptable side of their direct physical
+targets.  This distinction prevents a better-than-limit constraint value from
+being mistaken for physical infeasibility.
+
+\begin{table}[htbp]
+\centering
+\caption{Final schema-2 quantities of interest.  ``Target'' applies the
+one-sided physical engineering envelope; ``agreement'' compares the GPU
+endpoint with the CPU reference.}
+\label{tab:smoothed-local-residual-al-result}
+\begin{tabular}{lrrrl}
+\toprule
+Quantity & CPU & GPU & Difference & Result \\
+\midrule
+Objective & 0.00728381 & 0.0143083 & 96.44\% & fail agreement \\
+$|B\cdot n|/|B|$ mean & 0.112602 & 0.154691 & 37.38\% & fail agreement \\
+$|B\cdot n|/|B|$ RMS & 0.135023 & 0.180828 & 33.92\% & fail agreement \\
+$|B\cdot n|/|B|$ maximum & 0.264221 & 0.359019 & 35.88\% & fail agreement \\
+Total base-coil length (m) & 14.9170 & 14.2020 & 4.79\% & pass agreement \\
+Minimum coil--coil distance (m) & 0.144847 & 0.118481 & 18.20\% & pass target \\
+Minimum coil--surface distance (m) & 0.302014 & 0.299129 & 0.96\% & pass target \\
+Maximum curvature (m$^{-1}$) & 5.00099 & 4.38381 & 12.34\% & pass target \\
+Maximum MSC (m$^{-2}$) & 5.00102 & 5.00101 & $1.3\times10^{-4}$\% & pass target \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/smoothed_local_residual_al_performance.png}
+\caption{A100 timing for the schema-2 run.  CPU and GPU solve times are
+812.27~s and 5.904~s, giving $137.58\times$ warm speedup and $88.12\times$
+speedup including 3.314~s GPU compilation.  The result is a throughput
+measurement because the endpoint QoIs do not agree.}
+\label{fig:smoothed-local-residual-al-performance}
+\end{figure}
+
+The exported signed surface fields have correlation 0.98660, relative
+$L^2$ difference 0.38931, and maximum pointwise difference 0.10978.  The maps
+retain the same broad structure but show a materially stronger GPU normal-field
+error, consistent with the scalar metrics.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/smoothed_local_residual_al_surface.png}
+\caption{Signed $(B\cdot n)/|B|$ data read back from the exported VTS files.
+The spatial difference is coherent rather than isolated roundoff, confirming
+that independently stopped L-BFGS-B trajectories reached different designs.}
+\label{fig:smoothed-local-residual-al-surface}
+\end{figure}
+
+\textbf{Decision.}  Accept the archive, VTK contract, initial numerical parity,
+all direct 10\% engineering targets, the evaluation-budget diagnostic (784 GPU
+versus 1,114 CPU evaluations), and the A100 throughput result.  Reject
+scientific validation and any equivalent-solution speedup claim because the
+objective and normalized-normal-field QoIs fail the 10\% reference envelope.
+Do not tune $\epsilon$ or $\rho$ next: the evidence points first to optimizer
+trajectory control.  The next implementation should separate three contracts:
+(i) same-point CPU/GPU objective and gradient parity, (ii) scientific quality of
+each physical design against explicit targets, and (iii) optimizer performance.
+For independent nonconvex solves it should retain the best target-feasible
+checkpoint and compare quality at a matched evaluation budget, while a locked
+GPU trajectory is replayed through the CPU oracle to validate the final design
+without incorrectly requiring two floating-point line searches to follow the
+same basin.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

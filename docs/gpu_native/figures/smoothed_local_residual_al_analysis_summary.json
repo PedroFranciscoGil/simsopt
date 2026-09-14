@@ -1,0 +1,1272 @@
+{
+  "acceptance_gates": {
+    "cpu_gpu_quantity_of_interest_agreement": {
+      "measured": {
+        "maximum_curvature": {
+          "cpu": 5.000986272386992,
+          "gpu": 4.383805464527341,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.12341181803825836
+        },
+        "maximum_mean_squared_curvature": {
+          "cpu": 5.001017958254761,
+          "gpu": 5.001011651086183,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 1.2611769504295242e-06
+        },
+        "minimum_coil_coil_distance": {
+          "cpu": 0.14484701892390242,
+          "gpu": 0.11848148893194149,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.18202328351550306
+        },
+        "minimum_coil_surface_distance": {
+          "cpu": 0.3020135352348614,
+          "gpu": 0.2991287083793097,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 0.009551978699591398
+        },
+        "normalized_normal_field_maximum": {
+          "cpu": 0.2642213088901923,
+          "gpu": 0.3590187197689833,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.3587803393941548
+        },
+        "normalized_normal_field_mean": {
+          "cpu": 0.11260221605412798,
+          "gpu": 0.1546912320623159,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.37378497051919185
+        },
+        "normalized_normal_field_rms": {
+          "cpu": 0.1350231802318759,
+          "gpu": 0.18082762477289546,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.3392339334798617
+        },
+        "objective": {
+          "cpu": 0.007283811001251168,
+          "gpu": 0.014308268930880464,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.964393217839216
+        },
+        "total_base_coil_length": {
+          "cpu": 14.91701131207629,
+          "gpu": 14.201953859459858,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 0.04793570492485633
+        }
+      },
+      "passed": false,
+      "threshold": "relative difference <= 10%"
+    },
+    "engineering_target_envelope": {
+      "measured": {
+        "cpu": {
+          "maximum_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.00019725447739844527,
+            "measured": 5.000986272386992,
+            "passed": true,
+            "target": 5.0
+          },
+          "maximum_mean_squared_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.000203591650952184,
+            "measured": 5.001017958254761,
+            "passed": true,
+            "target": 5.0
+          },
+          "minimum_coil_coil_distance": {
+            "allowed_boundary": 0.09000000000000001,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.0,
+            "measured": 0.14484701892390242,
+            "passed": true,
+            "target": 0.1
+          },
+          "minimum_coil_surface_distance": {
+            "allowed_boundary": 0.27,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.0,
+            "measured": 0.3020135352348614,
+            "passed": true,
+            "target": 0.3
+          }
+        },
+        "gpu": {
+          "maximum_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.0,
+            "measured": 4.383805464527341,
+            "passed": true,
+            "target": 5.0
+          },
+          "maximum_mean_squared_curvature": {
+            "allowed_boundary": 5.5,
+            "direction": "maximum",
+            "fractional_target_deviation": 0.00020233021723665702,
+            "measured": 5.001011651086183,
+            "passed": true,
+            "target": 5.0
+          },
+          "minimum_coil_coil_distance": {
+            "allowed_boundary": 0.09000000000000001,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.0,
+            "measured": 0.11848148893194149,
+            "passed": true,
+            "target": 0.1
+          },
+          "minimum_coil_surface_distance": {
+            "allowed_boundary": 0.27,
+            "direction": "minimum",
+            "fractional_target_deviation": 0.0029043054023009107,
+            "measured": 0.2991287083793097,
+            "passed": true,
+            "target": 0.3
+          }
+        }
+      },
+      "passed": true,
+      "threshold": "both backends satisfy every one-sided engineering target within 10%"
+    },
+    "gpu_backend": {
+      "measured": "gpu",
+      "passed": true,
+      "threshold": "gpu"
+    },
+    "initial_float64_parity": {
+      "measured": {
+        "augmented_lagrangian_absolute_error": 0.0,
+        "base_objective_absolute_error": 6.938893903907228e-18,
+        "cpu_residual_families": {
+          "coil_coil_distance": {
+            "active_count": 0,
+            "count": 6480,
+            "l2_norm": 0.0,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "norm_infinity": 0.0
+          },
+          "coil_surface_distance": {
+            "active_count": 294,
+            "count": 1920,
+            "l2_norm": 18498.075576320225,
+            "maximum": 1869.1929415205234,
+            "minimum": 0.0,
+            "norm_infinity": 1869.1929415205234
+          },
+          "curvature": {
+            "active_count": 0,
+            "count": 480,
+            "l2_norm": 0.0,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "norm_infinity": 0.0
+          },
+          "mean_squared_curvature": {
+            "active_count": 0,
+            "count": 4,
+            "l2_norm": 0.0,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "norm_infinity": 0.0
+          }
+        },
+        "gpu_residual_families": {
+          "coil_coil_distance": {
+            "active_count": 0,
+            "count": 6480,
+            "l2_norm": 0.0,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "norm_infinity": 0.0
+          },
+          "coil_surface_distance": {
+            "active_count": 294,
+            "count": 1920,
+            "l2_norm": 18498.075576320225,
+            "maximum": 1869.1929415205234,
+            "minimum": 0.0,
+            "norm_infinity": 1869.1929415205234
+          },
+          "curvature": {
+            "active_count": 0,
+            "count": 480,
+            "l2_norm": 0.0,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "norm_infinity": 0.0
+          },
+          "mean_squared_curvature": {
+            "active_count": 0,
+            "count": 4,
+            "l2_norm": 0.0,
+            "maximum": 0.0,
+            "minimum": 0.0,
+            "norm_infinity": 0.0
+          }
+        },
+        "gradient_relative_l2_error": 1.137600275674536e-16,
+        "residual_maximum_absolute_error": 5.684341886080801e-13,
+        "residual_relative_l2_error": 1.2010034383936e-16
+      },
+      "passed": true,
+      "threshold": {
+        "base_objective_absolute_error": 1e-09,
+        "gradient_relative_l2_error": 1e-07,
+        "residual_relative_l2_error": 1e-09
+      }
+    },
+    "optimization_speedup": {
+      "measured": 137.5791429581186,
+      "passed": true,
+      "threshold": 3.0
+    }
+  },
+  "all_gates_passed": false,
+  "archive_sha256": "397b14a264372498ff30e6b34be3ed1e9ad9f8a8c12faecbace8897f2e9ee62a",
+  "comparison": {
+    "amortized_speedup": 88.12070671451822,
+    "maximum_oracle_metric_relative_error": 871291620.6902733,
+    "optimization_speedup": 137.5791429581186,
+    "oracle_metric_relative_errors": {
+      "base_current_values_amperes": 0.007713233123397875,
+      "coil_coil_distance_penalty": 0.0,
+      "coil_constraints.limits.coil_coil_distance_threshold": 0.0,
+      "coil_constraints.limits.coil_surface_distance_threshold": 0.0,
+      "coil_constraints.limits.curvature_threshold": 0.0,
+      "coil_constraints.limits.mean_squared_curvature_threshold": 0.0,
+      "coil_constraints.margins.maximum_curvature": 625.7711520666511,
+      "coil_constraints.margins.maximum_mean_squared_curvature": 0.00619590100884475,
+      "coil_constraints.margins.minimum_coil_coil_distance": 0.5878992767991702,
+      "coil_constraints.margins.minimum_coil_surface_distance": 1.4327173448992263,
+      "coil_constraints.measurements.base_coil_lengths": 0.048463353163576556,
+      "coil_constraints.measurements.base_coil_maximum_curvatures": 0.1323554650994015,
+      "coil_constraints.measurements.base_coil_mean_squared_curvatures": 0.07810960323921319,
+      "coil_constraints.measurements.maximum_curvature": 0.12341181803825836,
+      "coil_constraints.measurements.maximum_mean_squared_curvature": 1.2611769504295242e-06,
+      "coil_constraints.measurements.minimum_coil_coil_distance": 0.18202328351550306,
+      "coil_constraints.measurements.minimum_coil_surface_distance": 0.009551978699591398,
+      "coil_constraints.measurements.total_base_coil_length": 0.04793570492485633,
+      "coil_constraints.violations.maximum_curvature": 1.0,
+      "coil_constraints.violations.maximum_mean_squared_curvature": 0.00619590100884475,
+      "coil_constraints.violations.minimum_coil_coil_distance": 0.0,
+      "coil_constraints.violations.minimum_coil_surface_distance": 871291620.6902733,
+      "coil_surface_distance_penalty": 116.24258299262294,
+      "curvature_penalty": 1.0,
+      "curve_length_sum": 0.04793570492485633,
+      "gradient_norm": 0.6423286510450417,
+      "maximum_absolute_normal_field": 0.46820374125629727,
+      "maximum_curvature": 0.12341181803825836,
+      "mean_absolute_normal_field": 0.41409943173103164,
+      "mean_squared_curvature_penalty": 1.8819203669345335,
+      "minimum_coil_coil_distance": 0.18202328351550306,
+      "minimum_coil_surface_distance": 0.009551978699591398,
+      "normalized_normal_field.maximum_absolute": 0.3587803393941548,
+      "normalized_normal_field.mean_absolute": 0.37378497051919185,
+      "normalized_normal_field.root_mean_square": 0.3392339334798617,
+      "normalized_normal_field.valid_surface_points": 0.0,
+      "normalized_normal_field.zero_field_surface_points": 0.0,
+      "objective": 0.964393217839216,
+      "quadratic_flux": 0.9664705296193712
+    }
+  },
+  "diagnostic_checks": {
+    "first_order_convergence": {
+      "measured": {
+        "cpu_final_gradient_reduction_ratio": 877.7063898428773,
+        "cpu_gradient_norm": 318.28353327585506,
+        "cpu_success": false,
+        "gpu_final_gradient_reduction_ratio": 220.32345259860762,
+        "gpu_gradient_norm": 100.087513673056,
+        "gpu_success": false
+      },
+      "passed": false,
+      "threshold": {
+        "absolute_tolerance": 1e-08,
+        "both_success": true,
+        "relative_stage_tolerance": 0.01
+      }
+    },
+    "legacy_five_percent_constraint_quality": {
+      "measured": {
+        "maximum_curvature": {
+          "allowed": 0.0010355860063418377,
+          "candidate": 0.0,
+          "passed": true,
+          "reference": 0.0009862723869922263
+        },
+        "maximum_mean_squared_curvature": {
+          "allowed": 0.001068856167498966,
+          "candidate": 0.001011651086183285,
+          "passed": true,
+          "reference": 0.00101795825476092
+        },
+        "minimum_coil_coil_distance": {
+          "allowed": 1e-08,
+          "candidate": 0.0,
+          "passed": true,
+          "reference": 0.0
+        },
+        "minimum_coil_surface_distance": {
+          "allowed": 1e-08,
+          "candidate": 0.0008712916206902732,
+          "passed": false,
+          "reference": 0.0
+        }
+      },
+      "passed": false,
+      "threshold": "GPU <= max(1.05 * CPU, CPU + 1e-8)"
+    },
+    "legacy_five_percent_normal_field_quality": {
+      "measured": {
+        "maximum_absolute": {
+          "allowed": 0.2774323743347019,
+          "candidate": 0.3590187197689833,
+          "passed": false,
+          "reference": 0.2642213088901923
+        },
+        "mean_absolute": {
+          "allowed": 0.1182323268568344,
+          "candidate": 0.1546912320623159,
+          "passed": false,
+          "reference": 0.11260221605412798
+        },
+        "root_mean_square": {
+          "allowed": 0.1417743392434697,
+          "candidate": 0.18082762477289546,
+          "passed": false,
+          "reference": 0.1350231802318759
+        }
+      },
+      "passed": false,
+      "threshold": "GPU <= max(1.05 * CPU, CPU + 1e-8)"
+    },
+    "physics_evaluation_budget": {
+      "measured": 784,
+      "passed": true,
+      "threshold": "<= 1.1 * 1114"
+    },
+    "tight_absolute_engineering_feasibility": {
+      "measured": {
+        "cpu": {
+          "maximum_curvature": {
+            "passed": true,
+            "tolerance": 0.001,
+            "violation": 0.0009862723869922263
+          },
+          "maximum_mean_squared_curvature": {
+            "passed": false,
+            "tolerance": 0.001,
+            "violation": 0.00101795825476092
+          },
+          "minimum_coil_coil_distance": {
+            "passed": true,
+            "tolerance": 0.0001,
+            "violation": 0.0
+          },
+          "minimum_coil_surface_distance": {
+            "passed": true,
+            "tolerance": 0.0001,
+            "violation": 0.0
+          }
+        },
+        "gpu": {
+          "maximum_curvature": {
+            "passed": true,
+            "tolerance": 0.001,
+            "violation": 0.0
+          },
+          "maximum_mean_squared_curvature": {
+            "passed": false,
+            "tolerance": 0.001,
+            "violation": 0.001011651086183285
+          },
+          "minimum_coil_coil_distance": {
+            "passed": true,
+            "tolerance": 0.0001,
+            "violation": 0.0
+          },
+          "minimum_coil_surface_distance": {
+            "passed": false,
+            "tolerance": 0.0001,
+            "violation": 0.0008712916206902732
+          }
+        }
+      },
+      "passed": false,
+      "threshold": "both backends satisfy every physical violation allowance"
+    },
+    "tight_local_residual_feasibility": {
+      "measured": {
+        "cpu": 0.017958254763250636,
+        "gpu": 7.712916206902842
+      },
+      "passed": false,
+      "threshold": 1e-06
+    }
+  },
+  "environment": {
+    "jax": "0.11.1",
+    "jax_backend": "gpu",
+    "jax_device_details": [
+      {
+        "device_kind": "NVIDIA A100-SXM4-40GB",
+        "id": "0",
+        "platform": "gpu"
+      }
+    ],
+    "jax_devices": [
+      "cuda:0"
+    ],
+    "numpy": "2.1.3",
+    "omp_num_threads": "1",
+    "platform": "Linux-6.6.122+-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+    "scipy": "1.16.3",
+    "simsopt": "0.1.dev1+g9859d5772",
+    "simsopt_revision": "9859d577276b9ab15c7b5d392f63f0eeba620b11"
+  },
+  "figures": [
+    "smoothed_local_residual_al_convergence.png",
+    "smoothed_local_residual_al_performance.png",
+    "smoothed_local_residual_al_surface.png"
+  ],
+  "final_metrics": {
+    "cpu": {
+      "base_current_values_amperes": [
+        100000.0,
+        98483.71785125416,
+        98885.89777395275,
+        99367.60342555701
+      ],
+      "coil_coil_distance_penalty": 0.0,
+      "coil_constraints": {
+        "limits": {
+          "coil_coil_distance_threshold": 0.1,
+          "coil_surface_distance_threshold": 0.3,
+          "curvature_threshold": 5.0,
+          "mean_squared_curvature_threshold": 5.0
+        },
+        "margins": {
+          "maximum_curvature": -0.0009862723869922263,
+          "maximum_mean_squared_curvature": -0.00101795825476092,
+          "minimum_coil_coil_distance": 0.044847018923902415,
+          "minimum_coil_surface_distance": 0.002013535234861419
+        },
+        "measurements": {
+          "base_coil_lengths": [
+            3.883485647184018,
+            3.7237581161901763,
+            3.5754479502869554,
+            3.7343195984151403
+          ],
+          "base_coil_maximum_curvatures": [
+            3.67407962991145,
+            3.8800964031361755,
+            3.6921409057755614,
+            5.000986272386992
+          ],
+          "base_coil_mean_squared_curvatures": [
+            4.779491410145626,
+            5.001017958254761,
+            4.999403900767795,
+            4.994497381591887
+          ],
+          "maximum_curvature": 5.000986272386992,
+          "maximum_mean_squared_curvature": 5.001017958254761,
+          "minimum_coil_coil_distance": 0.14484701892390242,
+          "minimum_coil_surface_distance": 0.3020135352348614,
+          "total_base_coil_length": 14.91701131207629
+        },
+        "violations": {
+          "maximum_curvature": 0.0009862723869922263,
+          "maximum_mean_squared_curvature": 0.00101795825476092,
+          "minimum_coil_coil_distance": 0.0,
+          "minimum_coil_surface_distance": 0.0
+        }
+      },
+      "coil_surface_distance_penalty": 0.0,
+      "curvature_penalty": 1.104896387937598e-08,
+      "curve_length_sum": 14.91701131207629,
+      "gradient_norm": 0.04831053682031292,
+      "maximum_absolute_normal_field": 0.09494754822343479,
+      "maximum_curvature": 5.000986272386992,
+      "mean_absolute_normal_field": 0.036889208110714264,
+      "mean_squared_curvature_penalty": 5.181195042188533e-07,
+      "minimum_coil_coil_distance": 0.14484701892390242,
+      "minimum_coil_surface_distance": 0.3020135352348614,
+      "normalized_normal_field": {
+        "definition": "abs(B dot n) / norm(B)",
+        "maximum_absolute": 0.2642213088901923,
+        "mean_absolute": 0.11260221605412798,
+        "root_mean_square": 0.1350231802318759,
+        "valid_surface_points": 4096,
+        "zero_field_surface_points": 0
+      },
+      "objective": 0.007283811001251168,
+      "quadratic_flux": 0.007268893989409923
+    },
+    "gpu": {
+      "base_current_values_amperes": [
+        100000.0,
+        99648.1313491426,
+        99752.44306052354,
+        99851.76284906169
+      ],
+      "coil_coil_distance_penalty": 0.0,
+      "coil_constraints": {
+        "limits": {
+          "coil_coil_distance_threshold": 0.1,
+          "coil_surface_distance_threshold": 0.3,
+          "curvature_threshold": 5.0,
+          "mean_squared_curvature_threshold": 5.0
+        },
+        "margins": {
+          "maximum_curvature": 0.6161945354726592,
+          "maximum_mean_squared_curvature": -0.001011651086183285,
+          "minimum_coil_coil_distance": 0.018481488931941487,
+          "minimum_coil_surface_distance": -0.0008712916206902732
+        },
+        "measurements": {
+          "base_coil_lengths": [
+            3.6917052671403243,
+            3.5729969330958986,
+            3.4198105291409964,
+            3.5174411300826383
+          ],
+          "base_coil_maximum_curvatures": [
+            3.800913144524162,
+            4.123444359352658,
+            2.8430729244323585,
+            4.383805464527341
+          ],
+          "base_coil_mean_squared_curvatures": [
+            5.0009889704864525,
+            5.001011651086183,
+            4.25944372852756,
+            5.000992400000087
+          ],
+          "maximum_curvature": 4.383805464527341,
+          "maximum_mean_squared_curvature": 5.001011651086183,
+          "minimum_coil_coil_distance": 0.11848148893194149,
+          "minimum_coil_surface_distance": 0.2991287083793097,
+          "total_base_coil_length": 14.201953859459858
+        },
+        "violations": {
+          "maximum_curvature": 0.0,
+          "maximum_mean_squared_curvature": 0.001011651086183285,
+          "minimum_coil_coil_distance": 0.0,
+          "minimum_coil_surface_distance": 0.0008712916206902732
+        }
+      },
+      "coil_surface_distance_penalty": 1.1624258299262293e-10,
+      "curvature_penalty": 0.0,
+      "curve_length_sum": 14.201953859459858,
+      "gradient_norm": 0.07934177876736634,
+      "maximum_absolute_normal_field": 0.13940234552475966,
+      "maximum_curvature": 4.383805464527341,
+      "mean_absolute_normal_field": 0.052165008226368804,
+      "mean_squared_curvature_penalty": 1.4931791517143362e-06,
+      "minimum_coil_coil_distance": 0.11848148893194149,
+      "minimum_coil_surface_distance": 0.2991287083793097,
+      "normalized_normal_field": {
+        "definition": "abs(B dot n) / norm(B)",
+        "maximum_absolute": 0.3590187197689833,
+        "mean_absolute": 0.1546912320623159,
+        "root_mean_square": 0.18082762477289546,
+        "valid_surface_points": 4096,
+        "zero_field_surface_points": 0
+      },
+      "objective": 0.014308268930880464,
+      "quadratic_flux": 0.014294065813101995
+    }
+  },
+  "final_optimization": {
+    "cpu": {
+      "final_al_constraint_norm_infinity": 0.0007998496900872079,
+      "final_augmented_lagrangian": 0.007290208595989338,
+      "final_base_objective": 0.007283811000722012,
+      "final_constraint_scale_families": {
+        "coil_coil_distance": {
+          "active_count": 6480,
+          "count": 6480,
+          "l2_norm": 6480.000000000001,
+          "maximum": 80.49844718999243,
+          "minimum": 80.49844718999243,
+          "norm_infinity": 80.49844718999243
+        },
+        "coil_surface_distance": {
+          "active_count": 1920,
+          "count": 1920,
+          "l2_norm": 405272.5305434385,
+          "maximum": 9249.037788160113,
+          "minimum": 9249.037788160113,
+          "norm_infinity": 9249.037788160113
+        },
+        "curvature": {
+          "active_count": 480,
+          "count": 480,
+          "l2_norm": 480.0,
+          "maximum": 21.908902300206645,
+          "minimum": 21.908902300206645,
+          "norm_infinity": 21.908902300206645
+        },
+        "mean_squared_curvature": {
+          "active_count": 4,
+          "count": 4,
+          "l2_norm": 4.0,
+          "maximum": 2.0,
+          "minimum": 2.0,
+          "norm_infinity": 2.0
+        }
+      },
+      "final_gradient_norm": 318.28353327585506,
+      "final_gradient_norm_infinity": 182.74937436269775,
+      "final_multiplier_families": {
+        "coil_coil_distance": {
+          "active_count": 0,
+          "count": 6480,
+          "l2_norm": 0.0022599817440216974,
+          "maximum": 0.0,
+          "minimum": -0.0022599817440216974,
+          "norm_infinity": 0.0022599817440216974
+        },
+        "coil_surface_distance": {
+          "active_count": 0,
+          "count": 1920,
+          "l2_norm": 0.0084823550618081,
+          "maximum": 0.0,
+          "minimum": -0.006807077872152019,
+          "norm_infinity": 0.006807077872152019
+        },
+        "curvature": {
+          "active_count": 0,
+          "count": 480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 0,
+          "count": 4,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        }
+      },
+      "final_penalty_families": {
+        "coil_coil_distance": {
+          "active_count": 6480,
+          "count": 6480,
+          "l2_norm": 1609.9689437998486,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        },
+        "coil_surface_distance": {
+          "active_count": 1920,
+          "count": 1920,
+          "l2_norm": 876.3560920082658,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        },
+        "curvature": {
+          "active_count": 480,
+          "count": 480,
+          "l2_norm": 438.1780460041329,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 4,
+          "count": 4,
+          "l2_norm": 40.0,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        }
+      },
+      "final_raw_constraint_norm_infinity": 0.017958254763250636,
+      "final_residual_families": {
+        "coil_coil_distance": {
+          "active_count": 0,
+          "count": 6480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "coil_surface_distance": {
+          "active_count": 0,
+          "count": 1920,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "curvature": {
+          "active_count": 0,
+          "count": 480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 1,
+          "count": 4,
+          "l2_norm": 0.017958254763250636,
+          "maximum": 0.017958254763250636,
+          "minimum": 0.0,
+          "norm_infinity": 0.017958254763250636
+        }
+      },
+      "final_scaled_residual_families": {
+        "coil_coil_distance": {
+          "active_count": 0,
+          "count": 6480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "coil_surface_distance": {
+          "active_count": 0,
+          "count": 1920,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "curvature": {
+          "active_count": 0,
+          "count": 480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 1,
+          "count": 4,
+          "l2_norm": 0.0007998496900872079,
+          "maximum": 0.0007998496900872079,
+          "minimum": 0.0,
+          "norm_infinity": 0.0007998496900872079
+        }
+      },
+      "message": "inner stationarity safeguard stopped outer updates before penalty or multiplier escalation",
+      "outer_iterations": 2,
+      "seconds": 812.2682661409999,
+      "success": false,
+      "terminated_by_inner_safeguard": true,
+      "total_evaluations": 1114,
+      "total_inner_iterations": 421
+    },
+    "gpu": {
+      "final_al_constraint_norm_infinity": 0.0008231736767950027,
+      "final_augmented_lagrangian": 0.014316691946551292,
+      "final_base_objective": 0.014308267766961444,
+      "final_constraint_scale_families": {
+        "coil_coil_distance": {
+          "active_count": 6480,
+          "count": 6480,
+          "l2_norm": 6480.000000000001,
+          "maximum": 80.49844718999243,
+          "minimum": 80.49844718999243,
+          "norm_infinity": 80.49844718999243
+        },
+        "coil_surface_distance": {
+          "active_count": 1920,
+          "count": 1920,
+          "l2_norm": 405272.5305434385,
+          "maximum": 9249.037788160113,
+          "minimum": 9249.037788160113,
+          "norm_infinity": 9249.037788160113
+        },
+        "curvature": {
+          "active_count": 480,
+          "count": 480,
+          "l2_norm": 480.0,
+          "maximum": 21.908902300206645,
+          "minimum": 21.908902300206645,
+          "norm_infinity": 21.908902300206645
+        },
+        "mean_squared_curvature": {
+          "active_count": 4,
+          "count": 4,
+          "l2_norm": 4.0,
+          "maximum": 2.0,
+          "minimum": 2.0,
+          "norm_infinity": 2.0
+        }
+      },
+      "final_gradient_norm": 100.087513673056,
+      "final_gradient_norm_infinity": 49.20796187464789,
+      "final_multiplier_families": {
+        "coil_coil_distance": {
+          "active_count": 0,
+          "count": 6480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "coil_surface_distance": {
+          "active_count": 0,
+          "count": 1920,
+          "l2_norm": 0.032026169158828444,
+          "maximum": 0.0,
+          "minimum": -0.011066358722499791,
+          "norm_infinity": 0.011066358722499791
+        },
+        "curvature": {
+          "active_count": 0,
+          "count": 480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 0,
+          "count": 4,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        }
+      },
+      "final_penalty_families": {
+        "coil_coil_distance": {
+          "active_count": 6480,
+          "count": 6480,
+          "l2_norm": 1609.9689437998486,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        },
+        "coil_surface_distance": {
+          "active_count": 1920,
+          "count": 1920,
+          "l2_norm": 876.3560920082658,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        },
+        "curvature": {
+          "active_count": 480,
+          "count": 480,
+          "l2_norm": 438.1780460041329,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 4,
+          "count": 4,
+          "l2_norm": 40.0,
+          "maximum": 20.0,
+          "minimum": 20.0,
+          "norm_infinity": 20.0
+        }
+      },
+      "final_raw_constraint_norm_infinity": 7.712916206902842,
+      "final_residual_families": {
+        "coil_coil_distance": {
+          "active_count": 0,
+          "count": 6480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "coil_surface_distance": {
+          "active_count": 2,
+          "count": 1920,
+          "l2_norm": 8.01351330381122,
+          "maximum": 7.712916206902842,
+          "minimum": 0.0,
+          "norm_infinity": 7.712916206902842
+        },
+        "curvature": {
+          "active_count": 0,
+          "count": 480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 1,
+          "count": 4,
+          "l2_norm": 0.011651086182062897,
+          "maximum": 0.011651086182062897,
+          "minimum": 0.0,
+          "norm_infinity": 0.011651086182062897
+        }
+      },
+      "final_scaled_residual_families": {
+        "coil_coil_distance": {
+          "active_count": 0,
+          "count": 6480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "coil_surface_distance": {
+          "active_count": 2,
+          "count": 1920,
+          "l2_norm": 0.0008532417190060432,
+          "maximum": 0.0008231736767950027,
+          "minimum": 0.0,
+          "norm_infinity": 0.0008231736767950027
+        },
+        "curvature": {
+          "active_count": 0,
+          "count": 480,
+          "l2_norm": 0.0,
+          "maximum": 0.0,
+          "minimum": 0.0,
+          "norm_infinity": 0.0
+        },
+        "mean_squared_curvature": {
+          "active_count": 1,
+          "count": 4,
+          "l2_norm": 0.00033822555777531654,
+          "maximum": 0.00033822555777531654,
+          "minimum": 0.0,
+          "norm_infinity": 0.00033822555777531654
+        }
+      },
+      "message": "inner stationarity safeguard stopped outer updates before penalty or multiplier escalation",
+      "outer_iterations": 2,
+      "seconds": 5.9040073129999655,
+      "success": false,
+      "terminated_by_inner_safeguard": true,
+      "total_evaluations": 784,
+      "total_inner_iterations": 324
+    }
+  },
+  "initial_parity": {
+    "augmented_lagrangian_absolute_error": 0.0,
+    "base_objective_absolute_error": 6.938893903907228e-18,
+    "cpu_residual_families": {
+      "coil_coil_distance": {
+        "active_count": 0,
+        "count": 6480,
+        "l2_norm": 0.0,
+        "maximum": 0.0,
+        "minimum": 0.0,
+        "norm_infinity": 0.0
+      },
+      "coil_surface_distance": {
+        "active_count": 294,
+        "count": 1920,
+        "l2_norm": 18498.075576320225,
+        "maximum": 1869.1929415205234,
+        "minimum": 0.0,
+        "norm_infinity": 1869.1929415205234
+      },
+      "curvature": {
+        "active_count": 0,
+        "count": 480,
+        "l2_norm": 0.0,
+        "maximum": 0.0,
+        "minimum": 0.0,
+        "norm_infinity": 0.0
+      },
+      "mean_squared_curvature": {
+        "active_count": 0,
+        "count": 4,
+        "l2_norm": 0.0,
+        "maximum": 0.0,
+        "minimum": 0.0,
+        "norm_infinity": 0.0
+      }
+    },
+    "gpu_residual_families": {
+      "coil_coil_distance": {
+        "active_count": 0,
+        "count": 6480,
+        "l2_norm": 0.0,
+        "maximum": 0.0,
+        "minimum": 0.0,
+        "norm_infinity": 0.0
+      },
+      "coil_surface_distance": {
+        "active_count": 294,
+        "count": 1920,
+        "l2_norm": 18498.075576320225,
+        "maximum": 1869.1929415205234,
+        "minimum": 0.0,
+        "norm_infinity": 1869.1929415205234
+      },
+      "curvature": {
+        "active_count": 0,
+        "count": 480,
+        "l2_norm": 0.0,
+        "maximum": 0.0,
+        "minimum": 0.0,
+        "norm_infinity": 0.0
+      },
+      "mean_squared_curvature": {
+        "active_count": 0,
+        "count": 4,
+        "l2_norm": 0.0,
+        "maximum": 0.0,
+        "minimum": 0.0,
+        "norm_infinity": 0.0
+      }
+    },
+    "gradient_relative_l2_error": 1.137600275674536e-16,
+    "residual_maximum_absolute_error": 5.684341886080801e-13,
+    "residual_relative_l2_error": 1.2010034383936e-16
+  },
+  "residual_scaling": {
+    "continuation": {
+      "minimum_family_scales": {
+        "coil_coil_distance": 80.49844718999243,
+        "coil_surface_distance": 43.81780460041329,
+        "curvature": 21.908902300206645,
+        "mean_squared_curvature": 2.0
+      },
+      "minimum_policy": "sqrt_count",
+      "multiplier_rescaling": "lambda_new = lambda_old * scale_new / scale_old",
+      "reduction_factor": 0.5,
+      "update_condition": "inner first-order acceptance and scaled AL progress"
+    },
+    "family_diagnostics": {
+      "coil_coil_distance": {
+        "applied_scale": 80.49844718999243,
+        "count": 6480,
+        "initial_active_count": 0,
+        "initial_l2_norm": 0.0,
+        "initial_maximum": 0.0,
+        "mapped_initial_l2_norm": 0.0,
+        "start": 0,
+        "stop": 6480
+      },
+      "coil_surface_distance": {
+        "applied_scale": 18498.075576320225,
+        "count": 1920,
+        "initial_active_count": 294,
+        "initial_l2_norm": 18498.075576320225,
+        "initial_maximum": 1869.1929415205234,
+        "mapped_initial_l2_norm": 1.0,
+        "start": 6480,
+        "stop": 8400
+      },
+      "curvature": {
+        "applied_scale": 21.908902300206645,
+        "count": 480,
+        "initial_active_count": 0,
+        "initial_l2_norm": 0.0,
+        "initial_maximum": 0.0,
+        "mapped_initial_l2_norm": 0.0,
+        "start": 8400,
+        "stop": 8880
+      },
+      "mean_squared_curvature": {
+        "applied_scale": 2.0,
+        "count": 4,
+        "initial_active_count": 0,
+        "initial_l2_norm": 0.0,
+        "initial_maximum": 0.0,
+        "mapped_initial_l2_norm": 0.0,
+        "start": 8880,
+        "stop": 8884
+      }
+    },
+    "formula": "family_l2: max(sqrt(family_count), initial_family_l2); one shared attenuation scale per family",
+    "policy": "family_l2"
+  },
+  "revision": "9859d577276b9ab15c7b5d392f63f0eeba620b11",
+  "schema_version": 1,
+  "scientific_validation": {
+    "cpu_engineering_targets": {
+      "comparisons": {
+        "maximum_curvature": {
+          "allowed_boundary": 5.5,
+          "direction": "maximum",
+          "fractional_target_deviation": 0.00019725447739844527,
+          "measured": 5.000986272386992,
+          "passed": true,
+          "target": 5.0
+        },
+        "maximum_mean_squared_curvature": {
+          "allowed_boundary": 5.5,
+          "direction": "maximum",
+          "fractional_target_deviation": 0.000203591650952184,
+          "measured": 5.001017958254761,
+          "passed": true,
+          "target": 5.0
+        },
+        "minimum_coil_coil_distance": {
+          "allowed_boundary": 0.09000000000000001,
+          "direction": "minimum",
+          "fractional_target_deviation": 0.0,
+          "measured": 0.14484701892390242,
+          "passed": true,
+          "target": 0.1
+        },
+        "minimum_coil_surface_distance": {
+          "allowed_boundary": 0.27,
+          "direction": "minimum",
+          "fractional_target_deviation": 0.0,
+          "measured": 0.3020135352348614,
+          "passed": true,
+          "target": 0.3
+        }
+      },
+      "passed": true,
+      "relative_tolerance": 0.1
+    },
+    "cpu_gpu_quantity_of_interest_agreement": {
+      "comparisons": {
+        "maximum_curvature": {
+          "cpu": 5.000986272386992,
+          "gpu": 4.383805464527341,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.12341181803825836
+        },
+        "maximum_mean_squared_curvature": {
+          "cpu": 5.001017958254761,
+          "gpu": 5.001011651086183,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 1.2611769504295242e-06
+        },
+        "minimum_coil_coil_distance": {
+          "cpu": 0.14484701892390242,
+          "gpu": 0.11848148893194149,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.18202328351550306
+        },
+        "minimum_coil_surface_distance": {
+          "cpu": 0.3020135352348614,
+          "gpu": 0.2991287083793097,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 0.009551978699591398
+        },
+        "normalized_normal_field_maximum": {
+          "cpu": 0.2642213088901923,
+          "gpu": 0.3590187197689833,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.3587803393941548
+        },
+        "normalized_normal_field_mean": {
+          "cpu": 0.11260221605412798,
+          "gpu": 0.1546912320623159,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.37378497051919185
+        },
+        "normalized_normal_field_rms": {
+          "cpu": 0.1350231802318759,
+          "gpu": 0.18082762477289546,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.3392339334798617
+        },
+        "objective": {
+          "cpu": 0.007283811001251168,
+          "gpu": 0.014308268930880464,
+          "passed": false,
+          "reference": "cpu",
+          "relative_difference": 0.964393217839216
+        },
+        "total_base_coil_length": {
+          "cpu": 14.91701131207629,
+          "gpu": 14.201953859459858,
+          "passed": true,
+          "reference": "cpu",
+          "relative_difference": 0.04793570492485633
+        }
+      },
+      "passed": false,
+      "relative_tolerance": 0.1
+    },
+    "gpu_engineering_targets": {
+      "comparisons": {
+        "maximum_curvature": {
+          "allowed_boundary": 5.5,
+          "direction": "maximum",
+          "fractional_target_deviation": 0.0,
+          "measured": 4.383805464527341,
+          "passed": true,
+          "target": 5.0
+        },
+        "maximum_mean_squared_curvature": {
+          "allowed_boundary": 5.5,
+          "direction": "maximum",
+          "fractional_target_deviation": 0.00020233021723665702,
+          "measured": 5.001011651086183,
+          "passed": true,
+          "target": 5.0
+        },
+        "minimum_coil_coil_distance": {
+          "allowed_boundary": 0.09000000000000001,
+          "direction": "minimum",
+          "fractional_target_deviation": 0.0,
+          "measured": 0.11848148893194149,
+          "passed": true,
+          "target": 0.1
+        },
+        "minimum_coil_surface_distance": {
+          "allowed_boundary": 0.27,
+          "direction": "minimum",
+          "fractional_target_deviation": 0.0029043054023009107,
+          "measured": 0.2991287083793097,
+          "passed": true,
+          "target": 0.3
+        }
+      },
+      "passed": true,
+      "relative_tolerance": 0.1
+    },
+    "passed": false,
+    "target_relative_tolerance": 0.1
+  },
+  "scientifically_validated": false,
+  "surface_comparison": {
+    "maximum_absolute_difference": 0.10977592163552419,
+    "relative_l2_difference": 0.38931165300380444,
+    "signed_correlation": 0.9865972955662973
+  },
+  "validation_policy": {
+    "engineering_target_semantics": "minimum-distance measurements may be at most the stated fraction below target; maximum curvature measurements may be at most the stated fraction above target",
+    "gradient_semantics": "large coil-optimization gradients are expected and are recorded as optimizer diagnostics, not scientific validation vetoes",
+    "name": "physical_quantity_target_envelope",
+    "normalized_normal_field_semantics": "B dot n over abs(B) has ideal target zero, for which percentage error is undefined; retain mean, RMS, and maximum absolute values and require CPU/GPU agreement within the relative tolerance",
+    "scientific_validation_rule": "scientifically_validated is determined exclusively by the physical target envelope and retained CPU/GPU quantities of interest, not by raw gradient magnitude",
+    "strict_residual_semantics": "strict local-AL residual and feasibility tolerances diagnose solver convergence but do not override physical target validation",
+    "target_relative_tolerance": 0.1
+  },
+  "workflow": "local_residual_augmented_lagrangian_analysis"
+}

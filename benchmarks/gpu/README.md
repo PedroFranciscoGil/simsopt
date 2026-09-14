@@ -466,7 +466,10 @@ normal field—and both symmetry-expanded coil sets as VTU. Failed scientific
 gates do not suppress these diagnostic artifacts.
 
 Validate a returned archive and generate convergence, performance, and surface
-figures with:
+figures with the following command. Schema-1 outputs retain the
+`local_residual_al_*` prefix; schema-2 smoothed-continuation outputs use
+`smoothed_local_residual_al_*`, so new measurements do not overwrite the
+historical figures.
 
 ```sh
 python benchmarks/gpu/analyze_local_residual_augmented_lagrangian.py \

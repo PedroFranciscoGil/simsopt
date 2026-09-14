@@ -342,9 +342,19 @@ def main():
     result, payloads, digest = read_archive(args.archive)
     validate_result(result)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    plot_optimization(result, args.output_dir / "local_residual_al_convergence.png")
-    plot_performance(result, args.output_dir / "local_residual_al_performance.png")
-    plot_surface(payloads, args.output_dir / "local_residual_al_surface.png")
+    figure_stem = (
+        "smoothed_local_residual_al"
+        if result["schema_version"] >= 2
+        else "local_residual_al"
+    )
+    figure_names = [
+        f"{figure_stem}_convergence.png",
+        f"{figure_stem}_performance.png",
+        f"{figure_stem}_surface.png",
+    ]
+    plot_optimization(result, args.output_dir / figure_names[0])
+    plot_performance(result, args.output_dir / figure_names[1])
+    plot_surface(payloads, args.output_dir / figure_names[2])
     cpu_surface, gpu_surface = surface_fields(payloads)
     summary = {
         "schema_version": 1,
@@ -384,13 +394,9 @@ def main():
                 np.max(np.abs(gpu_surface - cpu_surface))
             ),
         },
-        "figures": [
-            "local_residual_al_convergence.png",
-            "local_residual_al_performance.png",
-            "local_residual_al_surface.png",
-        ],
+        "figures": figure_names,
     }
-    summary_path = args.output_dir / "local_residual_al_analysis_summary.json"
+    summary_path = args.output_dir / f"{figure_stem}_analysis_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     print(summary_path)
 
