@@ -148,4 +148,5 @@ def test_colab_runs_eight_candidate_gpu_replay_and_downloads_archive():
     assert '"--checkpoint-patiences", "15", "25"' in source
     assert 'result["sweep"]["candidate_count"] == 8' in source
     assert 'result["execution_platform"] == "gpu"' in source
+    assert '<= candidate["final_metrics"].keys()' in source
     assert "files.download(archive)" in source

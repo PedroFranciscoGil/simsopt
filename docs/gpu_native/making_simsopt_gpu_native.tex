@@ -2816,6 +2816,14 @@ history/patience grid and overlaid flux trajectories.  No configuration choice
 is promoted until those NVIDIA measurements and final physical targets are
 returned and added to this report.
 
+An initial notebook validation expression compared a Python set directly with
+the final-metrics dictionary and therefore raised \code{TypeError} after the
+GPU computation had completed.  The validation now compares the required set
+with \code{final\_metrics.keys()}, and a notebook-source regression test fixes
+this executable contract.  This correction changes neither optimizer output
+nor acceptance thresholds; rerunning only the validation and download cells is
+sufficient when the result file remains in the active Colab runtime.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only
