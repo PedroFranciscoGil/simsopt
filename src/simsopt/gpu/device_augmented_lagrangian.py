@@ -179,8 +179,10 @@ class DeviceAugmentedLagrangian:
     """Compile the complete AL outer and inner iteration tree on one device.
 
     ``terms(x)`` returns ``(base_objective, raw_constraint_vector)``. Constraint
-    mapping, L-BFGS inner solves, multiplier and penalty updates, scaling
-    continuation, and safeguards all execute in one compiled call.
+    mapping, projected L-BFGS inner solves, multiplier and penalty updates,
+    scaling continuation, and safeguards all execute in one compiled call.
+    Optional lower and upper bounds are static solver data: projected-gradient
+    stationarity, direction filtering, and clipped Armijo trials stay on device.
     """
 
     def __init__(
@@ -190,6 +192,8 @@ class DeviceAugmentedLagrangian:
         constraint_count: int,
         constraint_scales=None,
         minimum_constraint_scales=None,
+        lower_bounds=None,
+        upper_bounds=None,
         *,
         config: DeviceAugmentedLagrangianConfig | None = None,
         platform: str | None = None,
@@ -206,6 +210,7 @@ class DeviceAugmentedLagrangian:
         self.config = config
         self._shape = initial_x.shape
         self._dtype = initial_x.dtype
+        self._initial_x = initial_x.copy()
         self._constraint_count = int(constraint_count)
         if platform is None:
             self._device = None
@@ -226,6 +231,18 @@ class DeviceAugmentedLagrangian:
         )
         if np.any(self._minimum_constraint_scales > self._constraint_scales):
             raise ValueError("minimum constraint scales must not exceed initial scales")
+        if lower_bounds is None:
+            lower_bounds = np.full(self._shape, -np.inf, dtype=self._dtype)
+        if upper_bounds is None:
+            upper_bounds = np.full(self._shape, np.inf, dtype=self._dtype)
+        self._lower_bounds = self._coerce_bounds(lower_bounds, "lower_bounds")
+        self._upper_bounds = self._coerce_bounds(upper_bounds, "upper_bounds")
+        if np.any(self._lower_bounds > self._upper_bounds):
+            raise ValueError("every lower bound must not exceed its upper bound")
+        if np.any(initial_x < self._lower_bounds) or np.any(
+            initial_x > self._upper_bounds
+        ):
+            raise ValueError("initial_x must lie within bounds")
         self._solver = jax.jit(self._build_solver(terms, config))
         self._compiled = None
 
@@ -236,6 +253,16 @@ class DeviceAugmentedLagrangian:
             raise ValueError(f"{name} must have shape {expected}, got {value.shape}")
         if not np.all(np.isfinite(value)) or np.any(value <= 0):
             raise ValueError(f"{name} must be finite and positive")
+        return value.copy()
+
+    def _coerce_bounds(self, value, name):
+        value = np.asarray(value, dtype=self._dtype)
+        try:
+            value = np.broadcast_to(value, self._shape)
+        except ValueError as error:
+            raise ValueError(f"{name} must broadcast to shape {self._shape}") from error
+        if np.any(np.isnan(value)):
+            raise ValueError(f"{name} must not contain NaN")
         return value.copy()
 
     @property
@@ -257,6 +284,8 @@ class DeviceAugmentedLagrangian:
             raise ValueError(f"x must have shape {self._shape}, got {x.shape}")
         if not np.all(np.isfinite(x)):
             raise ValueError("x must be finite")
+        if np.any(x < self._lower_bounds) or np.any(x > self._upper_bounds):
+            raise ValueError("x must lie within bounds")
         return x
 
     @staticmethod
@@ -283,7 +312,14 @@ class DeviceAugmentedLagrangian:
 
         value_and_grad = jax.value_and_grad(al_value, argnums=0)
 
-        def direction(state):
+        def projected_gradient(x, gradient, lower_bounds, upper_bounds):
+            active_outward = (
+                ((x <= lower_bounds) & (gradient > 0.0))
+                | ((x >= upper_bounds) & (gradient < 0.0))
+            )
+            return jnp.where(active_outward, 0.0, gradient)
+
+        def direction(state, lower_bounds, upper_bounds):
             coefficients = jnp.zeros((history_size,), dtype=state.x.dtype)
 
             def first(index, carry):
@@ -327,20 +363,40 @@ class DeviceAugmentedLagrangian:
 
             vector = jax.lax.fori_loop(0, history_size, second, vector)
             candidate = -vector
+            candidate = jnp.where(
+                ((state.x <= lower_bounds) & (candidate < 0.0))
+                | ((state.x >= upper_bounds) & (candidate > 0.0)),
+                0.0,
+                candidate,
+            )
             dot = jnp.vdot(state.gradient, candidate)
             floor = (
                 1e-14
                 * jnp.linalg.norm(state.gradient)
                 * jnp.maximum(jnp.linalg.norm(candidate), 1e-30)
             )
-            return jnp.where(dot < -floor, candidate, -state.gradient)
+            fallback = -projected_gradient(
+                state.x, state.gradient, lower_bounds, upper_bounds
+            )
+            return jnp.where(dot < -floor, candidate, fallback)
 
-        def inner_solve(initial_x, multipliers, penalties, scales, tolerance):
+        def inner_solve(
+            initial_x,
+            multipliers,
+            penalties,
+            scales,
+            tolerance,
+            lower_bounds,
+            upper_bounds,
+        ):
             initial_value, initial_gradient = value_and_grad(
                 initial_x, multipliers, penalties, scales
             )
             initial_gradient_norm = jnp.linalg.norm(
-                initial_gradient, ord=jnp.inf
+                projected_gradient(
+                    initial_x, initial_gradient, lower_bounds, upper_bounds
+                ),
+                ord=jnp.inf,
             )
             initial = _InnerState(
                 x=initial_x,
@@ -362,15 +418,21 @@ class DeviceAugmentedLagrangian:
             )
 
             def iteration(state):
-                search_direction = direction(state)
-                directional_derivative = jnp.vdot(
-                    state.gradient, search_direction
-                )
+                search_direction = direction(state, lower_bounds, upper_bounds)
                 first_step = jnp.minimum(
                     1.0,
                     1.0
                     / jnp.maximum(
-                        jnp.linalg.norm(state.gradient, ord=jnp.inf), 1e-30
+                        jnp.linalg.norm(
+                            projected_gradient(
+                                state.x,
+                                state.gradient,
+                                lower_bounds,
+                                upper_bounds,
+                            ),
+                            ord=jnp.inf,
+                        ),
+                        1e-30,
                     ),
                 )
                 line_initial = _LineState(
@@ -392,7 +454,15 @@ class DeviceAugmentedLagrangian:
                     )
 
                 def line_iteration(line):
-                    candidate_x = state.x + line.step * search_direction
+                    candidate_x = jnp.clip(
+                        state.x + line.step * search_direction,
+                        lower_bounds,
+                        upper_bounds,
+                    )
+                    displacement = candidate_x - state.x
+                    directional_derivative = jnp.vdot(
+                        state.gradient, displacement
+                    )
                     candidate_value, candidate_gradient = value_and_grad(
                         candidate_x, multipliers, penalties, scales
                     )
@@ -401,11 +471,10 @@ class DeviceAugmentedLagrangian:
                     )
                     armijo = candidate_value <= (
                         state.value
-                        + config.armijo_coefficient
-                        * line.step
-                        * directional_derivative
+                        + config.armijo_coefficient * directional_derivative
                     )
-                    accepted = finite & armijo
+                    moved = jnp.any(displacement != 0.0)
+                    accepted = finite & moved & armijo
                     return _LineState(
                         step=jnp.where(
                             accepted,
@@ -453,7 +522,16 @@ class DeviceAugmentedLagrangian:
                     )
                     iterations = state.iterations + 1
                     converged = (
-                        jnp.linalg.norm(line.gradient, ord=jnp.inf) <= tolerance
+                        jnp.linalg.norm(
+                            projected_gradient(
+                                line.x,
+                                line.gradient,
+                                lower_bounds,
+                                upper_bounds,
+                            ),
+                            ord=jnp.inf,
+                        )
+                        <= tolerance
                     )
                     return _InnerState(
                         x=line.x,
@@ -489,7 +567,13 @@ class DeviceAugmentedLagrangian:
             )
             return state, initial_gradient_norm
 
-        def solve(initial_x, initial_scales, minimum_scales):
+        def solve(
+            initial_x,
+            initial_scales,
+            minimum_scales,
+            lower_bounds,
+            upper_bounds,
+        ):
             base, raw = terms(initial_x)
             mapped = map_constraints(raw, initial_scales)
             penalties = jnp.full_like(raw, config.mu_init)
@@ -541,12 +625,19 @@ class DeviceAugmentedLagrangian:
                     state.penalties,
                     state.constraint_scales,
                     requested_tolerance,
+                    lower_bounds,
+                    upper_bounds,
                 )
                 base, raw = terms(inner.x)
                 mapped = map_constraints(raw, state.constraint_scales)
                 raw_norm = jnp.linalg.norm(raw, ord=jnp.inf)
                 mapped_norm = jnp.linalg.norm(mapped, ord=jnp.inf)
-                gradient_norm = jnp.linalg.norm(inner.gradient, ord=jnp.inf)
+                gradient_norm = jnp.linalg.norm(
+                    projected_gradient(
+                        inner.x, inner.gradient, lower_bounds, upper_bounds
+                    ),
+                    ord=jnp.inf,
+                )
                 absolute_threshold = (
                     config.inner_stationarity_factor
                     * requested_tolerance
@@ -569,7 +660,14 @@ class DeviceAugmentedLagrangian:
                 progress = (mapped_norm < state.eta) & inner_accepted
                 if config.inner_stationarity_relative_tolerance is None:
                     stationary_convergence = (
-                        jnp.linalg.norm(inner.gradient)
+                        jnp.linalg.norm(
+                            projected_gradient(
+                                inner.x,
+                                inner.gradient,
+                                lower_bounds,
+                                upper_bounds,
+                            )
+                        )
                         <= config.gradient_tolerance
                     )
                 else:
@@ -729,11 +827,15 @@ class DeviceAugmentedLagrangian:
     def compile(self, example_x=None):
         """Compile the complete nested AL solve without executing it."""
         if example_x is None:
-            example_x = np.zeros(self._shape, dtype=self._dtype)
+            example_x = self._initial_x
         x = self._device_put(self._coerce_x(example_x))
         scales = self._device_put(self._constraint_scales)
         minimum_scales = self._device_put(self._minimum_constraint_scales)
-        self._compiled = self._solver.lower(x, scales, minimum_scales).compile()
+        lower_bounds = self._device_put(self._lower_bounds)
+        upper_bounds = self._device_put(self._upper_bounds)
+        self._compiled = self._solver.lower(
+            x, scales, minimum_scales, lower_bounds, upper_bounds
+        ).compile()
         return self
 
     def run(self, initial_x):
@@ -746,6 +848,8 @@ class DeviceAugmentedLagrangian:
             x,
             self._device_put(self._constraint_scales),
             self._device_put(self._minimum_constraint_scales),
+            self._device_put(self._lower_bounds),
+            self._device_put(self._upper_bounds),
         )
         jax.block_until_ready(raw)
         seconds = time.perf_counter() - start

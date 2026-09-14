@@ -340,6 +340,7 @@ def minimize_equality_augmented_lagrangian(
     penalty_update_mode: str = "componentwise",
     constraint_scale_reduction_factor: float = 1.0,
     minimum_constraint_scales=None,
+    bounds=None,
 ):
     """Minimize a zero-equality augmented Lagrangian with L-BFGS-B.
 
@@ -361,7 +362,10 @@ def minimize_equality_augmented_lagrangian(
     outside tolerance; the default retains componentwise growth. A scale
     reduction below one is applied only after a stationary stage also satisfies
     the AL progress test. Multipliers are rescaled to preserve their physical
-    linear coefficient when this continuation step changes coordinates.
+    linear coefficient when this continuation step changes coordinates. Optional
+    box ``bounds`` are passed to every L-BFGS-B stage; stationarity is then
+    evaluated with the projected gradient, while the raw gradient remains in
+    the diagnostic history.
     """
     x = np.asarray(initial_x, dtype=float).copy()
     if x.ndim != 1 or not np.all(np.isfinite(x)):
@@ -401,6 +405,36 @@ def minimize_equality_augmented_lagrangian(
         raise ValueError(
             "constraint_scale_reduction_factor must be in the interval (0, 1]"
         )
+
+    if bounds is None:
+        lower_bounds = np.full_like(x, -np.inf)
+        upper_bounds = np.full_like(x, np.inf)
+        scipy_bounds = None
+    else:
+        try:
+            lower_bounds = np.asarray(bounds.lb, dtype=float)
+            upper_bounds = np.asarray(bounds.ub, dtype=float)
+        except AttributeError:
+            bound_array = np.asarray(bounds, dtype=float)
+            if bound_array.shape != (x.size, 2):
+                raise ValueError("bounds must contain one lower/upper pair per variable")
+            lower_bounds, upper_bounds = bound_array.T
+        lower_bounds = np.broadcast_to(lower_bounds, x.shape).copy()
+        upper_bounds = np.broadcast_to(upper_bounds, x.shape).copy()
+        if np.any(np.isnan(lower_bounds)) or np.any(np.isnan(upper_bounds)):
+            raise ValueError("bounds must not contain NaN")
+        if np.any(lower_bounds > upper_bounds):
+            raise ValueError("every lower bound must not exceed its upper bound")
+        if np.any(x < lower_bounds) or np.any(x > upper_bounds):
+            raise ValueError("initial_x must lie within bounds")
+        scipy_bounds = list(zip(lower_bounds, upper_bounds))
+
+    def projected_gradient(point, gradient):
+        active_outward = (
+            ((point <= lower_bounds) & (gradient > 0.0))
+            | ((point >= upper_bounds) & (gradient < 0.0))
+        )
+        return np.where(active_outward, 0.0, gradient)
 
     base_objective, raw_constraints = bridge.evaluate_terms(x)
     raw_constraints = np.asarray(raw_constraints, dtype=float)
@@ -509,8 +543,11 @@ def minimize_equality_augmented_lagrangian(
         inner_start = time.perf_counter()
         requested_inner_gradient_tolerance = max(omega, gradient_tolerance)
         _, stage_initial_gradient = bridge(x)
+        stage_initial_projected_gradient = projected_gradient(
+            x, stage_initial_gradient
+        )
         stage_initial_gradient_norm_infinity = float(
-            np.linalg.norm(stage_initial_gradient, ord=np.inf)
+            np.linalg.norm(stage_initial_projected_gradient, ord=np.inf)
         )
         if not np.isfinite(stage_initial_gradient_norm_infinity):
             raise FloatingPointError("inner stage begins with a non-finite gradient")
@@ -519,6 +556,7 @@ def minimize_equality_augmented_lagrangian(
             x,
             jac=True,
             method="L-BFGS-B",
+            bounds=scipy_bounds,
             options={
                 "maxiter": max_inner_iterations,
                 "maxcor": maxcor,
@@ -564,6 +602,11 @@ def minimize_equality_augmented_lagrangian(
         scaled_constraint_norm = float(np.linalg.norm(scaled_constraints, ord=np.inf))
         gradient_norm = float(np.linalg.norm(final_gradient))
         gradient_norm_infinity = float(np.linalg.norm(final_gradient, ord=np.inf))
+        final_projected_gradient = projected_gradient(x, final_gradient)
+        projected_gradient_norm = float(np.linalg.norm(final_projected_gradient))
+        projected_gradient_norm_infinity = float(
+            np.linalg.norm(final_projected_gradient, ord=np.inf)
+        )
         step_norm_infinity = float(np.linalg.norm(x - x_before, ord=np.inf))
         absolute_stationarity_threshold = (
             inner_stationarity_factor
@@ -580,7 +623,9 @@ def minimize_equality_augmented_lagrangian(
         applied_stationarity_threshold = max(
             absolute_stationarity_threshold, relative_stationarity_threshold
         )
-        inner_stationary = gradient_norm_infinity <= applied_stationarity_threshold
+        inner_stationary = (
+            projected_gradient_norm_infinity <= applied_stationarity_threshold
+        )
         inner_stage_accepted = inner_stationary or not require_inner_stationarity
         total_inner_iterations += int(inner_result.nit)
         stage_evaluations = int(
@@ -590,7 +635,7 @@ def minimize_equality_augmented_lagrangian(
 
         progress_accepted = scaled_constraint_norm < eta and inner_stage_accepted
         if inner_stationarity_relative_tolerance is None:
-            stationary_convergence = gradient_norm <= gradient_tolerance
+            stationary_convergence = projected_gradient_norm <= gradient_tolerance
         else:
             stationary_convergence = inner_stationary
         converged = stationary_convergence and constraint_norm <= constraint_tolerance
@@ -651,10 +696,14 @@ def minimize_equality_augmented_lagrangian(
             "base_objective": float(base_objective),
             "gradient_norm": gradient_norm,
             "gradient_norm_infinity": gradient_norm_infinity,
+            "projected_gradient_norm": projected_gradient_norm,
+            "projected_gradient_norm_infinity": (
+                projected_gradient_norm_infinity
+            ),
             "stage_initial_gradient_norm_infinity": (
                 stage_initial_gradient_norm_infinity
             ),
-            "gradient_infinity_reduction_ratio": gradient_norm_infinity
+            "gradient_infinity_reduction_ratio": projected_gradient_norm_infinity
             / max(stage_initial_gradient_norm_infinity, np.finfo(float).tiny),
             "requested_inner_gradient_tolerance": requested_inner_gradient_tolerance,
             "absolute_stationarity_threshold": absolute_stationarity_threshold,

@@ -2992,8 +2992,109 @@ kernel-only timing from being presented as end-to-end performance.
 The new Colab workflow produces
 \code{simsopt-end-to-end-device-al.zip}.  Its analyzer will generate cold-time
 and work-count bars, outer convergence curves, and final magnetic-metric bars.
-No performance or scientific claim is made until the NVIDIA archive is
-returned and incorporated into this report.
+
+\subsection{A100 end-to-end result: fast, but scientifically rejected}
+
+The first no-refinement archive was returned on 14 September 2026 from
+revision \code{c801a6e0}.  Its SHA-256 digest is
+\code{25ac2a5cf335a01633483fae1e69385112f12c42e67b531a17376968821d9e78}.
+The runtime was an NVIDIA A100-SXM4-40GB with JAX 0.11.1, SciPy 1.16.3,
+Python 3.13.15, float64 enabled and one OpenMP thread.  Both paths began from
+the identical canonical circular order-eight configuration.  The archive
+contains nonempty VTS and VTU files for both endpoints; each VTS exposes
+\code{B\_dot\_n\_over\_abs\_B}, its absolute value, \code{B\_dot\_n}, and
+\code{abs\_B} as surface arrays.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_performance.png}
+\caption{Measured A100 end-to-end time and work.  These are implementation
+measurements, not a validated scientific speedup: the endpoints fail the flux
+target and the GPU endpoint leaves the intended coil-design envelope.}
+\label{fig:end-to-end-al-performance}
+\end{figure}
+
+The CPU path compiled in 1.946~s and ran for 800.270~s, for 802.216~s cold
+end-to-end.  It executed 421 inner iterations and 1,114 value/gradient
+evaluations over two AL stages, then correctly stopped when the second inner
+solve reached its 300-iteration limit without satisfying the stationarity
+safeguard.  The complete GPU executable compiled in 5.063~s.  Its three
+execution samples were 1.743, 1.702, and 1.687~s (1.702~s median), with 38
+inner iterations and 318 evaluations over two AL stages.  This gives nominal
+cold and warm ratios of $117.9\times$ and $470.2\times$.  The GPU advantage
+contains both faster evaluations and $3.50\times$ less algorithmic work, so it
+must not be interpreted as kernel speed alone.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_convergence.png}
+\caption{Two-stage outer histories.  The GPU's zero engineering-residual norm
+is real for the residuals currently represented, but misleading as a design
+qualification because those residuals contain lower-distance and
+upper-curvature conditions but no upper coil-length envelope.}
+\label{fig:end-to-end-al-convergence}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{No-refinement A100 endpoints.  The target flux is
+$10^{-5}$, with an allowed boundary of $1.1\times10^{-5}$.}
+\label{tab:end-to-end-al-qoi}
+\begin{tabular}{lrr}
+\toprule
+Quantity & CPU SciPy AL & GPU-native AL \\
+\midrule
+Scalar objective & $7.28381\times10^{-3}$ & $6.87271\times10^{-3}$ \\
+Quadratic flux & $7.26889\times10^{-3}$ & $1.37337\times10^{-3}$ \\
+Mean $|B\cdot n|/|B|$ & 0.112602 & 0.531810 \\
+RMS $|B\cdot n|/|B|$ & 0.135023 & 0.623111 \\
+Maximum $|B\cdot n|/|B|$ & 0.264221 & 0.999930 \\
+Total base-coil length (m) & 14.9170 & 5499.3317 \\
+Minimum coil--coil distance (m) & 0.144847 & 0.790087 \\
+Minimum coil--surface distance (m) & 0.302014 & 5.871547 \\
+Maximum curvature ($\mathrm{m}^{-1}$) & 5.00099 & 0.959073 \\
+Maximum mean-squared curvature ($\mathrm{m}^{-2}$) & 5.00102 & 0.0113584 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\textwidth]{figures/end_to_end_al_final_metrics.png}
+\caption{Final magnetic quantities before any refinement.  Neither backend
+meets the requested quadratic-flux target, and the normalized normal field
+shows that the lower GPU quadratic flux does not describe an acceptable
+surface-field solution.}
+\label{fig:end-to-end-al-final-metrics}
+\end{figure}
+
+The CPU endpoint satisfies every engineering target within the requested 10\%
+allowance, but misses the quadratic-flux boundary by a factor of 661.  The GPU
+endpoint also reports zero represented engineering violations and misses the
+flux boundary by a factor of 125; nevertheless it is physically degenerate.
+Its four base coils have lengths 1251, 1782, 959, and 1506~m, compared with
+3.58--3.88~m on the CPU.  Enlarging the coils makes the distance and curvature
+hinges vanish, while the $10^{-6}$ linear length term contributes only about
+$5.5\times10^{-3}$ to the objective.  The device solver can therefore accept
+a 56.1-scaled-coordinate step that genuinely lowers the modeled objective.
+This is not an objective-evaluation bug; it exposes a noncoercive feasible
+model and an unmatched practical distinction between SciPy's local trajectory
+and the device Armijo trajectory.
+
+\textbf{Decision.}  Reject this run as the scientific end-to-end
+qualification and retain its timing only as diagnostic evidence.  The
+subsequent implementation now adds identical physical design-envelope bounds
+to the CPU and device inner solvers: free currents are restricted to
+$0.5$--$1.5$ times their starting values and every Fourier coefficient to
+$\pm0.25$~m about its circular-start value.  Projected-gradient convergence,
+bound-filtered directions and clipped Armijo trials execute fully on device.
+The next archive will rerun from the same circles with no refinement.
+Qualification still requires each endpoint to meet the
+$1.1\times10^{-5}$ flux boundary and every engineering target; speedup will be
+reported only after those gates pass.  A per-coil maximum-length residual is a
+possible later physical constraint, but it will not be silently inserted into
+the stated engineering problem merely to improve this benchmark.
 
 \section{Opportunities to improve coil quality}
 

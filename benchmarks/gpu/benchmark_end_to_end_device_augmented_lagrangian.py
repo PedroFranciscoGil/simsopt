@@ -55,6 +55,9 @@ def parse_args():
     parser.add_argument("--target-relative-tolerance", type=float, default=0.10)
     parser.add_argument("--quadratic-flux-target", type=float, default=1e-5)
     parser.add_argument("--current-scale", type=float, default=1e5)
+    parser.add_argument("--minimum-current-ratio", type=float, default=0.5)
+    parser.add_argument("--maximum-current-ratio", type=float, default=1.5)
+    parser.add_argument("--curve-coefficient-bound-radius", type=float, default=0.25)
     parser.add_argument("--target-tile-size", type=int, default=1024)
     parser.add_argument("--source-tile-size", type=int, default=4320)
     parser.add_argument("--gpu-warm-repeats", type=int, default=3)
@@ -87,6 +90,9 @@ def parse_args():
         "target_relative_tolerance",
         "quadratic_flux_target",
         "current_scale",
+        "minimum_current_ratio",
+        "maximum_current_ratio",
+        "curve_coefficient_bound_radius",
     ):
         value = getattr(args, name)
         if not math.isfinite(value) or value <= 0:
@@ -99,13 +105,15 @@ def parse_args():
         parser.error("constraint scale reduction factor must be at most one")
     if not 0 < args.target_relative_tolerance < 1:
         parser.error("target relative tolerance must be below one")
+    if not args.minimum_current_ratio < 1 < args.maximum_current_ratio:
+        parser.error("current-ratio bounds must straddle the initial current")
     if args.no_visualization and args.visualization_dir is not None:
         parser.error("no-visualization and visualization-dir are mutually exclusive")
     return args
 
 
-def optimization_summary(result):
-    return {
+def optimization_summary(result, lower_bounds=None, upper_bounds=None):
+    summary = {
         "success": bool(result.success),
         "message": result.message,
         "outer_iterations": int(result.outer_iterations),
@@ -125,6 +133,35 @@ def optimization_summary(result):
             result.terminated_by_inner_safeguard
         ),
         "history": list(result.history),
+    }
+    if lower_bounds is not None and upper_bounds is not None:
+        active_outward = (
+            ((result.x <= lower_bounds) & (result.jac > 0.0))
+            | ((result.x >= upper_bounds) & (result.jac < 0.0))
+        )
+        projected = np.where(active_outward, 0.0, result.jac)
+        summary["final_projected_gradient_norm_infinity"] = float(
+            np.linalg.norm(projected, ord=np.inf)
+        )
+    return summary
+
+
+def design_envelope(initial_x, current_count, args):
+    """Return matched bounds in nondimensional optimizer coordinates."""
+    lower = np.asarray(initial_x, dtype=float).copy()
+    upper = lower.copy()
+    lower[:current_count] *= args.minimum_current_ratio
+    upper[:current_count] *= args.maximum_current_ratio
+    lower[current_count:] -= args.curve_coefficient_bound_radius
+    upper[current_count:] += args.curve_coefficient_bound_radius
+    return lower, upper
+
+
+def bound_activity(x, lower, upper):
+    tolerance = 1e-8 * np.maximum(1.0, upper - lower)
+    return {
+        "lower": int(np.count_nonzero(np.asarray(x) - lower <= tolerance)),
+        "upper": int(np.count_nonzero(upper - np.asarray(x) <= tolerance)),
     }
 
 
@@ -189,6 +226,9 @@ def main():
     )
     physical_initial_x = cpu_objective.x.copy()
     initial_x = physical_initial_x / coordinate_bridge.coordinate_scales
+    lower_bounds, upper_bounds = design_envelope(
+        initial_x, free_current_indices.size, args
+    )
     term_kwargs = {
         "length_weight": settings["length_weight"],
         "curvature_threshold": settings["curvature_threshold"],
@@ -259,6 +299,7 @@ def main():
             args.constraint_scale_reduction_factor
         ),
         minimum_constraint_scales=minimum_scales,
+        bounds=list(zip(lower_bounds, upper_bounds)),
     )
 
     device_config = DeviceAugmentedLagrangianConfig(
@@ -289,6 +330,8 @@ def main():
         residual_count,
         constraint_scales=scales,
         minimum_constraint_scales=minimum_scales,
+        lower_bounds=lower_bounds,
+        upper_bounds=upper_bounds,
         config=device_config,
         platform=accelerator_platform,
     )
@@ -360,16 +403,17 @@ def main():
     cpu_end_to_end = cpu_compile_seconds + cpu_result.seconds
     gpu_cold_end_to_end = device_compile_seconds + execution_samples[0]
     output = {
-        "schema_version": 1,
+        "schema_version": 2,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "name": "local_residual_equality_augmented_lagrangian",
             "refinement_performed": False,
             "matched_outer_update": True,
             "cpu_inner_solver": "SciPy L-BFGS-B",
-            "gpu_inner_solver": "compiled device-resident L-BFGS",
+            "gpu_inner_solver": "compiled device-resident projected L-BFGS",
             "gpu_outer_loop_device_resident": True,
             "gpu_host_callbacks": 0,
+            "matched_design_envelope_bounds": True,
         },
         "problem": spec.as_dict(),
         "solver": {
@@ -401,6 +445,18 @@ def main():
             "vjp_mode": gpu_config.vjp_mode,
             "accelerator_platform": accelerator_platform,
         },
+        "design_envelope": {
+            "coordinate_system": "current-scaled SIMSOPT optimizer coordinates",
+            "minimum_current_ratio": args.minimum_current_ratio,
+            "maximum_current_ratio": args.maximum_current_ratio,
+            "curve_coefficient_bound_radius_m": (
+                args.curve_coefficient_bound_radius
+            ),
+            "free_current_count": int(free_current_indices.size),
+            "curve_coefficient_count": int(
+                initial_x.size - free_current_indices.size
+            ),
+        },
         "initial_state": {
             "source": "canonical_equally_spaced_circular_coils",
             "physical_variables": physical_initial_x.tolist(),
@@ -429,7 +485,12 @@ def main():
             "implementation": "Python AL outer loop with SciPy L-BFGS-B inner solves",
             "compilation_seconds": cpu_compile_seconds,
             "end_to_end_seconds": cpu_end_to_end,
-            "optimization": optimization_summary(cpu_result),
+            "optimization": optimization_summary(
+                cpu_result, lower_bounds, upper_bounds
+            ),
+            "active_bounds": bound_activity(
+                cpu_result.x, lower_bounds, upper_bounds
+            ),
             "final_metrics": cpu_metrics,
             "scientific_validation": cpu_validation,
             "physical_variables": cpu_physical_x.tolist(),
@@ -443,7 +504,12 @@ def main():
             "execution_samples_seconds": execution_samples,
             "warm_median_seconds": device_warm_median,
             "cold_end_to_end_seconds": gpu_cold_end_to_end,
-            "optimization": optimization_summary(device_result),
+            "optimization": optimization_summary(
+                device_result, lower_bounds, upper_bounds
+            ),
+            "active_bounds": bound_activity(
+                device_result.x, lower_bounds, upper_bounds
+            ),
             "final_metrics": device_metrics,
             "scientific_validation": device_validation,
             "physical_variables": device_physical_x.tolist(),

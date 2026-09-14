@@ -56,13 +56,18 @@ def read_archive(path):
 
 
 def validate_result(result):
-    if result.get("schema_version") != 1 or result.get("workflow") != (
+    if result.get("schema_version") not in (1, 2) or result.get("workflow") != (
         "end_to_end_device_augmented_lagrangian"
     ):
         raise ValueError("end-to-end AL result contract does not match")
     method = result.get("method", {})
     if method.get("refinement_performed") is not False:
         raise ValueError("comparison unexpectedly contains a refinement phase")
+    if result["schema_version"] >= 2 and (
+        method.get("matched_design_envelope_bounds") is not True
+        or not result.get("design_envelope")
+    ):
+        raise ValueError("matched design-envelope bounds are missing")
     if (
         result.get("cpu", {}).get("execution_platform") != "cpu"
         or result.get("gpu_native", {}).get("execution_platform") != "gpu"
@@ -222,6 +227,7 @@ def main():
         "method": result["method"],
         "problem": result["problem"],
         "solver": result["solver"],
+        "design_envelope": result.get("design_envelope"),
         "validation_policy": result["validation_policy"],
         "cpu": {
             key: value

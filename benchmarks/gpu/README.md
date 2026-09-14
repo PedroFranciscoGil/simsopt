@@ -579,6 +579,8 @@ OMP_NUM_THREADS=1 python \
   --max-inner-iterations 300 --mu-init 10 --tau 2 --mu-max 1e12 \
   --history-size 20 --cpu-maxcor 100 \
   --max-line-search-iterations 50 --gpu-warm-repeats 3 \
+  --minimum-current-ratio 0.5 --maximum-current-ratio 1.5 \
+  --curve-coefficient-bound-radius 0.25 \
   --target-relative-tolerance 0.10 --quadratic-flux-target 1e-5 \
   --current-scale 100000 --target-tile-size 1024 \
   --source-tile-size 4320 \
@@ -598,3 +600,22 @@ Analyze the returned archive with:
 python benchmarks/gpu/analyze_end_to_end_device_augmented_lagrangian.py \
   simsopt-end-to-end-device-al.zip docs/gpu_native/figures
 ```
+
+The first A100 archive (SHA-256
+`25ac2a5cf335a01633483fae1e69385112f12c42e67b531a17376968821d9e78`)
+measured 802.216 s for CPU cold end-to-end and 6.806 s for GPU cold
+end-to-end; the GPU warm median was 1.702 s. These nominal 117.9x cold and
+470.2x warm ratios are **not scientific speedup claims**. Neither endpoint met
+the `1e-5` quadratic-flux target, and the unconstrained GPU inner solve found a
+degenerate 5499 m total base-coil configuration because the represented
+engineering residuals do not impose an upper coil-length envelope. The CPU
+endpoint remained at 14.917 m. The run is retained as diagnostic evidence and
+the qualification is rejected.
+
+Schema 2 applies the same explicit physical-variable envelope to both inner
+solvers: free currents remain between 0.5x and 1.5x their circular-start values,
+and every Fourier coefficient remains within 0.25 m of its start. The device
+implementation enforces these bounds inside its compiled projected L-BFGS
+iteration and Armijo line search. No refinement phase is added; timing becomes
+reportable as a validated end-to-end speedup only when both direct AL endpoints
+pass the flux and engineering target gates.

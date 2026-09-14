@@ -48,12 +48,14 @@ def optimization():
 def result_contract():
     validation = {"passed": True}
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "refinement_performed": False,
             "gpu_outer_loop_device_resident": True,
+            "matched_design_envelope_bounds": True,
         },
+        "design_envelope": {"curve_coefficient_bound_radius_m": 0.25},
         "cpu": {
             "execution_platform": "cpu",
             "compilation_seconds": 0.5,
@@ -89,6 +91,9 @@ def test_benchmark_defaults_match_production_comparison():
     assert args.history_size == 20
     assert args.cpu_maxcor == 100
     assert args.gpu_warm_repeats == 3
+    assert args.minimum_current_ratio == 0.5
+    assert args.maximum_current_ratio == 1.5
+    assert args.curve_coefficient_bound_radius == 0.25
 
 
 def test_analyzer_validates_device_placement_and_no_refinement():
@@ -122,7 +127,9 @@ def test_colab_runs_matched_no_refinement_comparison_and_downloads_archive():
     assert '"--max-outer-iterations", "8"' in source
     assert '"--max-inner-iterations", "300"' in source
     assert '"--history-size", "20"' in source
+    assert '"--curve-coefficient-bound-radius", "0.25"' in source
     assert 'result["method"]["refinement_performed"] is False' in source
+    assert 'result["method"]["matched_design_envelope_bounds"]' in source
     assert 'result["gpu_native"]["host_callbacks"] == 0' in source
     assert "path.is_absolute()" in source
     assert "files.download(archive)" in source
