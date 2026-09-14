@@ -126,6 +126,7 @@ class _OuterState(NamedTuple):
     base_objective: jax.Array
     raw_constraints: jax.Array
     mapped_constraints: jax.Array
+    x_history: jax.Array
     base_objective_history: jax.Array
     augmented_lagrangian_history: jax.Array
     constraint_norm_history: jax.Array
@@ -599,6 +600,11 @@ class DeviceAugmentedLagrangian:
                 base_objective=base,
                 raw_constraints=raw,
                 mapped_constraints=mapped,
+                x_history=jnp.full(
+                    (max_outer, initial_x.size),
+                    jnp.nan,
+                    dtype=initial_x.dtype,
+                ),
                 base_objective_history=nan_history,
                 augmented_lagrangian_history=nan_history,
                 constraint_norm_history=nan_history,
@@ -760,6 +766,7 @@ class DeviceAugmentedLagrangian:
                     base_objective=base,
                     raw_constraints=raw,
                     mapped_constraints=mapped_after,
+                    x_history=state.x_history.at[index].set(inner.x),
                     base_objective_history=state.base_objective_history.at[
                         index
                     ].set(base),
@@ -887,6 +894,9 @@ class DeviceAugmentedLagrangian:
                     ),
                     "outer_update_applied": bool(raw.outer_update_history[index]),
                     "maximum_penalty_after": float(raw.penalty_max_history[index]),
+                    "optimizer_variables": np.asarray(
+                        raw.x_history[index]
+                    ).tolist(),
                 }
             )
         status = int(raw.reason)

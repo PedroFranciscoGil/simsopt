@@ -2972,8 +2972,10 @@ the device solver uses the A100-qualified 20-pair history.  This intentionally
 compares the production configuration of each optimizer; iteration and
 physics-evaluation counts accompany time so algorithmic work remains visible.
 
-No direct-flux refinement is permitted in this workflow.  Final metrics are
-computed immediately at the two AL endpoints with the SIMSOPT CPU oracle.  The
+No direct-flux refinement is permitted in this workflow.  Schemas 1--2 compute
+final metrics immediately at the two terminal AL states with the SIMSOPT CPU
+oracle; schema~3 applies the documented target-aware selection only among the
+initial state and completed AL outer states.  The
 result stores the penalty objective, quadratic flux, mean/RMS/maximum
 $|B\cdot n|/|B|$, currents and all coil-constraint measurements for both paths.
 Each endpoint is independently tested against the 10\% physical target policy;
@@ -3005,15 +3007,6 @@ contains nonempty VTS and VTU files for both endpoints; each VTS exposes
 \code{B\_dot\_n\_over\_abs\_B}, its absolute value, \code{B\_dot\_n}, and
 \code{abs\_B} as surface arrays.
 
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_performance.png}
-\caption{Measured A100 end-to-end time and work.  These are implementation
-measurements, not a validated scientific speedup: the endpoints fail the flux
-target and the GPU endpoint leaves the intended coil-design envelope.}
-\label{fig:end-to-end-al-performance}
-\end{figure}
-
 The CPU path compiled in 1.946~s and ran for 800.270~s, for 802.216~s cold
 end-to-end.  It executed 421 inner iterations and 1,114 value/gradient
 evaluations over two AL stages, then correctly stopped when the second inner
@@ -3025,22 +3018,12 @@ cold and warm ratios of $117.9\times$ and $470.2\times$.  The GPU advantage
 contains both faster evaluations and $3.50\times$ less algorithmic work, so it
 must not be interpreted as kernel speed alone.
 
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_convergence.png}
-\caption{Two-stage outer histories.  The GPU's zero engineering-residual norm
-is real for the residuals currently represented, but misleading as a design
-qualification because those residuals contain lower-distance and
-upper-curvature conditions but no upper coil-length envelope.}
-\label{fig:end-to-end-al-convergence}
-\end{figure}
-
 \begin{table}[htbp]
 \centering
 \small
 \caption{No-refinement A100 endpoints.  The target flux is
 $10^{-5}$, with an allowed boundary of $1.1\times10^{-5}$.}
-\label{tab:end-to-end-al-qoi}
+\label{tab:end-to-end-al-unbounded-qoi}
 \begin{tabular}{lrr}
 \toprule
 Quantity & CPU SciPy AL & GPU-native AL \\
@@ -3058,16 +3041,6 @@ Maximum mean-squared curvature ($\mathrm{m}^{-2}$) & 5.00102 & 0.0113584 \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.88\textwidth]{figures/end_to_end_al_final_metrics.png}
-\caption{Final magnetic quantities before any refinement.  Neither backend
-meets the requested quadratic-flux target, and the normalized normal field
-shows that the lower GPU quadratic flux does not describe an acceptable
-surface-field solution.}
-\label{fig:end-to-end-al-final-metrics}
-\end{figure}
 
 The CPU endpoint satisfies every engineering target within the requested 10\%
 allowance, but misses the quadratic-flux boundary by a factor of 661.  The GPU
@@ -3095,6 +3068,101 @@ $1.1\times10^{-5}$ flux boundary and every engineering target; speedup will be
 reported only after those gates pass.  A per-coil maximum-length residual is a
 possible later physical constraint, but it will not be silently inserted into
 the stated engineering problem merely to improve this benchmark.
+
+\subsection{Bounded A100 rerun: geometry fixed, stationarity blocks progress}
+
+The matched-bound archive from revision \code{ca748727} has SHA-256
+\nolinkurl{96021611e05c1945d184184169be4edb1fbee4ea4775c834731f9bc4bded422a}.
+It uses the same A100, software stack, initial circles, problem resolution and
+no-refinement rule as the first run.  All 207 optimizer variables are bounded
+identically on CPU and GPU.  Neither selected endpoint is active at a bound,
+but the bounded device line search prevents the previous escape to kilometre-
+scale coils.  The GPU endpoint now has 14.832~m total base-coil length.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_performance.png}
+\caption{Bounded A100 time and work.  CPU cold time is 465.060~s; GPU cold
+time is 11.663~s and its warm median is 6.658~s.  The nominal $39.88\times$
+cold and $69.57\times$ warm ratios remain diagnostic because neither endpoint
+passes the squared-flux gate.}
+\label{fig:end-to-end-al-performance}
+\end{figure}
+
+The CPU reference exhausts all 300 inner iterations in its first AL stage,
+using 635 evaluations, and the hard stationarity safeguard rejects the stage.
+The GPU completes a stationary three-iteration first stage, then exhausts the
+second stage's 300-iteration budget.  It uses 1,217 evaluations in total and
+the same safeguard stops further outer updates.  Thus the GPU performs
+$1.92\times$ more value/gradient evaluations yet remains $69.57\times$ faster
+in the warm optimization measurement.  Compilation is 1.877~s on CPU and
+4.994~s for the complete GPU program.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_convergence.png}
+\caption{Bounded outer histories.  The GPU reduces the base objective from
+$1.762\times10^{-2}$ to $3.683\times10^{-3}$ in its two stages.  Its strict
+local-residual norm grows slightly in the second stage, although all final
+engineering quantities remain within the user's 10\% target envelope.}
+\label{fig:end-to-end-al-convergence}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Matched-bound, no-refinement endpoints.  Target validation is based
+on the explicit quantities, not gradient size.}
+\label{tab:end-to-end-al-bounded-qoi}
+\begin{tabular}{lrr}
+\toprule
+Quantity & CPU SciPy AL & GPU-native AL \\
+\midrule
+Scalar objective & $5.14474\times10^{-2}$ & $3.68317\times10^{-3}$ \\
+Quadratic flux & $2.30349\times10^{-2}$ & $3.66831\times10^{-3}$ \\
+Mean $|B\cdot n|/|B|$ & 0.192088 & 0.0806408 \\
+RMS $|B\cdot n|/|B|$ & 0.222743 & 0.101082 \\
+Maximum $|B\cdot n|/|B|$ & 0.448399 & 0.230422 \\
+Total base-coil length (m) & 13.1413 & 14.8316 \\
+Minimum coil--coil distance (m) & 0.142470 & 0.169673 \\
+Minimum coil--surface distance (m) & 0.182914 & 0.296002 \\
+Maximum curvature ($\mathrm{m}^{-1}$) & 4.77503 & 4.57415 \\
+Maximum mean-squared curvature ($\mathrm{m}^{-2}$) & 5.00113 & 5.00102 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\textwidth]{figures/end_to_end_al_final_metrics.png}
+\caption{Bounded direct-AL magnetic quantities.  The GPU is consistently
+better than CPU in this stopped run, but its quadratic flux is still about
+333 times the allowed $1.1\times10^{-5}$ boundary.}
+\label{fig:end-to-end-al-final-metrics}
+\end{figure}
+
+The GPU endpoint passes all four engineering target envelopes: its minimum
+coil--surface distance is 0.2960~m, safely above the allowed 0.27~m boundary,
+and its curvature quantities are also accepted.  Its quadratic flux fails by
+a factor of 333.5.  The CPU endpoint fails both flux (a factor of 2094 above
+the boundary) and coil--surface distance (0.1829~m).  The stored raw gradients
+are large, but that alone is not a scientific failure under the agreed policy.
+Both nonempty VTS files retain signed and absolute $B\cdot n/|B|$ arrays, and
+both coil sets are present as VTU.
+
+\textbf{Decision.}  Keep the matched design envelope; it solved the runaway
+geometry defect.  Stop using inner stationarity as a hard veto when a finite,
+budget-limited coil step has useful physical progress.  Schema~3 therefore
+makes stationarity diagnostic, permits the AL outer loop to continue through
+its fixed budget, and retains every outer design on device.  After the solve,
+both backends apply the same target-aware checkpoint rule: prefer complete
+scientific validity, then engineering-valid states, then minimum target
+violation, and minimize quadratic flux within the chosen tier.  This is
+checkpoint selection inside one AL workflow, not a refinement solve.  Its
+CPU-oracle selection cost is stored separately; solver cold end-to-end remains
+compilation plus optimization, avoiding an order-dependent charge for the
+oracle's first compilation.  The next A100 archive must still pass the
+explicit flux and engineering gates before any speedup is accepted.
 
 \section{Opportunities to improve coil quality}
 

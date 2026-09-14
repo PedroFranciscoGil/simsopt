@@ -577,6 +577,7 @@ OMP_NUM_THREADS=1 python \
   benchmarks/gpu/benchmark_end_to_end_device_augmented_lagrangian.py \
   --problem engineering --max-outer-iterations 8 \
   --max-inner-iterations 300 --mu-init 10 --tau 2 --mu-max 1e12 \
+  --inner-acceptance-mode budgeted \
   --history-size 20 --cpu-maxcor 100 \
   --max-line-search-iterations 50 --gpu-warm-repeats 3 \
   --minimum-current-ratio 0.5 --maximum-current-ratio 1.5 \
@@ -619,3 +620,22 @@ implementation enforces these bounds inside its compiled projected L-BFGS
 iteration and Armijo line search. No refinement phase is added; timing becomes
 reportable as a validated end-to-end speedup only when both direct AL endpoints
 pass the flux and engineering target gates.
+
+The bounded A100 rerun (SHA-256
+`96021611e05c1945d184184169be4edb1fbee4ea4775c834731f9bc4bded422a`)
+removed the runaway solution: the GPU endpoint had 14.832 m total base-coil
+length and passed every engineering target envelope. It still failed the flux
+gate at `3.66831e-3`, while CPU stopped in its first nonstationary inner stage
+with flux `2.30349e-2` and a failed coil-surface target. Nominal cold and warm
+ratios were 39.88x and 69.57x, but remain diagnostic.
+
+Schema 3 treats stationarity as diagnostic under the default `budgeted` inner
+acceptance mode, allowing finite budget-limited stages to continue through the
+AL outer loop. Both paths retain every outer design and use an identical
+target-aware final checkpoint rule: complete target validity first,
+engineering validity second, then minimum engineering deviation, with minimum
+quadratic flux inside the selected tier. This is selection among direct AL
+iterates, not a refinement solve. CPU-oracle checkpoint-selection time is
+stored separately; solver end-to-end time remains compile plus optimization so
+the benchmark does not charge first-use oracle compilation to whichever
+backend is validated first.

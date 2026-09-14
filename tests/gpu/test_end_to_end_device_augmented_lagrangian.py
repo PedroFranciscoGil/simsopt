@@ -40,6 +40,7 @@ def optimization():
                 "outer_iteration": 1,
                 "base_objective": 1e-4,
                 "constraint_norm_infinity": 1e-6,
+                "optimizer_variables": [0.0],
             }
         ],
     }
@@ -48,12 +49,14 @@ def optimization():
 def result_contract():
     validation = {"passed": True}
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "refinement_performed": False,
             "gpu_outer_loop_device_resident": True,
             "matched_design_envelope_bounds": True,
+            "inner_stationarity_is_diagnostic": True,
+            "target_aware_outer_checkpoint_selection": True,
         },
         "design_envelope": {"curve_coefficient_bound_radius_m": 0.25},
         "cpu": {
@@ -62,6 +65,11 @@ def result_contract():
             "optimization": optimization(),
             "final_metrics": final_metrics(),
             "scientific_validation": validation,
+            "checkpoint_selection": {
+                "candidate_count": 1,
+                "candidates": [{"source": "outer_1"}],
+                "selected": {"source": "outer_1"},
+            },
         },
         "gpu_native": {
             "execution_platform": "gpu",
@@ -73,6 +81,11 @@ def result_contract():
             "optimization": optimization(),
             "final_metrics": final_metrics(),
             "scientific_validation": validation,
+            "checkpoint_selection": {
+                "candidate_count": 1,
+                "candidates": [{"source": "outer_1"}],
+                "selected": {"source": "outer_1"},
+            },
         },
         "scientifically_validated": True,
     }
@@ -94,6 +107,7 @@ def test_benchmark_defaults_match_production_comparison():
     assert args.minimum_current_ratio == 0.5
     assert args.maximum_current_ratio == 1.5
     assert args.curve_coefficient_bound_radius == 0.25
+    assert args.inner_acceptance_mode == "budgeted"
 
 
 def test_analyzer_validates_device_placement_and_no_refinement():
@@ -128,8 +142,10 @@ def test_colab_runs_matched_no_refinement_comparison_and_downloads_archive():
     assert '"--max-inner-iterations", "300"' in source
     assert '"--history-size", "20"' in source
     assert '"--curve-coefficient-bound-radius", "0.25"' in source
+    assert '"--inner-acceptance-mode", "budgeted"' in source
     assert 'result["method"]["refinement_performed"] is False' in source
     assert 'result["method"]["matched_design_envelope_bounds"]' in source
+    assert 'result["method"]["inner_stationarity_is_diagnostic"]' in source
     assert 'result["gpu_native"]["host_callbacks"] == 0' in source
     assert "path.is_absolute()" in source
     assert "files.download(archive)" in source

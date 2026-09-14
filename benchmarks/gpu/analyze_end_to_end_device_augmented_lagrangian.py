@@ -56,7 +56,7 @@ def read_archive(path):
 
 
 def validate_result(result):
-    if result.get("schema_version") not in (1, 2) or result.get("workflow") != (
+    if result.get("schema_version") not in (1, 2, 3) or result.get("workflow") != (
         "end_to_end_device_augmented_lagrangian"
     ):
         raise ValueError("end-to-end AL result contract does not match")
@@ -68,6 +68,11 @@ def validate_result(result):
         or not result.get("design_envelope")
     ):
         raise ValueError("matched design-envelope bounds are missing")
+    if result["schema_version"] >= 3 and (
+        method.get("inner_stationarity_is_diagnostic") is not True
+        or method.get("target_aware_outer_checkpoint_selection") is not True
+    ):
+        raise ValueError("budgeted checkpoint-selection policy is missing")
     if (
         result.get("cpu", {}).get("execution_platform") != "cpu"
         or result.get("gpu_native", {}).get("execution_platform") != "gpu"
@@ -90,6 +95,10 @@ def validate_result(result):
         history = optimization.get("history", [])
         if len(history) != optimization.get("outer_iterations"):
             raise ValueError(f"{backend} outer history is incomplete")
+        if result["schema_version"] >= 3 and any(
+            not item.get("optimizer_variables") for item in history
+        ):
+            raise ValueError(f"{backend} outer designs are missing")
         for value in (
             optimization.get("seconds"),
             optimization.get("base_objective"),
@@ -97,6 +106,13 @@ def validate_result(result):
         ):
             if value is None or not math.isfinite(float(value)):
                 raise ValueError(f"{backend} contains a non-finite scalar")
+        if result["schema_version"] >= 3:
+            selection = record.get("checkpoint_selection", {})
+            if (
+                selection.get("candidate_count") != len(selection.get("candidates", []))
+                or not selection.get("selected")
+            ):
+                raise ValueError(f"{backend} checkpoint selection is incomplete")
     if not result["gpu_native"].get("execution_samples_seconds"):
         raise ValueError("GPU execution samples are missing")
     reproduced = bool(
@@ -114,7 +130,7 @@ def plot_performance(result, output):
     compile_times = [cpu["compilation_seconds"], gpu["compilation_seconds"]]
     execution_times = [
         cpu["optimization"]["seconds"],
-        gpu["warm_median_seconds"],
+        gpu["execution_samples_seconds"][0],
     ]
     figure, axes = plt.subplots(1, 2, figsize=(9.0, 4.2), constrained_layout=True)
     positions = np.arange(2)
@@ -129,7 +145,7 @@ def plot_performance(result, output):
     axes[0].set_xticks(positions, ["CPU SciPy AL", "GPU-native AL"])
     axes[0].set_yscale("log")
     axes[0].set_ylabel("seconds (log scale)")
-    axes[0].set_title("Cold end-to-end time")
+    axes[0].set_title("Cold solver end-to-end time")
     axes[0].legend(frameon=False)
     evaluations = [
         cpu["optimization"]["total_evaluations"],

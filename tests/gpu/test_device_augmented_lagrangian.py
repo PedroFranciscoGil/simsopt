@@ -70,6 +70,7 @@ def test_device_augmented_lagrangian_matches_host_reference():
     assert device_result.outer_iterations <= 20
     assert device_result.total_inner_iterations > 0
     assert len(device_result.history) == device_result.outer_iterations
+    assert len(device_result.history[0]["optimizer_variables"]) == initial.size
     assert abs(device_result.constraints[0]) <= 2e-6
     assert device_result.x[0] == pytest.approx(1.0, abs=2e-6)
     assert device_result.x[0] == pytest.approx(host_result.x[0], abs=2e-6)

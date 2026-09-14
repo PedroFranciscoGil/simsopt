@@ -47,6 +47,11 @@ def parse_args():
     parser.add_argument(
         "--inner-stationarity-relative-tolerance", type=float, default=0.01
     )
+    parser.add_argument(
+        "--inner-acceptance-mode",
+        choices=("budgeted", "stationarity"),
+        default="budgeted",
+    )
     parser.add_argument("--history-size", type=int, default=20)
     parser.add_argument("--cpu-maxcor", type=int, default=100)
     parser.add_argument("--max-line-search-iterations", type=int, default=50)
@@ -175,6 +180,79 @@ def target_validation(metrics, target, tolerance):
     }
 
 
+def select_target_aware_checkpoint(
+    result,
+    initial_x,
+    coordinate_bridge,
+    cpu_objective,
+    components,
+    base_curves,
+    field,
+    surface,
+    settings,
+    target,
+    tolerance,
+):
+    """Select a direct AL checkpoint by physical targets, then flux."""
+    candidates = [("initial", np.asarray(initial_x, dtype=float))]
+    candidates.extend(
+        (
+            f"outer_{record['outer_iteration']}",
+            np.asarray(record["optimizer_variables"], dtype=float),
+        )
+        for record in result.history
+    )
+    records = []
+    payloads = []
+    for source, optimizer_x in candidates:
+        physical_x = coordinate_bridge.to_physical_variables(optimizer_x)
+        metrics = final_coil_metrics(
+            cpu_objective,
+            components,
+            base_curves,
+            field,
+            surface,
+            physical_x,
+            settings,
+        )
+        validation = target_validation(metrics, target, tolerance)
+        engineering_deviation = max(
+            item["fractional_target_deviation"]
+            for item in validation["engineering"]["comparisons"].values()
+        )
+        if validation["passed"]:
+            tier = 0
+        elif validation["engineering"]["passed"]:
+            tier = 1
+        else:
+            tier = 2
+        rank = (tier, engineering_deviation if tier == 2 else 0.0, metrics["quadratic_flux"])
+        records.append(
+            {
+                "source": source,
+                "rank_tier": tier,
+                "quadratic_flux": metrics["quadratic_flux"],
+                "engineering_target_passed": validation["engineering"]["passed"],
+                "quadratic_flux_target_passed": validation["quadratic_flux"]["passed"],
+                "scientifically_validated": validation["passed"],
+                "maximum_engineering_target_deviation": engineering_deviation,
+            }
+        )
+        payloads.append((rank, optimizer_x, physical_x, metrics, validation))
+    selected_index = min(range(len(payloads)), key=lambda index: payloads[index][0])
+    _, optimizer_x, physical_x, metrics, validation = payloads[selected_index]
+    return {
+        "candidate_count": len(records),
+        "selection_policy": (
+            "scientifically valid then engineering-valid then minimum target "
+            "deviation; minimize quadratic flux within the selected tier"
+        ),
+        "selected_index": selected_index,
+        "selected": records[selected_index],
+        "candidates": records,
+    }, optimizer_x, physical_x, metrics, validation
+
+
 def main():
     args = parse_args()
     backend = jax.default_backend()
@@ -276,6 +354,7 @@ def main():
     cpu_bridge.compile(initial_x)
     cpu_compile_seconds = time.perf_counter() - start
     cpu_bridge.evaluations = 0
+    require_inner_stationarity = args.inner_acceptance_mode == "stationarity"
     cpu_result = minimize_equality_augmented_lagrangian(
         cpu_bridge,
         initial_x,
@@ -288,7 +367,7 @@ def main():
         maxcor=args.cpu_maxcor,
         maxls=args.max_line_search_iterations,
         mu_max=args.mu_max,
-        require_inner_stationarity=True,
+        require_inner_stationarity=require_inner_stationarity,
         inner_stationarity_factor=1.0,
         inner_stationarity_relative_tolerance=(
             args.inner_stationarity_relative_tolerance
@@ -312,7 +391,7 @@ def main():
         max_line_search_iterations=args.max_line_search_iterations,
         gradient_tolerance=args.gradient_tolerance,
         constraint_tolerance=args.constraint_tolerance,
-        require_inner_stationarity=True,
+        require_inner_stationarity=require_inner_stationarity,
         inner_stationarity_factor=1.0,
         inner_stationarity_relative_tolerance=(
             args.inner_stationarity_relative_tolerance
@@ -347,32 +426,48 @@ def main():
     device_result = device_results[0]
     device_warm_median = statistics.median(execution_samples)
 
-    cpu_physical_x = coordinate_bridge.to_physical_variables(cpu_result.x)
-    device_physical_x = coordinate_bridge.to_physical_variables(device_result.x)
-    cpu_metrics = final_coil_metrics(
-        cpu_objective,
-        components,
-        base_curves,
-        field,
-        surface,
+    checkpoint_start = time.perf_counter()
+    (
+        cpu_checkpoint_selection,
+        cpu_selected_x,
         cpu_physical_x,
-        settings,
-    )
-    device_metrics = final_coil_metrics(
+        cpu_metrics,
+        cpu_validation,
+    ) = select_target_aware_checkpoint(
+        cpu_result,
+        initial_x,
+        coordinate_bridge,
         cpu_objective,
         components,
         base_curves,
         field,
         surface,
-        device_physical_x,
         settings,
+        args.quadratic_flux_target,
+        args.target_relative_tolerance,
     )
-    cpu_validation = target_validation(
-        cpu_metrics, args.quadratic_flux_target, args.target_relative_tolerance
+    cpu_checkpoint_seconds = time.perf_counter() - checkpoint_start
+    checkpoint_start = time.perf_counter()
+    (
+        device_checkpoint_selection,
+        device_selected_x,
+        device_physical_x,
+        device_metrics,
+        device_validation,
+    ) = select_target_aware_checkpoint(
+        device_result,
+        initial_x,
+        coordinate_bridge,
+        cpu_objective,
+        components,
+        base_curves,
+        field,
+        surface,
+        settings,
+        args.quadratic_flux_target,
+        args.target_relative_tolerance,
     )
-    device_validation = target_validation(
-        device_metrics, args.quadratic_flux_target, args.target_relative_tolerance
-    )
+    device_checkpoint_seconds = time.perf_counter() - checkpoint_start
     agreement = qoi_backend_agreement(
         device_metrics, cpu_metrics, args.target_relative_tolerance
     )
@@ -403,7 +498,7 @@ def main():
     cpu_end_to_end = cpu_compile_seconds + cpu_result.seconds
     gpu_cold_end_to_end = device_compile_seconds + execution_samples[0]
     output = {
-        "schema_version": 2,
+        "schema_version": 3,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "name": "local_residual_equality_augmented_lagrangian",
@@ -414,6 +509,8 @@ def main():
             "gpu_outer_loop_device_resident": True,
             "gpu_host_callbacks": 0,
             "matched_design_envelope_bounds": True,
+            "inner_stationarity_is_diagnostic": not require_inner_stationarity,
+            "target_aware_outer_checkpoint_selection": True,
         },
         "problem": spec.as_dict(),
         "solver": {
@@ -438,6 +535,7 @@ def main():
             ),
             "residual_scaling_policy": "family_l2",
             "minimum_residual_scaling_policy": "sqrt_count",
+            "inner_acceptance_mode": args.inner_acceptance_mode,
         },
         "gpu_configuration": {
             "target_tile_size": gpu_config.target_tile_size,
@@ -485,11 +583,13 @@ def main():
             "implementation": "Python AL outer loop with SciPy L-BFGS-B inner solves",
             "compilation_seconds": cpu_compile_seconds,
             "end_to_end_seconds": cpu_end_to_end,
+            "checkpoint_selection_seconds": cpu_checkpoint_seconds,
             "optimization": optimization_summary(
                 cpu_result, lower_bounds, upper_bounds
             ),
+            "checkpoint_selection": cpu_checkpoint_selection,
             "active_bounds": bound_activity(
-                cpu_result.x, lower_bounds, upper_bounds
+                cpu_selected_x, lower_bounds, upper_bounds
             ),
             "final_metrics": cpu_metrics,
             "scientific_validation": cpu_validation,
@@ -504,11 +604,13 @@ def main():
             "execution_samples_seconds": execution_samples,
             "warm_median_seconds": device_warm_median,
             "cold_end_to_end_seconds": gpu_cold_end_to_end,
+            "checkpoint_selection_seconds": device_checkpoint_seconds,
             "optimization": optimization_summary(
                 device_result, lower_bounds, upper_bounds
             ),
+            "checkpoint_selection": device_checkpoint_selection,
             "active_bounds": bound_activity(
-                device_result.x, lower_bounds, upper_bounds
+                device_selected_x, lower_bounds, upper_bounds
             ),
             "final_metrics": device_metrics,
             "scientific_validation": device_validation,
