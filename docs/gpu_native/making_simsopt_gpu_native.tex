@@ -2920,6 +2920,81 @@ trajectory diagnostic rather than an overall scientific failure.  The archive
 also contains the selected surface VTS with $B\cdot n/|B|$ and the corresponding
 coil VTU for visual inspection.
 
+\subsection{Implemented end-to-end device-resident augmented Lagrangian}
+
+The next implementation removes SciPy and the Python outer loop from the GPU
+path.  A new \code{DeviceAugmentedLagrangian} lowers the complete nested solve
+to one JAX executable.  The compiled computation includes the AL outer loop,
+dynamic multiplier and penalty vectors, residual mapping and scale
+continuation, L-BFGS inner iterations, the two-loop recursion, Armijo
+backtracking, and the absolute-or-relative stationarity safeguard.  Only the
+final state and fixed-size outer history cross back to the host; the measured
+host-callback count is therefore zero by construction.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  node distance=5mm and 8mm,
+  box/.style={draw, rounded corners, align=center, minimum height=8mm,
+              text width=31mm, fill=blue!6},
+  gpu/.style={box, fill=green!10},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+  \node[box] (cpuouter) {Python AL\\outer loop};
+  \node[box, below=of cpuouter] (scipy) {SciPy L-BFGS-B\\inner solve};
+  \node[box, below=of scipy] (cpuphysics) {CPU-pinned JAX\\physics/gradient};
+  \draw[arrow] (cpuouter) -- (scipy);
+  \draw[arrow] (scipy) -- node[right, font=\scriptsize]{host calls} (cpuphysics);
+
+  \node[gpu, right=20mm of scipy] (compiled) {single compiled\\GPU executable};
+  \node[gpu, below=of compiled] (outer) {device AL updates\\and safeguards};
+  \node[gpu, below=of outer] (inner) {device L-BFGS and\\Armijo search};
+  \node[gpu, below=of inner] (physics) {GPU coil physics\\and reverse mode};
+  \draw[arrow] (compiled) -- (outer);
+  \draw[arrow] (outer) -- (inner);
+  \draw[arrow] (inner) -- (physics);
+  \draw[arrow, bend left=38] (physics.east) to (outer.east);
+\end{tikzpicture}
+\caption{Execution boundary for the no-refinement end-to-end comparison.  The
+CPU reference retains the established host-controlled algorithm; every GPU
+optimization control flow edge remains within the compiled executable.}
+\label{fig:end-to-end-device-al-architecture}
+\end{figure}
+
+The matched production benchmark uses the engineering problem from the same
+circular order-eight, 207-variable initial state.  Both paths use at most eight
+outer iterations and 300 inner iterations per stage; $\mu_0=10$, $\tau=2$,
+$\mu_{\max}=10^{12}$; smooth-absolute local residuals with $\epsilon=0.1$;
+family-$\ell_2$ initial scales, square-root-count scale floors and scale factor
+0.5; global penalty updates; relative stationarity threshold 0.01; and float64
+physics.  The established CPU reference retains SciPy's 100-pair history, while
+the device solver uses the A100-qualified 20-pair history.  This intentionally
+compares the production configuration of each optimizer; iteration and
+physics-evaluation counts accompany time so algorithmic work remains visible.
+
+No direct-flux refinement is permitted in this workflow.  Final metrics are
+computed immediately at the two AL endpoints with the SIMSOPT CPU oracle.  The
+result stores the penalty objective, quadratic flux, mean/RMS/maximum
+$|B\cdot n|/|B|$, currents and all coil-constraint measurements for both paths.
+Each endpoint is independently tested against the 10\% physical target policy;
+CPU/device trajectory agreement is a separate diagnostic.  Both final surfaces
+are exported as VTS with signed and absolute $B\cdot n/|B|$, and both coil sets
+as VTU.
+
+Timing has two explicit scopes.  CPU cold end-to-end time is CPU objective
+compilation plus the original AL solve.  GPU cold end-to-end time is compilation
+of the entire nested executable plus its first synchronized execution.  Warm
+GPU time is the median of three synchronized executions from the identical
+initial state.  The archive also retains compilation, every execution sample,
+total inner iterations and objective/gradient evaluations.  This prevents
+kernel-only timing from being presented as end-to-end performance.
+
+The new Colab workflow produces
+\code{simsopt-end-to-end-device-al.zip}.  Its analyzer will generate cold-time
+and work-count bars, outer convergence curves, and final magnetic-metric bars.
+No performance or scientific claim is made until the NVIDIA archive is
+returned and incorporated into this report.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

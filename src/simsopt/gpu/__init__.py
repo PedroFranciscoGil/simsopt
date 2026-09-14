@@ -31,6 +31,11 @@ from .curves import (
     fourier_basis_set,
     symmetry_transforms,
 )
+from .device_augmented_lagrangian import (
+    DeviceAugmentedLagrangian,
+    DeviceAugmentedLagrangianConfig,
+    DeviceAugmentedLagrangianResult,
+)
 from .distances import (
     coil_coil_distance,
     coil_coil_distance_residuals,
@@ -66,6 +71,9 @@ from .scipy import ScipyCoilObjectiveBridge, ScipyObjectiveBridge
 __all__ = [
     "LOCAL_RESIDUAL_FAMILIES",
     "AugmentedLagrangianResult",
+    "DeviceAugmentedLagrangian",
+    "DeviceAugmentedLagrangianConfig",
+    "DeviceAugmentedLagrangianResult",
     "DeviceLBFGS",
     "DeviceLBFGSConfig",
     "DeviceLBFGSResult",

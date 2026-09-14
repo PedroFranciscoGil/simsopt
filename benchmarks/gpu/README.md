@@ -559,3 +559,42 @@ fewer evaluations. History 50 with patience 15 was the speed-first alternative
 at 0.559 s and 60 evaluations, with quadratic flux `8.00589e-7`. The aggregate
 scalar-objective comparison remains a trajectory diagnostic: it does not
 override scientific validation based on the explicit flux and coil targets.
+
+## End-to-end device-resident augmented Lagrangian
+
+The end-to-end qualification compares the established CPU implementation—a
+Python augmented-Lagrangian outer loop with SciPy L-BFGS-B inner solves and a
+CPU-pinned JAX local-residual objective—against a GPU implementation whose AL
+outer loop, L-BFGS two-loop recursion, Armijo line searches, multiplier and
+penalty updates, residual-scale continuation, and stationarity safeguard all
+execute inside one compiled program. The comparison starts from the same
+circular engineering coils and performs no post-AL refinement.
+
+[Run the end-to-end CPU/GPU-native AL comparison in Colab](https://colab.research.google.com/github/PedroFranciscoGil/simsopt/blob/gpu-native-objective/benchmarks/gpu/colab_end_to_end_device_augmented_lagrangian.ipynb)
+
+```sh
+OMP_NUM_THREADS=1 python \
+  benchmarks/gpu/benchmark_end_to_end_device_augmented_lagrangian.py \
+  --problem engineering --max-outer-iterations 8 \
+  --max-inner-iterations 300 --mu-init 10 --tau 2 --mu-max 1e12 \
+  --history-size 20 --cpu-maxcor 100 \
+  --max-line-search-iterations 50 --gpu-warm-repeats 3 \
+  --target-relative-tolerance 0.10 --quadratic-flux-target 1e-5 \
+  --current-scale 100000 --target-tile-size 1024 \
+  --source-tile-size 4320 \
+  --output end-to-end-device-augmented-lagrangian.json
+```
+
+The output records CPU compile and optimization time, GPU compilation and
+three synchronized execution samples, cold end-to-end and warm speedups,
+objective/gradient evaluation counts, complete outer histories, final
+objective, quadratic flux, normalized `B dot n / abs(B)`, coil constraints,
+and both endpoints' physical variables. CPU and GPU surfaces are exported as
+VTS with the normal-field arrays, and both coil sets are exported as VTU.
+
+Analyze the returned archive with:
+
+```sh
+python benchmarks/gpu/analyze_end_to_end_device_augmented_lagrangian.py \
+  simsopt-end-to-end-device-al.zip docs/gpu_native/figures
+```
