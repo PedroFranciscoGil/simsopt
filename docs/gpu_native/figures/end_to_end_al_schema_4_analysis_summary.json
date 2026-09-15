@@ -2799,10 +2799,10 @@
     "simsopt_revision": "c4bdc0c502e302d1a15aa4797531d29900694f7e"
   },
   "figures": [
-    "end_to_end_al_performance.png",
-    "end_to_end_al_convergence.png",
-    "end_to_end_al_final_metrics.png",
-    "end_to_end_al_surface_field.png"
+    "end_to_end_al_schema_4_performance.png",
+    "end_to_end_al_schema_4_convergence.png",
+    "end_to_end_al_schema_4_final_metrics.png",
+    "end_to_end_al_schema_4_surface_field.png"
   ],
   "gpu_native": {
     "active_bounds": {

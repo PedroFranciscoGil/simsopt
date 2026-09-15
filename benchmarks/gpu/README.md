@@ -657,3 +657,23 @@ Target-aware selection still considers every outer state, protecting an
 earlier scientifically valid design from later degradation. Analyzer outputs
 are now schema-versioned so evidence from successive decisions is not
 overwritten.
+
+The schema-4 A100 archive (SHA-256
+`379e1a1182b28e7c971d9881a5d4b735b14513dd71100399368a74a2fc7f65e0`)
+completed all eight stages in 4645.006 s CPU cold end-to-end, 41.605 s GPU
+cold end-to-end, and a 36.162 s GPU warm median. The nominal ratios are
+111.65x cold and 128.40x warm, with 6,235 CPU and 6,702 GPU objective/gradient
+evaluations. Both selected eighth-stage designs pass every engineering target
+and their coil quantities agree within 9.00%. Full continuation improves GPU
+quadratic flux by 4.22x to `4.16518e-4`, but this is still 37.87 times the
+allowed boundary; CPU flux remains `1.09165e-2`. The speedup therefore remains
+scientifically unqualified.
+
+Schema 5 aligns the AL residual zero set with the already-approved 10% target
+envelope: minimum coil--coil and coil--surface distances are 0.09 m and
+0.27 m, while maximum curvature and mean-squared curvature are 5.5. Small
+residual transition widths are retained, and the benchmark records enough
+metadata for the analyzer to reproduce every boundary. Both solvers retain
+the same objective, bounds, eight outer stages, 300-inner-iteration budget,
+and no-refinement contract. The analyzer now also plots the signed surface
+normal field and marks the allowed quadratic-flux boundary explicitly.

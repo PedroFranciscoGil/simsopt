@@ -3259,6 +3259,110 @@ stages cannot erase an earlier target-valid design.  This directly tests
 whether continued AL minimization can close the remaining flux gap without a
 separate refinement phase.
 
+\subsection{Eight-stage A100 result: improvement without qualification}
+
+The schema~4 archive from revision \code{c4bdc0c5} has the SHA-256 digest
+\begin{center}
+\small\nolinkurl{379e1a1182b28e7c971d9881a5d4b735b14513dd71100399368a74a2fc7f65e0}
+\end{center}
+It contains the complete no-refinement comparison, including nine candidate
+states per backend (the circular start and eight outer endpoints), nonempty
+coil VTU files, and surface VTS files with signed and absolute
+$B\cdot n/|B|$, $B\cdot n$, and $|B|$ arrays.  The run again used float64 on
+an NVIDIA A100-SXM4-40GB, four order-8 base coils, 16 physical coils, 207
+optimizer variables, 120 coil quadrature points, and a $64\times64$ surface.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_schema_4_performance.png}
+\caption{Complete eight-stage AL cost.  CPU cold solver time is 4645.006~s;
+GPU cold time is 41.605~s and its synchronized warm median is 36.162~s.  The
+GPU performs 6,702 objective/gradient evaluations versus 6,235 on CPU.}
+\label{fig:end-to-end-al-schema4-performance}
+\end{figure}
+
+The nominal ratios are $111.65\times$ cold and $128.40\times$ warm.  CPU
+compilation takes 1.897~s and optimization 4643.109~s; GPU compilation takes
+5.443~s, followed by 36.162, 36.390 and 36.116~s executions.  CPU accumulates
+1,826 inner iterations and GPU 1,804.  These are genuine end-to-end solver
+measurements with no refinement phase, but they remain diagnostic rather than
+a qualified speedup because the physical flux gate fails.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/end_to_end_al_schema_4_convergence.png}
+\caption{All eight outer stages now execute.  Relative to schema~3, the GPU
+quadratic flux improves by $4.22\times$ and the CPU flux by $1.38\times$.
+Both target-aware selectors choose the eighth endpoint.}
+\label{fig:end-to-end-al-schema4-convergence}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Independent CPU-oracle metrics for the selected schema~4 endpoints.}
+\label{tab:end-to-end-al-schema4-qoi}
+\begin{tabular}{lrr}
+\toprule
+Quantity & CPU outer 8 & GPU outer 8 \\
+\midrule
+Scalar objective & $1.09308\times10^{-2}$ & $4.32079\times10^{-4}$ \\
+Quadratic flux & $1.09165\times10^{-2}$ & $4.16518\times10^{-4}$ \\
+Mean $|B\cdot n|/|B|$ & 0.137409 & 0.0300371 \\
+RMS $|B\cdot n|/|B|$ & 0.161502 & 0.0362835 \\
+Maximum $|B\cdot n|/|B|$ & 0.326054 & 0.123136 \\
+Total base-coil length (m) & 14.2767 & 15.5614 \\
+Minimum coil--coil distance (m) & 0.160666 & 0.149579 \\
+Minimum coil--surface distance (m) & 0.300240 & 0.307747 \\
+Maximum curvature ($\mathrm{m}^{-1}$) & 4.66836 & 4.75271 \\
+Maximum mean-squared curvature ($\mathrm{m}^{-2}$) & 5.0010000 & 5.0010006 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both designs pass all four engineering target envelopes.  Their reported coil
+quantities agree within 9.00\%, while their magnetic metrics do not agree: the
+different L-BFGS implementations follow materially different nonconvex
+trajectories.  This trajectory difference is retained as a technical
+diagnostic and does not replace endpoint validation.  GPU quadratic flux is
+still 37.87 times the $1.1\times10^{-5}$ allowed boundary; CPU is 992.41 times
+above it.  The GPU finishes with a strict local-residual infinity norm of
+$6.43\times10^{-4}$ and therefore does not report mathematical convergence,
+although its actual engineering quantities pass the agreed 10\% rule.  Large
+gradient values remain diagnostic, consistent with the validation policy.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.88\textwidth]{figures/end_to_end_al_schema_4_final_metrics.png}
+\caption{Schema~4 final magnetic quantities with the allowed quadratic-flux
+boundary shown explicitly.  Full continuation narrows but does not close the
+scientific gap.}
+\label{fig:end-to-end-al-schema4-final-metrics}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/end_to_end_al_schema_4_surface_field.png}
+\caption{Signed $(B\cdot n)/|B|$ decoded from the exported final surface VTS
+files on a common color scale.  The GPU design has a visibly weaker residual
+field, consistent with its lower quadratic flux and normalized-field metrics.}
+\label{fig:end-to-end-al-schema4-surface}
+\end{figure}
+
+\textbf{Decision.}  Keep the complete eight-stage comparison and all existing
+scientific gates, but remove a mismatch between optimization and validation.
+Schema~4 drives the engineering residuals nearly to the nominal boundaries
+0.1~m, 0.3~m, $5~\mathrm{m}^{-1}$, and $5~\mathrm{m}^{-2}$ even though the
+agreed 10\% validation envelope accepts 0.09~m, 0.27~m,
+$5.5~\mathrm{m}^{-1}$, and $5.5~\mathrm{m}^{-2}$.  Schema~5 makes those four
+accepted boundaries the exact zero set of both CPU and GPU AL residuals while
+preserving their smoothing widths, the original quadratic-flux plus length
+objective, design bounds, iteration budgets, and no-refinement rule.  The
+archive records and the analyzer reproduces all four optimizer boundaries.
+This is not a relaxation of validation; it makes the mathematical problem
+match the previously approved scientific policy and releases unnecessary
+constraint pressure for magnetic optimization.
+
 \section{Opportunities to improve coil quality}
 
 GPU acceleration is valuable because it enables better algorithms, not only

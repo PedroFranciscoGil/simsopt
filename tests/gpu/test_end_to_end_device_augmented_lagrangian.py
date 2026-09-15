@@ -25,7 +25,15 @@ def final_metrics():
             "root_mean_square": 2e-3,
             "maximum_absolute": 5e-3,
         },
-        "coil_constraints": {"measurements": {}},
+        "coil_constraints": {
+            "measurements": {},
+            "limits": {
+                "coil_coil_distance_threshold": 0.1,
+                "coil_surface_distance_threshold": 0.3,
+                "curvature_threshold": 5.0,
+                "mean_squared_curvature_threshold": 5.0,
+            },
+        },
     }
 
 
@@ -49,7 +57,7 @@ def optimization():
 def result_contract():
     validation = {"passed": True}
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "refinement_performed": False,
@@ -58,9 +66,30 @@ def result_contract():
             "inner_stationarity_is_diagnostic": True,
             "target_aware_outer_checkpoint_selection": True,
             "minimum_continuation_depth_enforced": True,
+            "engineering_residual_zero_set_matches_validation_envelope": True,
         },
         "solver": {"minimum_outer_iterations": 8, "max_outer_iterations": 8},
         "design_envelope": {"curve_coefficient_bound_radius_m": 0.25},
+        "residual_contract": {
+            "term_settings": {
+                "coil_coil_distance_threshold": 0.0901,
+                "coil_surface_distance_threshold": 0.2701,
+                "curvature_threshold": 5.499,
+                "mean_squared_curvature_threshold": 5.499,
+            },
+            "transition_widths": {
+                "distance": 1e-4,
+                "curvature": 1e-3,
+                "mean_squared_curvature": 1e-3,
+            },
+            "optimizer_zero_boundaries": {
+                "minimum_coil_coil_distance": 0.09,
+                "minimum_coil_surface_distance": 0.27,
+                "maximum_curvature": 5.5,
+                "maximum_mean_squared_curvature": 5.5,
+            },
+        },
+        "validation_policy": {"target_relative_tolerance": 0.1},
         "cpu": {
             "execution_platform": "cpu",
             "compilation_seconds": 0.5,
@@ -132,6 +161,30 @@ def test_benchmark_requires_the_complete_outer_continuation():
         module.parse_args()
 
 
+def test_benchmark_aligns_al_residuals_with_validation_envelope():
+    module = load_module(
+        "benchmark_end_to_end_device_augmented_lagrangian.py",
+        "end_to_end_device_al_benchmark_target_envelope",
+    )
+    settings = {
+        "length_weight": 1e-6,
+        "coil_coil_distance_threshold": 0.1,
+        "coil_surface_distance_threshold": 0.3,
+        "curvature_threshold": 5.0,
+        "mean_squared_curvature_threshold": 5.0,
+    }
+
+    kwargs = module.target_al_residual_kwargs(settings, 0.1)
+
+    assert kwargs["length_weight"] == 1e-6
+    assert kwargs["coil_coil_distance_threshold"] - 1e-4 == pytest.approx(0.09)
+    assert kwargs["coil_surface_distance_threshold"] - 1e-4 == pytest.approx(0.27)
+    assert kwargs["curvature_threshold"] + 1e-3 == pytest.approx(5.5)
+    assert kwargs["mean_squared_curvature_threshold"] + 1e-3 == pytest.approx(
+        5.5
+    )
+
+
 def test_analyzer_validates_device_placement_and_no_refinement():
     module = load_module(
         "analyze_end_to_end_device_augmented_lagrangian.py",
@@ -142,6 +195,20 @@ def test_analyzer_validates_device_placement_and_no_refinement():
 
     result["method"]["refinement_performed"] = True
     with pytest.raises(ValueError, match="refinement"):
+        module.validate_result(result)
+
+
+def test_analyzer_rejects_a_misaligned_optimizer_envelope():
+    module = load_module(
+        "analyze_end_to_end_device_augmented_lagrangian.py",
+        "end_to_end_device_al_analyzer_bad_envelope",
+    )
+    result = result_contract()
+    result["residual_contract"]["optimizer_zero_boundaries"][
+        "minimum_coil_surface_distance"
+    ] = 0.28
+
+    with pytest.raises(ValueError, match="not target-aligned"):
         module.validate_result(result)
 
 
@@ -170,6 +237,12 @@ def test_colab_runs_matched_no_refinement_comparison_and_downloads_archive():
     assert 'result["method"]["matched_design_envelope_bounds"]' in source
     assert 'result["method"]["inner_stationarity_is_diagnostic"]' in source
     assert 'result["method"]["minimum_continuation_depth_enforced"]' in source
+    assert (
+        'result["method"]'
+        '["engineering_residual_zero_set_matches_validation_envelope"]' in source
+    )
+    assert 'result["schema_version"] == 5' in source
+    assert 'result["residual_contract"]["optimizer_zero_boundaries"]' in source
     assert 'result["gpu_native"]["host_callbacks"] == 0' in source
     assert "path.is_absolute()" in source
     assert "files.download(archive)" in source

@@ -19,6 +19,7 @@ from benchmark_local_residual_augmented_lagrangian import (
     qoi_backend_agreement,
     quadratic_flux_target_validation,
     residual_scales,
+    target_envelope_residual_kwargs,
 )
 from benchmark_objective import build_problem, environment
 from optimization_metrics import export_final_design_visualization, final_coil_metrics
@@ -32,6 +33,12 @@ from simsopt.gpu import (
     minimal_coil_data,
     minimize_equality_augmented_lagrangian,
 )
+
+LOCAL_RESIDUAL_TRANSITION_WIDTHS = {
+    "distance": 1e-4,
+    "curvature": 1e-3,
+    "mean_squared_curvature": 1e-3,
+}
 
 
 def parse_args():
@@ -188,6 +195,19 @@ def target_validation(metrics, target, tolerance):
     }
 
 
+def target_al_residual_kwargs(settings, relative_tolerance):
+    """Make the AL zero set exactly match the accepted engineering envelope."""
+    kwargs = target_envelope_residual_kwargs(
+        settings,
+        relative_tolerance,
+        LOCAL_RESIDUAL_TRANSITION_WIDTHS,
+    )
+    # Retain the direct AL objective's original length regularization.  The
+    # shared helper sets this to zero for its separate refinement workflow.
+    kwargs["length_weight"] = settings["length_weight"]
+    return kwargs
+
+
 def select_target_aware_checkpoint(
     result,
     initial_x,
@@ -315,20 +335,9 @@ def main():
     lower_bounds, upper_bounds = design_envelope(
         initial_x, free_current_indices.size, args
     )
-    term_kwargs = {
-        "length_weight": settings["length_weight"],
-        "curvature_threshold": settings["curvature_threshold"],
-        "curvature_feasibility_tolerance": 1e-3,
-        "mean_squared_curvature_threshold": settings[
-            "mean_squared_curvature_threshold"
-        ],
-        "mean_squared_curvature_feasibility_tolerance": 1e-3,
-        "coil_coil_distance_threshold": settings["coil_coil_distance_threshold"],
-        "coil_surface_distance_threshold": settings[
-            "coil_surface_distance_threshold"
-        ],
-        "distance_feasibility_tolerance": 1e-4,
-    }
+    term_kwargs = target_al_residual_kwargs(
+        settings, args.target_relative_tolerance
+    )
 
     def terms(x):
         curve_dofs, currents = coordinate_bridge.unpack(x)
@@ -508,7 +517,7 @@ def main():
     cpu_end_to_end = cpu_compile_seconds + cpu_result.seconds
     gpu_cold_end_to_end = device_compile_seconds + execution_samples[0]
     output = {
-        "schema_version": 4,
+        "schema_version": 5,
         "workflow": "end_to_end_device_augmented_lagrangian",
         "method": {
             "name": "local_residual_equality_augmented_lagrangian",
@@ -522,6 +531,7 @@ def main():
             "inner_stationarity_is_diagnostic": not require_inner_stationarity,
             "target_aware_outer_checkpoint_selection": True,
             "minimum_continuation_depth_enforced": True,
+            "engineering_residual_zero_set_matches_validation_envelope": True,
         },
         "problem": spec.as_dict(),
         "solver": {
@@ -566,6 +576,28 @@ def main():
             "curve_coefficient_count": int(
                 initial_x.size - free_current_indices.size
             ),
+        },
+        "residual_contract": {
+            "term_settings": term_kwargs,
+            "transition_widths": LOCAL_RESIDUAL_TRANSITION_WIDTHS,
+            "optimizer_zero_boundaries": {
+                "minimum_coil_coil_distance": (
+                    settings["coil_coil_distance_threshold"]
+                    * (1.0 - args.target_relative_tolerance)
+                ),
+                "minimum_coil_surface_distance": (
+                    settings["coil_surface_distance_threshold"]
+                    * (1.0 - args.target_relative_tolerance)
+                ),
+                "maximum_curvature": (
+                    settings["curvature_threshold"]
+                    * (1.0 + args.target_relative_tolerance)
+                ),
+                "maximum_mean_squared_curvature": (
+                    settings["mean_squared_curvature_threshold"]
+                    * (1.0 + args.target_relative_tolerance)
+                ),
+            },
         },
         "initial_state": {
             "source": "canonical_equally_spaced_circular_coils",
